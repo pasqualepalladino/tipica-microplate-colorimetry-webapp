@@ -141,8 +141,6 @@ function testCollectPlateStateFallbacks(): void {
   const rowPriority = collectPlateState(grid, defaults, nrow, ncol, {
     unitBase: 'mM',
     unitExp: '0',
-    useStoredCalibration: false,
-    saveRawDataDetails: false,
     expectedRefs: [],
     idDfPriority: 'row',
     extendedView: true,
@@ -163,8 +161,6 @@ function testCollectPlateStateFallbacks(): void {
   const colPriority = collectPlateState(grid, defaults, nrow, ncol, {
     unitBase: 'mM',
     unitExp: '0',
-    useStoredCalibration: false,
-    saveRawDataDetails: false,
     expectedRefs: [],
     idDfPriority: 'col',
     extendedView: true,

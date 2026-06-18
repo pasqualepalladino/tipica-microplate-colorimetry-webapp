@@ -96,6 +96,13 @@ function pointDistance(a: Point, b: Point): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+function mouthGeometryMatches(a: PlateGeometry, b: PlateGeometry, tolerancePx = 2): boolean {
+  return pointDistance(a.corner_a1, b.corner_a1) <= tolerancePx &&
+    pointDistance(a.corner_a12, b.corner_a12) <= tolerancePx &&
+    pointDistance(a.corner_h12, b.corner_h12) <= tolerancePx &&
+    pointDistance(a.corner_h1, b.corner_h1) <= tolerancePx;
+}
+
 function medianNumber(values: number[]): number | null {
   if (values.length === 0) {
     return null;
@@ -180,6 +187,45 @@ function geometryWithoutFloorCircles(geometry: PlateGeometry): PlateGeometry {
     corner_h1: geometry.corner_h1,
     ...(geometry.mouth_radius_px ? { mouth_radius_px: geometry.mouth_radius_px } : {}),
     ...(geometry.roi_radius_factor ? { roi_radius_factor: geometry.roi_radius_factor } : {}),
+  };
+}
+
+function reconcileLoadedGeometryFloor(
+  loadedGeometry: PlateGeometry,
+  loadedFloorGeometrySource: FloorGeometrySource,
+  currentGeometry: PlateGeometry | null,
+  currentFloorGeometrySource: FloorGeometrySource,
+): { geometry: PlateGeometry; floorGeometrySource: FloorGeometrySource; preservedCurrentFloorGeometry: boolean } {
+  if (hasFloorGeometry(loadedGeometry)) {
+    return {
+      geometry: loadedGeometry,
+      floorGeometrySource: loadedFloorGeometrySource,
+      preservedCurrentFloorGeometry: false,
+    };
+  }
+
+  const currentReferenceFloorCircles = getReferenceFloorCircles(currentGeometry);
+
+  if (
+    currentGeometry &&
+    currentReferenceFloorCircles.length === FLOOR_CIRCLE_REFERENCES.length &&
+    mouthGeometryMatches(loadedGeometry, currentGeometry)
+  ) {
+    // Project and geometry files can be loaded in either order. If the newly loaded
+    // file is mouth-only, keep compatible floor circles already loaded from the
+    // companion project/geometry file so derived floorCircles and extraction math
+    // do not depend on load order.
+    return {
+      geometry: geometryWithFloorCircles(loadedGeometry, currentReferenceFloorCircles),
+      floorGeometrySource: currentFloorGeometrySource === 'none' ? 'json' : currentFloorGeometrySource,
+      preservedCurrentFloorGeometry: true,
+    };
+  }
+
+  return {
+    geometry: loadedGeometry,
+    floorGeometrySource: 'none',
+    preservedCurrentFloorGeometry: false,
   };
 }
 
@@ -2827,15 +2873,26 @@ function App() {
       const text = await file.text();
       const raw = JSON.parse(text);
       const project = parseProjectJson(raw);
+      const hadFloorGeometry = Boolean(geometry && hasFloorGeometry(geometry));
+      const reconciledGeometry = reconcileLoadedGeometryFloor(
+        project.geometry,
+        project.floorGeometrySource,
+        geometry,
+        floorGeometrySource,
+      );
 
-      setGeometry(project.geometry);
+      setGeometry(reconciledGeometry.geometry);
       setGeometryName('Loaded project geometry');
       setGeometrySource('json');
-      setFloorGeometrySource(project.floorGeometrySource);
-      setFloorGeometryNotice(null);
+      setFloorGeometrySource(reconciledGeometry.floorGeometrySource);
+      setFloorGeometryNotice(reconciledGeometry.preservedCurrentFloorGeometry
+        ? 'Project did not include floor circles; preserved compatible floor circles already loaded.'
+        : !hasFloorGeometry(project.geometry) && hadFloorGeometry
+          ? 'Project geometry does not include floor circles; existing floor circles were not preserved because the mouth/corner geometry differs.'
+          : null);
       setRadiusFactor(project.roiRadiusFactor);
-      setManualMouthRadiusPx(project.geometry.mouth_radius_px
-        ? clampManualMouthRadiusPx(project.geometry.mouth_radius_px)
+      setManualMouthRadiusPx(reconciledGeometry.geometry.mouth_radius_px
+        ? clampManualMouthRadiusPx(reconciledGeometry.geometry.mouth_radius_px)
         : DEFAULT_MANUAL_MOUTH_RADIUS_PX);
       setRoiMode(project.roiMode);
       setRoiPixelStatisticsMode(project.roiPixelStatisticsMode);
@@ -2885,7 +2942,7 @@ function App() {
     } finally {
       event.currentTarget.value = '';
     }
-  }, [clearMeasurementsAndFits]);
+  }, [clearMeasurementsAndFits, floorGeometrySource, geometry]);
 
   const handleClearProject = useCallback(() => {
     setGeometry(null);
@@ -3917,21 +3974,33 @@ function App() {
           }}
           onGeometryLoaded={(loadedGeometry, fileName) => {
             const loadedHasFloorGeometry = hasFloorGeometry(loadedGeometry);
-            setGeometry(loadedGeometry);
+            const hadFloorGeometry = Boolean(geometry && hasFloorGeometry(geometry));
+            const reconciledGeometry = reconcileLoadedGeometryFloor(
+              loadedGeometry,
+              loadedHasFloorGeometry ? 'json' : 'none',
+              geometry,
+              floorGeometrySource,
+            );
+
+            setGeometry(reconciledGeometry.geometry);
             setGeometryName(fileName);
             setGeometrySource('json');
-            if (loadedGeometry.roi_radius_factor) {
-              setRadiusFactor(loadedGeometry.roi_radius_factor);
+            // Once a project is loaded, its saved analysis ROI factor stays authoritative;
+            // otherwise loading geometry after a project could change extraction math.
+            if (!projectLoadedInfo && reconciledGeometry.geometry.roi_radius_factor) {
+              setRadiusFactor(reconciledGeometry.geometry.roi_radius_factor);
             }
-            if (loadedGeometry.mouth_radius_px) {
-              setManualMouthRadiusPx(clampManualMouthRadiusPx(loadedGeometry.mouth_radius_px));
+            if (reconciledGeometry.geometry.mouth_radius_px) {
+              setManualMouthRadiusPx(clampManualMouthRadiusPx(reconciledGeometry.geometry.mouth_radius_px));
             }
-            setFloorGeometrySource(loadedHasFloorGeometry ? 'json' : 'none');
+            setFloorGeometrySource(reconciledGeometry.floorGeometrySource);
             setFloorGeometryNotice(loadedHasFloorGeometry
               ? null
-              : floorGeometryAvailable
-                ? 'Loaded mouth/corner geometry does not include floor circles; pick floor circles manually for floor-aware ROI.'
-                : null);
+              : reconciledGeometry.preservedCurrentFloorGeometry
+                ? 'Geometry JSON did not include floor circles; preserved compatible floor circles already loaded.'
+                : hadFloorGeometry
+                  ? 'Loaded mouth/corner geometry does not include floor circles; existing floor circles were not preserved because the mouth/corner geometry differs.'
+                  : null);
             setManualPickingActive(false);
             setManualPoints([]);
             setFloorCirclePickingActive(false);
@@ -4247,5 +4316,3 @@ function App() {
 }
 
 export default App;
-
-
