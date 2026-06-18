@@ -3163,6 +3163,22 @@ function App() {
         'diagnostic_reference_values',
         true,
       );
+      addTextFile(
+        'README_export.txt',
+        [
+          'TIPICA complete analysis ZIP export',
+          '',
+          'results/ contains quantitative CSV outputs.',
+          'diagnostics/ contains diagnostic images, diagnostic CSV files, reference values, and export_manifest.json.',
+          'method_summary.json summarizes analysis settings and method metadata.',
+          'project_state.json stores reloadable project state when geometry is available.',
+          'README_export.txt is informational only and does not affect calculations.',
+          '',
+        ].join('\n'),
+        'text/plain;charset=utf-8',
+        'readme',
+        true,
+      );
 
       if (geometry) {
         const projectPayload = createProjectPayload(
