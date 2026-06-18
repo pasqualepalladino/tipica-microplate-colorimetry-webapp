@@ -156,6 +156,97 @@ h2 {
   line-height: 1.25;
 }
 
+.plate-config-setup-row,
+.plate-config-options-row,
+.plate-config-reference-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 10px;
+}
+
+.plate-config-setup-row .select-control,
+.plate-config-options-row .checkbox-control {
+  margin: 0;
+}
+
+.plate-config-format-control {
+  flex: 1 1 220px;
+  min-width: 200px;
+}
+
+.plate-config-unit-control {
+  flex: 0 0 92px;
+}
+
+.plate-config-exp-control {
+  flex: 0 0 82px;
+}
+
+.plate-config-unit-note,
+.plate-config-reference-count {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.plate-config-inline-radio-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.plate-config-inline-radio-group legend {
+  float: left;
+  margin-right: 4px;
+  color: #303638;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.plate-config-inline-radio-group .radio-control {
+  display: inline-grid;
+  grid-template-columns: auto max-content;
+  align-items: center;
+  gap: 4px;
+  color: #303638;
+  font-size: 0.86rem;
+}
+
+.plate-config-reference-row {
+  align-items: center;
+}
+
+.plate-config-reference-row input {
+  min-width: 84px;
+  height: 32px;
+}
+
+.plate-config-reference-row input:nth-of-type(1) {
+  flex: 0 1 120px;
+}
+
+.plate-config-reference-row input:nth-of-type(2) {
+  flex: 1 1 170px;
+}
+
+.plate-config-reference-row input:nth-of-type(3),
+.plate-config-reference-row input:nth-of-type(4) {
+  flex: 0 1 92px;
+}
+
+.plate-config-icon-button {
+  min-width: 32px;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+}
+
 .section-title-row {
   display: flex;
   align-items: center;
@@ -387,7 +478,7 @@ h2 {
 
 .results-panel {
   display: grid;
-  gap: 12px;
+  gap: 8px;
   width: 100%;
   max-width: 1500px;
   align-self: center;
@@ -502,7 +593,7 @@ h2 {
   min-width: 0;
   border-collapse: collapse;
   color: #222b2d;
-  font-size: 0.74rem;
+  font-size: 0.72rem;
 }
 
 .plate-map-grid th,
@@ -516,7 +607,7 @@ h2 {
   position: sticky;
   top: 0;
   z-index: 2;
-  padding: 4px 5px;
+  padding: 3px 4px;
   color: #445153;
   background: #f7faf8;
   font-weight: 800;
@@ -526,19 +617,19 @@ h2 {
 .plate-map-grid tbody th {
   left: 0;
   z-index: 1;
-  width: 28px;
+  width: 26px;
 }
 
 .plate-map-grid td {
   width: auto;
-  padding: 3px 4px;
+  padding: 2px 3px;
   background: #ffffff;
 }
 
 .plate-map-grid td > input {
   min-width: 0;
-  height: 24px;
-  padding: 2px 5px;
+  height: 22px;
+  padding: 1px 4px;
   border: 1px solid #c8d3cf;
   border-radius: 4px;
   color: #263134;
@@ -547,7 +638,7 @@ h2 {
 }
 
 .plate-cell-input {
-  width: 12.5ch;
+  width: 11ch;
 }
 
 .plate-default-input {
@@ -555,22 +646,22 @@ h2 {
 }
 
 .plate-default-input-df {
-  width: 6ch;
+  width: 5.5ch;
 }
 
 .plate-default-input-id {
-  width: 10ch;
+  width: 8.5ch;
 }
 
 .plate-tag-buttons {
   flex-wrap: nowrap;
-  gap: 4px;
+  gap: 3px;
 }
 
 .plate-tag-button {
-  min-height: 24px;
-  min-width: 24px;
-  padding: 0 7px;
+  min-height: 22px;
+  min-width: 22px;
+  padding: 0 6px;
   border-radius: 4px;
   font-size: 0.72rem;
   line-height: 1;
@@ -606,13 +697,30 @@ h2 {
 }
 
 .results-empty {
-  display: grid;
-  place-items: center;
-  min-height: 120px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 10px;
   border: 1px dashed #b6c2be;
   color: #637173;
   background: #f8faf9;
-  font-size: 0.92rem;
+  font-size: 0.86rem;
+}
+
+.compact-result-empty {
+  border-style: solid;
+  background: #fbfdfc;
+}
+
+.compact-result-empty strong {
+  color: #3b474a;
+}
+
+.compact-result-empty strong::after {
+  content: "\2014";
+  margin-left: 8px;
+  color: #8a9699;
 }
 
 .modal-backdrop {
