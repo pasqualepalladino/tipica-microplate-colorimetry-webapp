@@ -25,6 +25,7 @@ interface PlateMapEditorProps {
   plateMap: WellConfig[];
   unitLabel: string;
   expectedRefs: ExpectedRef[];
+  storedCalibrationLoaded: boolean;
   onChange: (plateMap: WellConfig[]) => void;
   onClear: () => void;
   onExpectedRefsChange?: (expectedRefs: ExpectedRef[]) => void;
@@ -79,6 +80,7 @@ export function PlateMapEditor({
   plateMap,
   unitLabel,
   expectedRefs,
+  storedCalibrationLoaded,
   onChange,
   onClear,
   onExpectedRefsChange,
@@ -109,7 +111,6 @@ export function PlateMapEditor({
   const [unitBase, setUnitBase] = useState(unitParts.base || 'mM');
   const [unitExp, setUnitExp] = useState(unitParts.exp || '0');
   const [idDfPriority, setIdDfPriority] = useState<'row' | 'col'>('row');
-  const [useStoredCalibration, setUseStoredCalibration] = useState(false);
   const [expectedRows, setExpectedRows] = useState<ExpectedRefRow[]>(() => {
     if (expectedRefs.length === 0) {
       return [{ refId: '', label: '', value: '', sd: '' }];
@@ -172,7 +173,6 @@ export function PlateMapEditor({
     const state = collectPlateState(grid, defaults, nrow, ncol, {
       unitBase,
       unitExp,
-      useStoredCalibration,
       expectedRefs: collectedExpectedRefs,
       idDfPriority,
       extendedView: true,
@@ -191,7 +191,6 @@ export function PlateMapEditor({
     onChange,
     unitBase,
     unitExp,
-    useStoredCalibration,
   ]);
 
   useEffect(() => {
@@ -214,7 +213,6 @@ export function PlateMapEditor({
     const state = collectPlateState(grid, defaults, nrow, ncol, {
       unitBase,
       unitExp,
-      useStoredCalibration,
       expectedRefs: collectedExpectedRefs,
       idDfPriority,
       extendedView: true,
@@ -229,7 +227,6 @@ export function PlateMapEditor({
     nrow,
     unitBase,
     unitExp,
-    useStoredCalibration,
   ]);
 
   const setCell = (row: number, col: number, value: string) => {
@@ -312,7 +309,7 @@ export function PlateMapEditor({
   };
 
   const handleTagRow = (row: number, tag: PlateCellType) => {
-    setGrid((current) => applyTagToRow(current, row, ncol, tag, useStoredCalibration));
+    setGrid((current) => applyTagToRow(current, row, ncol, tag, storedCalibrationLoaded));
   };
 
   const handlePlateFormatChange = (label: PlateFormatLabel) => {
@@ -456,15 +453,6 @@ export function PlateMapEditor({
         <h3 id="analysis-options-heading">Analysis options</h3>
 
         <div className="plate-config-options-row">
-          <label className="checkbox-control plate-config-inline-checkbox">
-            <input
-              type="checkbox"
-              checked={useStoredCalibration}
-              onChange={(event) => setUseStoredCalibration(event.currentTarget.checked)}
-            />
-            <span>Use stored calibration map rules</span>
-          </label>
-
           <fieldset className="plate-config-inline-radio-group">
             <legend>ID/DF priority</legend>
             <label className="radio-control">
@@ -644,7 +632,7 @@ export function PlateMapEditor({
                         type="button"
                         className="secondary-button plate-tag-button"
                         onClick={() => handleTagRow(row, 'C')}
-                        disabled={useStoredCalibration}
+                        disabled={storedCalibrationLoaded}
                       >
                         C
                       </button>
@@ -660,7 +648,7 @@ export function PlateMapEditor({
                   {Array.from({ length: ncol }, (_, col) => {
                     const key = `${row}_${col}`;
                     const value = grid[key] ?? '';
-                    const disabled = useStoredCalibration && cellIsCType(value);
+                    const disabled = storedCalibrationLoaded && cellIsCType(value);
 
                     return (
                       <td key={`cell-${row}-${col}`}>

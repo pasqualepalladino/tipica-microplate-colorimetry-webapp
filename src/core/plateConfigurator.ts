@@ -82,7 +82,6 @@ export interface PlateConfigState {
   ncol: number;
   plateFormat: PlateFormatLabel;
   data: PlateData;
-  useStoredCalibration: boolean;
   expectedRefs: ExpectedRef[];
   useBackgroundSubtraction: true;
   initialImageQcEnabled: true;
@@ -572,7 +571,6 @@ export function collectPlateState(
   opts: {
     unitBase: string;
     unitExp: string;
-    useStoredCalibration: boolean;
     expectedRefs: ExpectedRef[];
     idDfPriority: 'row' | 'col';
     extendedView: boolean;
@@ -611,7 +609,6 @@ export function collectPlateState(
     ncol,
     plateFormat: plateLabelFromDims(nrow, ncol),
     data,
-    useStoredCalibration: opts.useStoredCalibration,
     expectedRefs: opts.expectedRefs,
     useBackgroundSubtraction: true,
     initialImageQcEnabled: true,
@@ -660,8 +657,8 @@ function cellHasTagC(text: string): boolean {
 /**
  * Apply a type tag to all cells in a row, respecting stored-calibration gating.
  *
- *   - tag === "C" && useStoredCalibration → no-op (Python early return).
- *   - Cells already carrying a C tag when useStoredCalibration is true are
+ *   - tag === "C" && storedCalibrationLoaded → no-op (Python early return).
+ *   - Cells already carrying a C tag when storedCalibrationLoaded is true are
  *     skipped (equivalent to Python "disabled" widget state).
  *
  * Returns a new CellGrid (input is not mutated).
@@ -672,16 +669,16 @@ export function applyTagToRow(
   row: number,
   ncol: number,
   tag: PlateCellType,
-  useStoredCalibration: boolean,
+  storedCalibrationLoaded: boolean,
 ): CellGrid {
-  if (tag === 'C' && useStoredCalibration) return grid;
+  if (tag === 'C' && storedCalibrationLoaded) return grid;
 
   const next = { ...grid };
   for (let c = 0; c < ncol; c++) {
     const key = `${row}_${c}`;
     const txt = grid[key] ?? '';
     // Skip cells disabled by stored-calibration (those with C tag)
-    if (useStoredCalibration && cellHasTagC(txt)) continue;
+    if (storedCalibrationLoaded && cellHasTagC(txt)) continue;
     next[key] = rebuildCellWithTag(txt, tag);
   }
   return next;

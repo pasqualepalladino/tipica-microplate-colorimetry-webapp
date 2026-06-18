@@ -1751,7 +1751,6 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
         <section className="about-dialog-section">
           <h3>Analysis options block</h3>
           <ul>
-            <li>Use stored calibration map rules: disables direct entry of calibration wells when an external stored calibration is used.</li>
             <li>All points are always used in fitting.</li>
             <li>Fitting uses robust residual-based IRLS linear regression; all finite points are retained.</li>
             <li>RGB signal is fixed to full background normalization. The image is never modified.</li>
@@ -4198,6 +4197,7 @@ function App() {
           plateMap={plateMap}
           unitLabel={plateMapUnit}
           expectedRefs={expectedRefs}
+          storedCalibrationLoaded={Boolean(storedCalibration)}
           onChange={handlePlateMapChange}
           onClear={handleClearPlateMap}
           onExpectedRefsChange={setExpectedRefs}
