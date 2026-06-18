@@ -52,7 +52,7 @@ import {
 } from './core/storedCalibration';
 import type { FloorCircle, PlateGeometry, Point } from './types/geometry';
 import type { WellCenter } from './types/plate';
-import type { CalibrationFit, StandardAdditionFit, WellConfig } from './types/plateMap';
+import type { CalibrationFit, FitChannel, StandardAdditionFit, WellConfig } from './types/plateMap';
 import type { MethodMetadata, Rgb, RoiMode, RoiPixelStatisticsMode, WellMeasurement } from './types/results';
 import type {
   RgbLowSignalCorrection,
@@ -1401,6 +1401,227 @@ function formatCompactTextList(values: string[] | undefined): string {
   }
 
   return values.join(' | ');
+}
+
+type FitFigureSeries = {
+  label: string;
+  channel: FitChannel;
+  slope: number;
+  intercept: number;
+  points: { x: number; y: number }[];
+};
+
+const FIT_CHANNEL_COLORS: Record<FitChannel, string> = {
+  R: '#cf2e2e',
+  G: '#1f8a4c',
+  B: '#2563c7',
+};
+
+function pabsChannelValue(measurement: WellMeasurement, channel: FitChannel): number {
+  if (channel === 'R') {
+    return measurement.pabs.r;
+  }
+
+  if (channel === 'G') {
+    return measurement.pabs.g;
+  }
+
+  return measurement.pabs.b;
+}
+
+function finiteRange(values: number[], fallbackMin = 0, fallbackMax = 1): { min: number; max: number } {
+  const finiteValues = values.filter((value) => Number.isFinite(value));
+
+  if (finiteValues.length === 0) {
+    return { min: fallbackMin, max: fallbackMax };
+  }
+
+  let min = Math.min(...finiteValues);
+  let max = Math.max(...finiteValues);
+
+  if (min === max) {
+    const padding = Math.max(1, Math.abs(min) * 0.1);
+    min -= padding;
+    max += padding;
+  }
+
+  const padding = (max - min) * 0.08;
+  return { min: min - padding, max: max + padding };
+}
+
+function buildFitFigureCanvas(
+  title: string,
+  xLabel: string,
+  yLabel: string,
+  series: FitFigureSeries[],
+): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  const width = 1200;
+  const height = 760;
+  const margin = { left: 88, right: 260, top: 74, bottom: 86 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const ctx = canvas.getContext('2d');
+
+  canvas.width = width;
+  canvas.height = height;
+
+  if (!ctx) {
+    throw new Error('Could not create fitting figure canvas.');
+  }
+
+  const xValues = series.flatMap((item) => item.points.map((point) => point.x));
+  const xRange = finiteRange(xValues, 0, 1);
+  const yValues = series.flatMap((item) => [
+    ...item.points.map((point) => point.y),
+    item.slope * xRange.min + item.intercept,
+    item.slope * xRange.max + item.intercept,
+  ]);
+  const yRange = finiteRange(yValues, 0, 1);
+  const xToPx = (x: number) => margin.left + ((x - xRange.min) / (xRange.max - xRange.min)) * plotWidth;
+  const yToPx = (y: number) => margin.top + plotHeight - ((y - yRange.min) / (yRange.max - yRange.min)) * plotHeight;
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.fillStyle = '#172026';
+  ctx.font = '700 26px Inter, Arial, sans-serif';
+  ctx.fillText(title, margin.left, 42);
+
+  ctx.strokeStyle = '#d5dde0';
+  ctx.lineWidth = 1;
+  ctx.font = '13px Inter, Arial, sans-serif';
+  ctx.fillStyle = '#4a5559';
+
+  for (let tick = 0; tick <= 5; tick += 1) {
+    const x = margin.left + (plotWidth * tick) / 5;
+    const value = xRange.min + ((xRange.max - xRange.min) * tick) / 5;
+    ctx.beginPath();
+    ctx.moveTo(x, margin.top);
+    ctx.lineTo(x, margin.top + plotHeight);
+    ctx.stroke();
+    ctx.fillText(formatFitCell(value), x - 18, margin.top + plotHeight + 24);
+  }
+
+  for (let tick = 0; tick <= 5; tick += 1) {
+    const y = margin.top + plotHeight - (plotHeight * tick) / 5;
+    const value = yRange.min + ((yRange.max - yRange.min) * tick) / 5;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, y);
+    ctx.lineTo(margin.left + plotWidth, y);
+    ctx.stroke();
+    ctx.fillText(formatFitCell(value), 12, y + 4);
+  }
+
+  ctx.strokeStyle = '#263238';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(margin.left, margin.top);
+  ctx.lineTo(margin.left, margin.top + plotHeight);
+  ctx.lineTo(margin.left + plotWidth, margin.top + plotHeight);
+  ctx.stroke();
+
+  ctx.fillStyle = '#263238';
+  ctx.font = '700 15px Inter, Arial, sans-serif';
+  ctx.fillText(xLabel, margin.left + plotWidth / 2 - 48, height - 28);
+  ctx.save();
+  ctx.translate(26, margin.top + plotHeight / 2 + 60);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText(yLabel, 0, 0);
+  ctx.restore();
+
+  series.forEach((item) => {
+    const color = FIT_CHANNEL_COLORS[item.channel];
+
+    if (Number.isFinite(item.slope) && Number.isFinite(item.intercept)) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.moveTo(xToPx(xRange.min), yToPx(item.slope * xRange.min + item.intercept));
+      ctx.lineTo(xToPx(xRange.max), yToPx(item.slope * xRange.max + item.intercept));
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = color;
+    item.points.forEach((point) => {
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+        return;
+      }
+
+      ctx.beginPath();
+      ctx.arc(xToPx(point.x), yToPx(point.y), 4.5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  });
+
+  ctx.font = '13px Inter, Arial, sans-serif';
+  series.slice(0, 24).forEach((item, index) => {
+    const x = margin.left + plotWidth + 28;
+    const y = margin.top + 22 + index * 24;
+
+    ctx.fillStyle = FIT_CHANNEL_COLORS[item.channel];
+    ctx.fillRect(x, y - 10, 14, 4);
+    ctx.beginPath();
+    ctx.arc(x + 7, y - 8, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#263238';
+    ctx.fillText(item.label, x + 22, y - 4);
+  });
+
+  if (series.length > 24) {
+    ctx.fillStyle = '#667176';
+    ctx.fillText(`+ ${series.length - 24} more fits`, margin.left + plotWidth + 28, margin.top + 22 + 24 * 24);
+  }
+
+  return canvas;
+}
+
+function buildRgbCalibrationFitCanvas(
+  fits: CalibrationFit[],
+  measurements: WellMeasurement[],
+  plateMap: WellConfig[],
+): HTMLCanvasElement {
+  const measurementByWell = new Map(measurements.map((measurement) => [measurement.wellId, measurement]));
+  const calibrationWells = plateMap.filter((well) => (
+    well.role === 'C' &&
+    well.concentration !== null &&
+    Number.isFinite(well.concentration)
+  ));
+  const series = fits.map((fit) => ({
+    label: `${fit.channel}: y=${formatFitCell(fit.slope)}x+${formatFitCell(fit.intercept)}; R2=${formatFitCell(fit.r2)}`,
+    channel: fit.channel,
+    slope: fit.slope,
+    intercept: fit.intercept,
+    points: calibrationWells.flatMap((well) => {
+      const measurement = measurementByWell.get(well.wellId);
+
+      return measurement && well.concentration !== null
+        ? [{ x: well.concentration, y: pabsChannelValue(measurement, fit.channel) }]
+        : [];
+    }),
+  }));
+
+  return buildFitFigureCanvas('RGB calibration fits', 'Concentration', 'PAbs', series);
+}
+
+function buildRgbStandardAdditionFitCanvas(fits: StandardAdditionFit[]): HTMLCanvasElement {
+  const series = fits.map((fit) => {
+    const xValues = fit.addedConcentrationsUsed ?? [];
+    const yValues = fit.meanSignalValuesUsed ?? [];
+
+    return {
+      label: `${fit.sampleId} DF ${formatFitCell(fit.dilutionFactor)} ${fit.channel}: R2=${formatFitCell(fit.r2)}`,
+      channel: fit.channel,
+      slope: fit.slope,
+      intercept: fit.intercept,
+      points: xValues.flatMap((x, index) => {
+        const y = yValues[index];
+        return Number.isFinite(x) && Number.isFinite(y) ? [{ x, y }] : [];
+      }),
+    };
+  });
+
+  return buildFitFigureCanvas('RGB standard-addition fits', 'Added concentration', 'PAbs', series);
 }
 
 function buildStandardAdditionGroupingSummary(fits: StandardAdditionFit[]): string {
@@ -3182,6 +3403,21 @@ function App() {
           false,
           'included when calibration results exist',
         );
+        files.push({
+          name: 'results/rgb_calibration_fits.png',
+          blob: await canvasToPngBlob(buildRgbCalibrationFitCanvas(
+            calibrationFits,
+            lowSignalCorrectionEffective ? correctedMeasurementSet.measurements : measurements,
+            plateMap,
+          )),
+        });
+        addManifestFile(
+          'results/rgb_calibration_fits.png',
+          'fitting_figure',
+          'image/png',
+          false,
+          'included when calibration fits are available',
+        );
       }
 
       if (standardAdditionFitsWithSlopeContext.length > 0) {
@@ -3197,6 +3433,17 @@ function App() {
           'quantitative_results',
           false,
           'included when standard-addition results exist',
+        );
+        files.push({
+          name: 'results/rgb_standard_addition_fits.png',
+          blob: await canvasToPngBlob(buildRgbStandardAdditionFitCanvas(standardAdditionFitsWithSlopeContext)),
+        });
+        addManifestFile(
+          'results/rgb_standard_addition_fits.png',
+          'fitting_figure',
+          'image/png',
+          false,
+          'included when standard addition fits are available',
         );
       }
 
