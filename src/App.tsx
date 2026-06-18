@@ -1403,6 +1403,15 @@ function formatCompactTextList(values: string[] | undefined): string {
   return values.join(' | ');
 }
 
+function CompactEmptyResult({ title, message }: { title: string; message: string }) {
+  return (
+    <div className="results-empty compact-result-empty" role="status">
+      <strong>{title}</strong>
+      <span>{message}</span>
+    </div>
+  );
+}
+
 type FitFigureSeries = {
   label: string;
   channel: FitChannel;
@@ -1742,11 +1751,10 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
         <section className="about-dialog-section">
           <h3>Analysis options block</h3>
           <ul>
-            <li>Use stored calibration: disables direct entry of calibration wells and reuses the stored calibration file.</li>
+            <li>Use stored calibration map rules: disables direct entry of calibration wells when an external stored calibration is used.</li>
             <li>All points are always used in fitting.</li>
             <li>Fitting uses robust residual-based IRLS linear regression; all finite points are retained.</li>
             <li>RGB signal is fixed to full background normalization. The image is never modified.</li>
-            <li>Save raw data details: exports extended diagnostics/output files.</li>
             <li>ID/DF priority: chooses whether row defaults or column defaults are applied first.</li>
           </ul>
         </section>
@@ -1793,9 +1801,7 @@ function ResultsTable({
 }) {
   if (measurements.length === 0) {
     return (
-      <div className="results-empty" role="status">
-        No RGB/PAbs results yet
-      </div>
+      <CompactEmptyResult title="RGB/PAbs Results" message="No RGB/PAbs results yet" />
     );
   }
 
@@ -1872,9 +1878,7 @@ function ResultsTable({
 function CalibrationFitTable({ fits }: { fits: CalibrationFit[] }) {
   if (fits.length === 0) {
     return (
-      <div className="results-empty" role="status">
-        No calibration fits yet
-      </div>
+      <CompactEmptyResult title="Calibration Fits" message="No calibration fits yet" />
     );
   }
 
@@ -1952,9 +1956,7 @@ function RgbLowSignalCorrectionTable({ corrections }: { corrections: RgbLowSigna
 function StoredCalibrationTable({ calibration }: { calibration: StoredCalibration | null }) {
   if (!calibration) {
     return (
-      <div className="results-empty" role="status">
-        No stored calibration loaded
-      </div>
+      <CompactEmptyResult title="Stored Calibration" message="No stored calibration loaded" />
     );
   }
 
@@ -1993,9 +1995,7 @@ function StoredCalibrationTable({ calibration }: { calibration: StoredCalibratio
 function StandardAdditionFitTable({ fits }: { fits: StandardAdditionFit[] }) {
   if (fits.length === 0) {
     return (
-      <div className="results-empty" role="status">
-        No standard-addition fits yet
-      </div>
+      <CompactEmptyResult title="Standard Addition Fits" message="No standard-addition fits yet" />
     );
   }
 
@@ -2100,9 +2100,7 @@ function StandardAdditionFitTable({ fits }: { fits: StandardAdditionFit[] }) {
 function UnknownResultsTable({ results }: { results: UnknownConcentrationResult[] }) {
   if (results.length === 0) {
     return (
-      <div className="results-empty" role="status">
-        No unknown results from stored calibration
-      </div>
+      <CompactEmptyResult title="Unknown Results" message="No unknown results from stored calibration" />
     );
   }
 

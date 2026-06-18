@@ -110,7 +110,6 @@ export function PlateMapEditor({
   const [unitExp, setUnitExp] = useState(unitParts.exp || '0');
   const [idDfPriority, setIdDfPriority] = useState<'row' | 'col'>('row');
   const [useStoredCalibration, setUseStoredCalibration] = useState(false);
-  const [saveRawDataDetails, setSaveRawDataDetails] = useState(false);
   const [expectedRows, setExpectedRows] = useState<ExpectedRefRow[]>(() => {
     if (expectedRefs.length === 0) {
       return [{ refId: '', label: '', value: '', sd: '' }];
@@ -174,7 +173,6 @@ export function PlateMapEditor({
       unitBase,
       unitExp,
       useStoredCalibration,
-      saveRawDataDetails,
       expectedRefs: collectedExpectedRefs,
       idDfPriority,
       extendedView: true,
@@ -191,7 +189,6 @@ export function PlateMapEditor({
     ncol,
     nrow,
     onChange,
-    saveRawDataDetails,
     unitBase,
     unitExp,
     useStoredCalibration,
@@ -218,7 +215,6 @@ export function PlateMapEditor({
       unitBase,
       unitExp,
       useStoredCalibration,
-      saveRawDataDetails,
       expectedRefs: collectedExpectedRefs,
       idDfPriority,
       extendedView: true,
@@ -231,7 +227,6 @@ export function PlateMapEditor({
     idDfPriority,
     ncol,
     nrow,
-    saveRawDataDetails,
     unitBase,
     unitExp,
     useStoredCalibration,
@@ -415,24 +410,24 @@ export function PlateMapEditor({
 
       <section className="nested-control-section" aria-labelledby="experiment-setup-heading">
         <h3 id="experiment-setup-heading">Experiment setup</h3>
-        <label className="select-control">
-          <span>Plate format</span>
-          <select
-            value={plateFormat}
-            onChange={(event) =>
-              handlePlateFormatChange(event.currentTarget.value as PlateFormatLabel)
-            }
-          >
-            {(Object.keys(PLATE_FORMATS) as PlateFormatLabel[]).map((label) => (
-              <option key={label} value={label}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="plate-config-setup-row">
+          <label className="select-control plate-config-format-control">
+            <span>Plate format</span>
+            <select
+              value={plateFormat}
+              onChange={(event) =>
+                handlePlateFormatChange(event.currentTarget.value as PlateFormatLabel)
+              }
+            >
+              {(Object.keys(PLATE_FORMATS) as PlateFormatLabel[]).map((label) => (
+                <option key={label} value={label}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
 
-        <div className="button-row left-aligned-button-row">
-          <label className="select-control" style={{ minWidth: '140px' }}>
+          <label className="select-control plate-config-unit-control">
             <span>Unit</span>
             <select
               value={unitBase}
@@ -445,7 +440,7 @@ export function PlateMapEditor({
             </select>
           </label>
 
-          <label className="select-control" style={{ minWidth: '120px' }}>
+          <label className="select-control plate-config-exp-control">
             <span>x 10^</span>
             <input
               type="text"
@@ -453,60 +448,52 @@ export function PlateMapEditor({
               onChange={(event) => setUnitExp(event.currentTarget.value)}
             />
           </label>
+          <p className="panel-note plate-config-unit-note">Unit: {buildUnitLabel(unitBase, unitExp)}</p>
         </div>
-
-        <p className="panel-note">Concentration unit: {buildUnitLabel(unitBase, unitExp)}</p>
       </section>
 
       <section className="nested-control-section" aria-labelledby="analysis-options-heading">
         <h3 id="analysis-options-heading">Analysis options</h3>
 
-        <label className="checkbox-control">
-          <input
-            type="checkbox"
-            checked={useStoredCalibration}
-            onChange={(event) => setUseStoredCalibration(event.currentTarget.checked)}
-          />
-          <span>Use stored calibration</span>
-        </label>
-
-        <label className="checkbox-control">
-          <input
-            type="checkbox"
-            checked={saveRawDataDetails}
-            onChange={(event) => setSaveRawDataDetails(event.currentTarget.checked)}
-          />
-          <span>Save raw data details</span>
-        </label>
-
-        <fieldset className="radio-group">
-          <legend>ID/DF priority</legend>
-          <label className="radio-control">
+        <div className="plate-config-options-row">
+          <label className="checkbox-control plate-config-inline-checkbox">
             <input
-              type="radio"
-              name="idDfPriority"
-              checked={idDfPriority === 'row'}
-              onChange={() => setIdDfPriority('row')}
+              type="checkbox"
+              checked={useStoredCalibration}
+              onChange={(event) => setUseStoredCalibration(event.currentTarget.checked)}
             />
-            <span>Rows</span>
+            <span>Use stored calibration map rules</span>
           </label>
-          <label className="radio-control">
-            <input
-              type="radio"
-              name="idDfPriority"
-              checked={idDfPriority === 'col'}
-              onChange={() => setIdDfPriority('col')}
-            />
-            <span>Columns</span>
-          </label>
-        </fieldset>
+
+          <fieldset className="plate-config-inline-radio-group">
+            <legend>ID/DF priority</legend>
+            <label className="radio-control">
+              <input
+                type="radio"
+                name="idDfPriority"
+                checked={idDfPriority === 'row'}
+                onChange={() => setIdDfPriority('row')}
+              />
+              <span>Rows</span>
+            </label>
+            <label className="radio-control">
+              <input
+                type="radio"
+                name="idDfPriority"
+                checked={idDfPriority === 'col'}
+                onChange={() => setIdDfPriority('col')}
+              />
+              <span>Columns</span>
+            </label>
+          </fieldset>
+        </div>
       </section>
 
       <section className="nested-control-section" aria-labelledby="reference-values-heading">
         <h3 id="reference-values-heading">Reference values</h3>
 
         {expectedRows.map((row, index) => (
-          <div className="button-row left-aligned-button-row" key={`expected-${index}`}>
+          <div className="plate-config-reference-row" key={`expected-${index}`}>
             <input
               type="text"
               aria-label={`Reference ${index + 1} ID`}
@@ -543,23 +530,24 @@ export function PlateMapEditor({
                 updateExpectedRow(index, { sd: event.currentTarget.value })
               }
             />
+            {index === expectedRows.length - 1 ? (
+              <>
+                <button type="button" className="secondary-button plate-config-icon-button" onClick={addExpectedRow}>
+                  +
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button plate-config-icon-button"
+                  onClick={removeExpectedRow}
+                  disabled={expectedRows.length <= 1}
+                >
+                  -
+                </button>
+                <p className="panel-note plate-config-reference-count">Valid reference rows: {collectedExpectedRefs.length}</p>
+              </>
+            ) : null}
           </div>
         ))}
-
-        <div className="button-row left-aligned-button-row">
-          <button type="button" className="secondary-button" onClick={addExpectedRow}>
-            +
-          </button>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={removeExpectedRow}
-            disabled={expectedRows.length <= 1}
-          >
-            -
-          </button>
-          <p className="panel-note">Valid reference rows: {collectedExpectedRefs.length}</p>
-        </div>
       </section>
 
       <section className="nested-control-section" aria-labelledby="plate-map-editor-heading">

@@ -83,7 +83,6 @@ export interface PlateConfigState {
   plateFormat: PlateFormatLabel;
   data: PlateData;
   useStoredCalibration: boolean;
-  saveRawDataDetails: boolean;
   expectedRefs: ExpectedRef[];
   useBackgroundSubtraction: true;
   initialImageQcEnabled: true;
@@ -574,7 +573,6 @@ export function collectPlateState(
     unitBase: string;
     unitExp: string;
     useStoredCalibration: boolean;
-    saveRawDataDetails: boolean;
     expectedRefs: ExpectedRef[];
     idDfPriority: 'row' | 'col';
     extendedView: boolean;
@@ -614,7 +612,6 @@ export function collectPlateState(
     plateFormat: plateLabelFromDims(nrow, ncol),
     data,
     useStoredCalibration: opts.useStoredCalibration,
-    saveRawDataDetails: opts.saveRawDataDetails,
     expectedRefs: opts.expectedRefs,
     useBackgroundSubtraction: true,
     initialImageQcEnabled: true,
