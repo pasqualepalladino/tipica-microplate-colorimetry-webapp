@@ -3159,7 +3159,7 @@ function App() {
 
       if (measurements.length > 0) {
         addTextFile(
-          'well_results.csv',
+          'results/well_results.csv',
           wellMeasurementsToCsv(
             measurements,
             correctedMeasurementSet.measurements,
