@@ -3113,7 +3113,7 @@ function App() {
 
       if (calibrationFits.length > 0) {
         addTextFile(
-          'calibration_results.csv',
+          'results/calibration_results.csv',
           calibrationFitsToCsv(calibrationFits),
           'text/csv;charset=utf-8',
           'quantitative_results',
@@ -3124,7 +3124,7 @@ function App() {
 
       if (standardAdditionFitsWithSlopeContext.length > 0) {
         addTextFile(
-          'standard_addition_results.csv',
+          'results/standard_addition_results.csv',
           standardAdditionFitsToCsv(
             standardAdditionFitsWithSlopeContext,
             currentMethodMetadata,
@@ -3140,7 +3140,7 @@ function App() {
 
       if (unknownResults.length > 0) {
         addTextFile(
-          'unknown_results.csv',
+          'results/unknown_results.csv',
           unknownResultsToCsv(unknownResults),
           'text/csv;charset=utf-8',
           'quantitative_results',
