@@ -414,6 +414,68 @@ function createExportManifestPayload(generatedAt: string, files: ExportManifestF
   };
 }
 
+function createAnalysisReportPayload({
+  generatedAt,
+  imageName,
+  roiMode,
+  backgroundModel,
+  wellsDetected,
+  measurements,
+  plateMapEntries,
+  expectedReferenceValues,
+  calibrationFits,
+  standardAdditionFits,
+  unknownResults,
+  files,
+}: {
+  generatedAt: string;
+  imageName: string | null;
+  roiMode: RoiMode;
+  backgroundModel: BackgroundModel;
+  wellsDetected: number;
+  measurements: number;
+  plateMapEntries: number;
+  expectedReferenceValues: number;
+  calibrationFits: number;
+  standardAdditionFits: number;
+  unknownResults: number;
+  files: ExportManifestFileEntry[];
+}) {
+  return {
+    schemaVersion: 1,
+    reportType: 'complete_analysis_report',
+    generatedAt,
+    application: {
+      name: 'TIPICA',
+      stage: 'beta',
+    },
+    summary: {
+      imageName,
+      roiMode,
+      backgroundModel,
+      wellsDetected,
+      measurements,
+      plateMapEntries,
+      expectedReferenceValues,
+      calibrationFits,
+      standardAdditionFits,
+      unknownResults,
+    },
+    outputs: {
+      results: files
+        .filter((file) => file.path.startsWith('results/'))
+        .map((file) => file.path),
+      diagnostics: files
+        .filter((file) => file.path.startsWith('diagnostics/'))
+        .map((file) => file.path),
+    },
+    notes: [
+      'This report is informational and does not affect calculations.',
+      'CSV files remain the authoritative quantitative outputs.',
+    ],
+  };
+}
+
 function downloadCanvasPng(canvas: HTMLCanvasElement, fileName: string): void {
   const link = document.createElement('a');
 
@@ -3282,20 +3344,52 @@ function App() {
         }
       }
 
+      const analysisReportManifestEntry: ExportManifestFileEntry = {
+        path: 'results/analysis_report.json',
+        kind: 'analysis_report',
+        mediaType: 'application/json',
+        required: true,
+      };
+      const exportManifestEntry: ExportManifestFileEntry = {
+        path: 'diagnostics/export_manifest.json',
+        kind: 'export_manifest',
+        mediaType: 'application/json',
+        required: true,
+      };
       addTextFile(
-        'diagnostics/export_manifest.json',
+        analysisReportManifestEntry.path,
+        `${JSON.stringify(createAnalysisReportPayload({
+          generatedAt,
+          imageName,
+          roiMode: currentMethodMetadata.roiMode,
+          backgroundModel,
+          wellsDetected: wells.length,
+          measurements: measurements.length,
+          plateMapEntries: plateMap.length,
+          expectedReferenceValues: expectedRefs.length,
+          calibrationFits: calibrationFits.length,
+          standardAdditionFits: standardAdditionFitsWithSlopeContext.length,
+          unknownResults: unknownResults.length,
+          files: [
+            ...manifestFiles,
+            analysisReportManifestEntry,
+            exportManifestEntry,
+          ],
+        }), null, 2)}\n`,
+        'application/json;charset=utf-8',
+        analysisReportManifestEntry.kind,
+        analysisReportManifestEntry.required,
+      );
+
+      addTextFile(
+        exportManifestEntry.path,
         `${JSON.stringify(createExportManifestPayload(generatedAt, [
           ...manifestFiles,
-          {
-            path: 'diagnostics/export_manifest.json',
-            kind: 'export_manifest',
-            mediaType: 'application/json',
-            required: true,
-          },
+          exportManifestEntry,
         ]), null, 2)}\n`,
         'application/json;charset=utf-8',
-        'export_manifest',
-        true,
+        exportManifestEntry.kind,
+        exportManifestEntry.required,
       );
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
