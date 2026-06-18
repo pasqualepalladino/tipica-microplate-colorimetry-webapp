@@ -3205,9 +3205,9 @@ function App() {
           geometry,
         );
 
-        files.push({ name: 'roi_mask_diagnostic.png', blob: await canvasToPngBlob(roiCanvas) });
+        files.push({ name: 'diagnostics/roi_mask_diagnostic.png', blob: await canvasToPngBlob(roiCanvas) });
         addManifestFile(
-          'roi_mask_diagnostic.png',
+          'diagnostics/roi_mask_diagnostic.png',
           'diagnostic_image',
           'image/png',
           false,
@@ -3227,24 +3227,24 @@ function App() {
           const rawMaskCanvas = buildBackgroundCellRawMasksDiagnosticCanvas(imageData, wells, diagnostics, geometry);
           const cellDiagnosticsCsv = backgroundCellDiagnosticsToCsv(diagnostics.diagnostics.cellDiagnostics ?? []);
 
-          files.push({ name: 'background_mask_diagnostic.png', blob: await canvasToPngBlob(backgroundMaskCanvas) });
+          files.push({ name: 'diagnostics/background_mask_diagnostic.png', blob: await canvasToPngBlob(backgroundMaskCanvas) });
           addManifestFile(
-            'background_mask_diagnostic.png',
+            'diagnostics/background_mask_diagnostic.png',
             'diagnostic_image',
             'image/png',
             false,
             'included when extraction results and geometry are available',
           );
-          files.push({ name: 'background_cell_raw_masks_diagnostic.png', blob: await canvasToPngBlob(rawMaskCanvas) });
+          files.push({ name: 'diagnostics/background_cell_raw_masks_diagnostic.png', blob: await canvasToPngBlob(rawMaskCanvas) });
           addManifestFile(
-            'background_cell_raw_masks_diagnostic.png',
+            'diagnostics/background_cell_raw_masks_diagnostic.png',
             'diagnostic_image',
             'image/png',
             false,
             'included when extraction results and geometry are available',
           );
           addTextFile(
-            'background_cell_diagnostics.csv',
+            'diagnostics/background_cell_diagnostics.csv',
             cellDiagnosticsCsv,
             'text/csv;charset=utf-8',
             'diagnostic_data',
@@ -3254,9 +3254,9 @@ function App() {
 
           if (diagnostics.predictedRgbMap && diagnostics.predictedRgbMap.length > 0) {
             const rgbMapCanvas = buildBackgroundRgbMapDiagnosticCanvas(imageData, wells, diagnostics, geometry);
-            files.push({ name: 'background_rgb_map_diagnostic.png', blob: await canvasToPngBlob(rgbMapCanvas) });
+            files.push({ name: 'diagnostics/background_rgb_map_diagnostic.png', blob: await canvasToPngBlob(rgbMapCanvas) });
             addManifestFile(
-              'background_rgb_map_diagnostic.png',
+              'diagnostics/background_rgb_map_diagnostic.png',
               'diagnostic_image',
               'image/png',
               false,
