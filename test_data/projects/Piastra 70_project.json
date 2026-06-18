@@ -1,0 +1,899 @@
+{
+  "version": 1,
+  "createdAt": "2026-06-05T08:02:45.038Z",
+  "appVersion": "0.1.0-beta",
+  "imageName": "Piastra 70.JPG",
+  "imageAnalysisSize": {
+    "width": 2000,
+    "height": 1500
+  },
+  "geometry": {
+    "corner_a1": [
+      265.717674970344,
+      303.4373765310154
+    ],
+    "corner_a12": [
+      1755.6346381969156,
+      305.80798103516395
+    ],
+    "corner_h12": [
+      1758.0071174377224,
+      1256.4203871987356
+    ],
+    "corner_h1": [
+      260.9727164887307,
+      1263.5322007111813
+    ]
+  },
+  "roiRadiusFactor": 0.3,
+  "plateMap": [
+    {
+      "wellId": "A1",
+      "row": 1,
+      "col": 1,
+      "role": "A",
+      "concentration": 0,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "A2",
+      "row": 1,
+      "col": 2,
+      "role": "A",
+      "concentration": 5,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "A3",
+      "row": 1,
+      "col": 3,
+      "role": "A",
+      "concentration": 10,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "A4",
+      "row": 1,
+      "col": 4,
+      "role": "A",
+      "concentration": 15,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "A5",
+      "row": 1,
+      "col": 5,
+      "role": "A",
+      "concentration": 20,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "A6",
+      "row": 1,
+      "col": 6,
+      "role": "A",
+      "concentration": 25,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "A7",
+      "row": 1,
+      "col": 7,
+      "role": "A",
+      "concentration": 30,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "A8",
+      "row": 1,
+      "col": 8,
+      "role": "A",
+      "concentration": 35,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "A9",
+      "row": 1,
+      "col": 9,
+      "role": "A",
+      "concentration": 40,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "A10",
+      "row": 1,
+      "col": 10,
+      "role": "A",
+      "concentration": 45,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "A11",
+      "row": 1,
+      "col": 11,
+      "role": "A",
+      "concentration": 50,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "A12",
+      "row": 1,
+      "col": 12,
+      "role": "EMPTY",
+      "concentration": null,
+      "sampleId": "",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "B1",
+      "row": 2,
+      "col": 1,
+      "role": "A",
+      "concentration": 0,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "B2",
+      "row": 2,
+      "col": 2,
+      "role": "A",
+      "concentration": 5,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "B3",
+      "row": 2,
+      "col": 3,
+      "role": "A",
+      "concentration": 10,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "B4",
+      "row": 2,
+      "col": 4,
+      "role": "A",
+      "concentration": 15,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "B5",
+      "row": 2,
+      "col": 5,
+      "role": "A",
+      "concentration": 20,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "B6",
+      "row": 2,
+      "col": 6,
+      "role": "A",
+      "concentration": 25,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "B7",
+      "row": 2,
+      "col": 7,
+      "role": "A",
+      "concentration": 30,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "B8",
+      "row": 2,
+      "col": 8,
+      "role": "A",
+      "concentration": 35,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "B9",
+      "row": 2,
+      "col": 9,
+      "role": "A",
+      "concentration": 40,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "B10",
+      "row": 2,
+      "col": 10,
+      "role": "A",
+      "concentration": 45,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "B11",
+      "row": 2,
+      "col": 11,
+      "role": "A",
+      "concentration": 50,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "B12",
+      "row": 2,
+      "col": 12,
+      "role": "EMPTY",
+      "concentration": null,
+      "sampleId": "",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "C1",
+      "row": 3,
+      "col": 1,
+      "role": "A",
+      "concentration": 0,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "C2",
+      "row": 3,
+      "col": 2,
+      "role": "A",
+      "concentration": 5,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "C3",
+      "row": 3,
+      "col": 3,
+      "role": "A",
+      "concentration": 10,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "C4",
+      "row": 3,
+      "col": 4,
+      "role": "A",
+      "concentration": 15,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "C5",
+      "row": 3,
+      "col": 5,
+      "role": "A",
+      "concentration": 20,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "C6",
+      "row": 3,
+      "col": 6,
+      "role": "A",
+      "concentration": 25,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "C7",
+      "row": 3,
+      "col": 7,
+      "role": "A",
+      "concentration": 30,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "C8",
+      "row": 3,
+      "col": 8,
+      "role": "A",
+      "concentration": 35,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "C9",
+      "row": 3,
+      "col": 9,
+      "role": "A",
+      "concentration": 40,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "C10",
+      "row": 3,
+      "col": 10,
+      "role": "A",
+      "concentration": 45,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "C11",
+      "row": 3,
+      "col": 11,
+      "role": "A",
+      "concentration": 50,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "C12",
+      "row": 3,
+      "col": 12,
+      "role": "EMPTY",
+      "concentration": null,
+      "sampleId": "",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "D1",
+      "row": 4,
+      "col": 1,
+      "role": "A",
+      "concentration": 0,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "D2",
+      "row": 4,
+      "col": 2,
+      "role": "A",
+      "concentration": 5,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "D3",
+      "row": 4,
+      "col": 3,
+      "role": "A",
+      "concentration": 10,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "D4",
+      "row": 4,
+      "col": 4,
+      "role": "A",
+      "concentration": 15,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "D5",
+      "row": 4,
+      "col": 5,
+      "role": "A",
+      "concentration": 20,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "D6",
+      "row": 4,
+      "col": 6,
+      "role": "A",
+      "concentration": 25,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "D7",
+      "row": 4,
+      "col": 7,
+      "role": "A",
+      "concentration": 30,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "D8",
+      "row": 4,
+      "col": 8,
+      "role": "A",
+      "concentration": 35,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "D9",
+      "row": 4,
+      "col": 9,
+      "role": "A",
+      "concentration": 40,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "D10",
+      "row": 4,
+      "col": 10,
+      "role": "A",
+      "concentration": 45,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "D11",
+      "row": 4,
+      "col": 11,
+      "role": "A",
+      "concentration": 50,
+      "sampleId": "1",
+      "dilutionFactor": 10
+    },
+    {
+      "wellId": "D12",
+      "row": 4,
+      "col": 12,
+      "role": "EMPTY",
+      "concentration": null,
+      "sampleId": "",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "E1",
+      "row": 5,
+      "col": 1,
+      "role": "C",
+      "concentration": 0,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "E2",
+      "row": 5,
+      "col": 2,
+      "role": "C",
+      "concentration": 5,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "E3",
+      "row": 5,
+      "col": 3,
+      "role": "C",
+      "concentration": 10,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "E4",
+      "row": 5,
+      "col": 4,
+      "role": "C",
+      "concentration": 15,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "E5",
+      "row": 5,
+      "col": 5,
+      "role": "C",
+      "concentration": 20,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "E6",
+      "row": 5,
+      "col": 6,
+      "role": "C",
+      "concentration": 25,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "E7",
+      "row": 5,
+      "col": 7,
+      "role": "C",
+      "concentration": 30,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "E8",
+      "row": 5,
+      "col": 8,
+      "role": "C",
+      "concentration": 35,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "E9",
+      "row": 5,
+      "col": 9,
+      "role": "C",
+      "concentration": 40,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "E10",
+      "row": 5,
+      "col": 10,
+      "role": "C",
+      "concentration": 45,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "E11",
+      "row": 5,
+      "col": 11,
+      "role": "C",
+      "concentration": 50,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "E12",
+      "row": 5,
+      "col": 12,
+      "role": "EMPTY",
+      "concentration": null,
+      "sampleId": "",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "F1",
+      "row": 6,
+      "col": 1,
+      "role": "C",
+      "concentration": 0,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "F2",
+      "row": 6,
+      "col": 2,
+      "role": "C",
+      "concentration": 5,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "F3",
+      "row": 6,
+      "col": 3,
+      "role": "C",
+      "concentration": 10,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "F4",
+      "row": 6,
+      "col": 4,
+      "role": "C",
+      "concentration": 15,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "F5",
+      "row": 6,
+      "col": 5,
+      "role": "C",
+      "concentration": 20,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "F6",
+      "row": 6,
+      "col": 6,
+      "role": "C",
+      "concentration": 25,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "F7",
+      "row": 6,
+      "col": 7,
+      "role": "C",
+      "concentration": 30,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "F8",
+      "row": 6,
+      "col": 8,
+      "role": "C",
+      "concentration": 35,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "F9",
+      "row": 6,
+      "col": 9,
+      "role": "C",
+      "concentration": 40,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "F10",
+      "row": 6,
+      "col": 10,
+      "role": "C",
+      "concentration": 45,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "F11",
+      "row": 6,
+      "col": 11,
+      "role": "C",
+      "concentration": 50,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "F12",
+      "row": 6,
+      "col": 12,
+      "role": "EMPTY",
+      "concentration": null,
+      "sampleId": "",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "G1",
+      "row": 7,
+      "col": 1,
+      "role": "C",
+      "concentration": 0,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "G2",
+      "row": 7,
+      "col": 2,
+      "role": "C",
+      "concentration": 5,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "G3",
+      "row": 7,
+      "col": 3,
+      "role": "C",
+      "concentration": 10,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "G4",
+      "row": 7,
+      "col": 4,
+      "role": "C",
+      "concentration": 15,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "G5",
+      "row": 7,
+      "col": 5,
+      "role": "C",
+      "concentration": 20,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "G6",
+      "row": 7,
+      "col": 6,
+      "role": "C",
+      "concentration": 25,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "G7",
+      "row": 7,
+      "col": 7,
+      "role": "C",
+      "concentration": 30,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "G8",
+      "row": 7,
+      "col": 8,
+      "role": "C",
+      "concentration": 35,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "G9",
+      "row": 7,
+      "col": 9,
+      "role": "C",
+      "concentration": 40,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "G10",
+      "row": 7,
+      "col": 10,
+      "role": "C",
+      "concentration": 45,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "G11",
+      "row": 7,
+      "col": 11,
+      "role": "C",
+      "concentration": 50,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "G12",
+      "row": 7,
+      "col": 12,
+      "role": "EMPTY",
+      "concentration": null,
+      "sampleId": "",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "H1",
+      "row": 8,
+      "col": 1,
+      "role": "C",
+      "concentration": 0,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "H2",
+      "row": 8,
+      "col": 2,
+      "role": "C",
+      "concentration": 5,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "H3",
+      "row": 8,
+      "col": 3,
+      "role": "C",
+      "concentration": 10,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "H4",
+      "row": 8,
+      "col": 4,
+      "role": "C",
+      "concentration": 15,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "H5",
+      "row": 8,
+      "col": 5,
+      "role": "C",
+      "concentration": 20,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "H6",
+      "row": 8,
+      "col": 6,
+      "role": "C",
+      "concentration": 25,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "H7",
+      "row": 8,
+      "col": 7,
+      "role": "C",
+      "concentration": 30,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "H8",
+      "row": 8,
+      "col": 8,
+      "role": "C",
+      "concentration": 35,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "H9",
+      "row": 8,
+      "col": 9,
+      "role": "C",
+      "concentration": 40,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "H10",
+      "row": 8,
+      "col": 10,
+      "role": "C",
+      "concentration": 45,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "H11",
+      "row": 8,
+      "col": 11,
+      "role": "C",
+      "concentration": 50,
+      "sampleId": "2",
+      "dilutionFactor": 1
+    },
+    {
+      "wellId": "H12",
+      "row": 8,
+      "col": 12,
+      "role": "EMPTY",
+      "concentration": null,
+      "sampleId": "",
+      "dilutionFactor": 1
+    }
+  ],
+  "storedCalibration": null,
+  "lowSignalCorrectionEnabled": true,
+  "lastExtractionSummary": "96 rows ready",
+  "lastFittingSummary": "3 calibration, 3 standard addition"
+}

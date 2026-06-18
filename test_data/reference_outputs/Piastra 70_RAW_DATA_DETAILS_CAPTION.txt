@@ -1,0 +1,22 @@
+RAW_DATA_DETAILS caption - diagnostics and method-development outputs
+
+File scope
+This caption applies to diagnostic outputs in RAW_DATA_DETAILS for Piastra 70, including BG_STAT_MASK.png, FIGURE_CIELAB_DELTAE.png, METHOD_COMPARISON.png and the DIAGNOSTICS.xlsx workbook.
+
+BG_STAT_MASK.png
+The binary mask shows the pixels accepted as inter-well background after model-based geometric exclusion and statistical filtering. White pixels are used for background sampling; black pixels are rejected. Small holes or fragmented white regions can arise from robust rejection of text, reflections, local artifacts, or implausible background pixels.
+
+FIGURE_CIELAB_DELTAE.png
+CIELAB and DeltaE descriptors are derived from the same RGB image information through nonlinear RGB-to-CIELAB transformations. They are reported as diagnostic descriptors for comparison and method development, not as the primary quantitative RGB output. The conversion uses OpenCV BGR→Lab for 8-bit sRGB-like images; the reference form is linearized sRGB to XYZ(D65) using the IEC 61966-2-1:1999 matrix followed by CIE 1976 L*a*b*. DeltaE_ab = sqrt(DeltaL^2 + Deltaa^2 + Deltab^2); DeltaE_ab_chroma = sqrt(Deltaa^2 + Deltab^2).
+
+METHOD_COMPARISON.png
+The method-comparison plot summarizes fit quality and reference-scale estimates across RGB and CIELAB-derived descriptors. The comparison score uses only common factors available across method families. SNR, clipping and expected/reference values are not part of the score. Reference values are shown only as external checks.
+
+DIAGNOSTICS.xlsx
+The workbook collects the useful diagnostic tables previously exported as separate CSV files. The final LEGENDS sheet defines the diagnostic fields reported in that workbook. These sheets are intended to support auditability, QC, and method development rather than to replace the primary RESULTS report.
+
+Geometry and epsilon/path-length quantification
+When epsilon-based unknown quantification is used, the optical path length is estimated from the configured liquid volume and the nominal flat-bottom well area of the selected plate geometry. This calculation assumes ANSI/SLAS-compatible flat-bottom microplate geometry; round-bottom, U-bottom, V-bottom, spheroid, deep-well, or non-certified geometries require separate validation.
+
+Units
+Reported concentrations are expressed in mM.

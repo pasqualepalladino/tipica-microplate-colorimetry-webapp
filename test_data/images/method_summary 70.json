@@ -1,0 +1,23 @@
+{
+  "appVersion": "0.1.0-beta",
+  "selected": {
+    "roiMode": "mouth-floor-intersection",
+    "roiPixelStatisticsMode": "robust-trimmed-v1",
+    "backgroundModel": "physical-interwell-polynomial-v1",
+    "lowSignalCorrection": "on"
+  },
+  "actual": {
+    "backgroundModelUsed": "pending",
+    "backgroundCandidatePixels": null,
+    "backgroundAcceptedSamples": null,
+    "backgroundWarnings": null
+  },
+  "correction": {
+    "applied": false,
+    "source": "none",
+    "metadata": "not applied"
+  },
+  "geometry": {
+    "source": "JSON"
+  }
+}

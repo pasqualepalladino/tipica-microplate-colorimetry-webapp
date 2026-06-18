@@ -1,0 +1,29 @@
+RESULTS caption - RGB quantitative output
+
+File scope
+This caption applies to the primary RGB outputs in the RESULTS folder for SAM 25_12, especially the *_FIGURE_RGB.png and *_REPORT.xlsx files.
+
+Analytical signal
+The primary RGB signal is pseudo-absorbance, reported as PAbs_Red, PAbs_Green and PAbs_Blue:
+    PAbs = log10(I_BG / I_well) = -log10(I_well / I_BG)
+where I_well is the linearized median intensity from the well ROI and I_BG is the linearized local inter-well background predicted for that well. This is an image-derived pseudo-absorbance and is not assumed to be a spectrophotometric absorbance.
+
+Fitting and quantification
+Calibration and standard-addition fits use robust residual-based IRLS linear regression. All finite points are included in the fit; outlying points receive lower robust residual weights rather than being excluded. For standard addition, the original-sample concentration is C0 = DF x q/m, where y = m x + q and x is the added concentration.
+
+Ranking score
+For methods with both calibration and standard addition, the global score is:
+    GlobalScore = slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ)
+with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|). Expected/reference values, recovery, SNR and clipping are not used in this score.
+
+Reference values and recovery
+External reference values, when provided, are used only for external comparison (Delta and recovery). They are not used to choose the ranked RGB method.
+
+Quality control
+Image, plate, geometry and floor-QC messages are alerts on data quality. No automatic image correction is applied.
+
+Geometry and epsilon/path-length quantification
+When epsilon-based unknown quantification is used, the optical path length is estimated from the configured liquid volume and the nominal flat-bottom well area of the selected plate geometry. This calculation assumes ANSI/SLAS-compatible flat-bottom microplate geometry; round-bottom, U-bottom, V-bottom, spheroid, deep-well, or non-certified geometries require separate validation.
+
+Units
+Reported concentrations are expressed in mM.

@@ -1,0 +1,4 @@
+Sample ID,Dilution factor,Channel,Slope,Intercept,R2,Concentration in original sample,Internal calibration slope,Internal slope agreement,Stored calibration slope,Stored slope agreement,Correction applied,S0,Mean clip delta,Warnings,N,Concentration in diluted sample
+1,10.0000,R,0.0157428,0.231824,0.992540,147.257,0.0116324,0.738902,—,—,yes,0.0303342,0.0164545,—,44,14.7257
+1,10.0000,G,0.00543233,0.108513,0.982312,199.755,0.00460844,0.848336,—,—,yes,0.0281034,0.00113779,—,44,19.9755
+1,10.0000,B,0.00774341,0.170049,0.987007,219.605,0.00737948,0.953001,—,—,yes,0.0419386,0.00289786,—,44,21.9605

@@ -1,0 +1,322 @@
+{
+  "version": 2,
+  "sourceName": "Calibration Purple.jpg",
+  "createdAt": "2026-06-10T14:31:45.018Z",
+  "unit": "mM",
+  "fits": [
+    {
+      "channel": "R",
+      "slope": 0.03657149002809197,
+      "intercept": 0.00009832084928097784,
+      "r2": 0.9899526774931747,
+      "n": 44
+    },
+    {
+      "channel": "G",
+      "slope": 0.07417392488111237,
+      "intercept": -0.0016146865374583597,
+      "r2": 0.9920774961697423,
+      "n": 44
+    },
+    {
+      "channel": "B",
+      "slope": 0.009852897931799111,
+      "intercept": -0.0005055109153859136,
+      "r2": 0.9109147769895461,
+      "n": 44
+    }
+  ],
+  "corrections": [
+    {
+      "channel": "R",
+      "S0": 0.02254092954424464,
+      "forcedZeroSlope": 0.03609434576433362,
+      "nCalibrationPoints": 44,
+      "nClipPoints": 3,
+      "clipPoints": [
+        {
+          "concentration": 0,
+          "yRaw": -0.017602140352425914,
+          "yShifted": 0.0049387891918187266,
+          "yExpected": 0,
+          "threshold": 0.004850922688289729,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 0.5,
+          "yRaw": -0.011739778910676653,
+          "yShifted": 0.010801150633567989,
+          "yExpected": 0.01804717288216681,
+          "threshold": 0.006174689443411607,
+          "clipDelta": 0.00724602224859882
+        },
+        {
+          "concentration": 1,
+          "yRaw": 0.007746502278346421,
+          "yShifted": 0.03028743182259106,
+          "yExpected": 0.03609434576433362,
+          "threshold": 0.006205818598527008,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 1.5,
+          "yRaw": 0.02994443517791335,
+          "yShifted": 0.05248536472215799,
+          "yExpected": 0.05414151864650042,
+          "threshold": 0.0030349916034728796,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 2,
+          "yRaw": 0.05263908791206441,
+          "yShifted": 0.07518001745630905,
+          "yExpected": 0.07218869152866723,
+          "threshold": 0.0031148297610783396,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 2.5,
+          "yRaw": 0.06942832805673031,
+          "yShifted": 0.09196925760097495,
+          "yExpected": 0.09023586441083405,
+          "threshold": 0.0014872472064728548,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 3,
+          "yRaw": 0.08016031710270141,
+          "yShifted": 0.10270124664694605,
+          "yExpected": 0.10828303729300084,
+          "threshold": 0.0015177636509954384,
+          "clipDelta": 0.005581790646054796
+        },
+        {
+          "concentration": 3.5,
+          "yRaw": 0.09571483043677904,
+          "yShifted": 0.11825575998102367,
+          "yExpected": 0.12633021017516766,
+          "threshold": 0.0017027898107837903,
+          "clipDelta": 0.00807445019414399
+        },
+        {
+          "concentration": 4,
+          "yRaw": 0.13187306294378398,
+          "yShifted": 0.15441399248802862,
+          "yExpected": 0.14437738305733447,
+          "threshold": 0.0042884947472764025,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 4.5,
+          "yRaw": 0.14662803157398266,
+          "yShifted": 0.1691689611182273,
+          "yExpected": 0.16242455593950128,
+          "threshold": 0.00545026783328947,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 5,
+          "yRaw": 0.15315234081993245,
+          "yShifted": 0.1756932703641771,
+          "yExpected": 0.1804717288216681,
+          "threshold": 0.005783635734424816,
+          "clipDelta": 0
+        }
+      ]
+    },
+    {
+      "channel": "G",
+      "S0": 0.04017603005973969,
+      "forcedZeroSlope": 0.07292297615596142,
+      "nCalibrationPoints": 44,
+      "nClipPoints": 1,
+      "clipPoints": [
+        {
+          "concentration": 0,
+          "yRaw": -0.033845685356752774,
+          "yShifted": 0.006330344702986917,
+          "yExpected": 0,
+          "threshold": 0.007972628461924274,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 0.5,
+          "yRaw": -0.0031782242134022576,
+          "yShifted": 0.03699780584633743,
+          "yExpected": 0.03646148807798071,
+          "threshold": 0.007413619554209653,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 1,
+          "yRaw": 0.026121124458213095,
+          "yShifted": 0.06629715451795279,
+          "yExpected": 0.07292297615596142,
+          "threshold": 0.006892998679237168,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 1.5,
+          "yRaw": 0.06584874012438127,
+          "yShifted": 0.10602477018412096,
+          "yExpected": 0.10938446423394213,
+          "threshold": 0.004602697715157119,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 2,
+          "yRaw": 0.10671897907986043,
+          "yShifted": 0.14689500913960013,
+          "yExpected": 0.14584595231192285,
+          "threshold": 0.0053455471974816135,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 2.5,
+          "yRaw": 0.14633144319265998,
+          "yShifted": 0.18650747325239966,
+          "yExpected": 0.18230744038990357,
+          "threshold": 0.007445329800960292,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 3,
+          "yRaw": 0.17458842804767244,
+          "yShifted": 0.21476445810741213,
+          "yExpected": 0.21876892846788426,
+          "threshold": 0.005279715151507696,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 3.5,
+          "yRaw": 0.20408299344227165,
+          "yShifted": 0.24425902350201134,
+          "yExpected": 0.255230416545865,
+          "threshold": 0.011070511975176892,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 4,
+          "yRaw": 0.26645789967124534,
+          "yShifted": 0.3066339297309851,
+          "yExpected": 0.2916919046238457,
+          "threshold": 0.009190300037976747,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 4.5,
+          "yRaw": 0.3025205024951951,
+          "yShifted": 0.3426965325549347,
+          "yExpected": 0.3281533927018264,
+          "threshold": 0.012489336057138806,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 5,
+          "yRaw": 0.3092388637169332,
+          "yShifted": 0.3494148937766729,
+          "yExpected": 0.36461488077980714,
+          "threshold": 0.011218773095750487,
+          "clipDelta": 0.015199987003134241
+        }
+      ]
+    },
+    {
+      "channel": "B",
+      "S0": 0.018658017674698022,
+      "forcedZeroSlope": 0.009061736582201574,
+      "nCalibrationPoints": 44,
+      "nClipPoints": 2,
+      "clipPoints": [
+        {
+          "concentration": 0,
+          "yRaw": -0.01372047642186285,
+          "yShifted": 0.0049375412528351705,
+          "yExpected": 0,
+          "threshold": 0.0029520159743824897,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 0.5,
+          "yRaw": -0.012796811315852252,
+          "yShifted": 0.0058612063588457716,
+          "yExpected": 0.004530868291100787,
+          "threshold": 0.005326361731163985,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 1,
+          "yRaw": -0.01188497119543034,
+          "yShifted": 0.006773046479267682,
+          "yExpected": 0.009061736582201574,
+          "threshold": 0.006107406676411324,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 1.5,
+          "yRaw": -0.007582322231770203,
+          "yShifted": 0.01107569544292782,
+          "yExpected": 0.013592604873302362,
+          "threshold": 0.005209806622970318,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 2,
+          "yRaw": -0.0009436761726771017,
+          "yShifted": 0.01771434150202092,
+          "yExpected": 0.01812347316440315,
+          "threshold": 0.005237873840923941,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 2.5,
+          "yRaw": 0.003575332578326553,
+          "yShifted": 0.022233350253024572,
+          "yExpected": 0.022654341455503935,
+          "threshold": 0.007344802770959196,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 3,
+          "yRaw": 0.00007268905040938274,
+          "yShifted": 0.018730706725107404,
+          "yExpected": 0.027185209746604724,
+          "threshold": 0.003555258962853329,
+          "clipDelta": 0.00845450302149732
+        },
+        {
+          "concentration": 3.5,
+          "yRaw": 0.0025197116026766018,
+          "yShifted": 0.021177729277374623,
+          "yExpected": 0.03171607803770551,
+          "threshold": 0.004700959793673861,
+          "clipDelta": 0.010538348760330885
+        },
+        {
+          "concentration": 4,
+          "yRaw": 0.02412411727683129,
+          "yShifted": 0.04278213495152931,
+          "yExpected": 0.0362469463288063,
+          "threshold": 0.0016474122365172422,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 4.5,
+          "yRaw": 0.025656308380060906,
+          "yShifted": 0.044314326054758935,
+          "yExpected": 0.040777814619907087,
+          "threshold": 0.003943835386292089,
+          "clipDelta": 0
+        },
+        {
+          "concentration": 5,
+          "yRaw": 0.03214312530101205,
+          "yShifted": 0.05080114297571007,
+          "yExpected": 0.04530868291100787,
+          "threshold": 0.0015335439671482804,
+          "clipDelta": 0
+        }
+      ]
+    }
+  ]
+}
