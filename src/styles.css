@@ -116,7 +116,9 @@ h2 {
 }
 
 .collapsible-section > summary,
-.inline-collapsible > summary {
+.inline-collapsible > summary,
+.compact-status-section > summary,
+.result-details > summary {
   cursor: pointer;
   color: #252b2d;
   font-weight: 800;
@@ -135,6 +137,18 @@ h2 {
 .inline-collapsible[open] {
   display: grid;
   gap: 12px;
+}
+
+.compact-status-section {
+  gap: 8px;
+}
+
+.compact-status-section > summary {
+  overflow: hidden;
+  color: #252b2d;
+  font-size: 0.9rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .collapsible-section .control-section {
@@ -520,6 +534,45 @@ h2 {
   width: 100%;
   max-width: 1500px;
   align-self: center;
+}
+
+.compact-result-panel {
+  gap: 0;
+}
+
+.result-details {
+  display: grid;
+  gap: 7px;
+}
+
+.result-details > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid #cfd8d4;
+  color: #637173;
+  background: #fbfdfc;
+  font-size: 0.86rem;
+}
+
+.result-details > summary strong {
+  color: #3b474a;
+}
+
+.result-details > summary strong::after {
+  content: "\2014";
+  margin-left: 8px;
+  color: #8a9699;
+}
+
+.result-details[open] > summary {
+  margin-bottom: 7px;
+}
+
+.result-section-note {
+  margin-bottom: 7px;
 }
 
 .results-table-wrap {

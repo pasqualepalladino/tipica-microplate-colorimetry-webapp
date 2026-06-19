@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent } from 'react';
+import type { ChangeEvent, ReactNode } from 'react';
 import { ImageGeometryLoader } from './components/ImageGeometryLoader';
 import { PlateCanvas } from './components/PlateCanvas';
 import { PlateMapEditor } from './components/PlateMapEditor';
@@ -1376,12 +1376,41 @@ function formatCompactTextList(values: string[] | undefined): string {
   return values.join(' | ');
 }
 
-function CompactEmptyResult({ title, message }: { title: string; message: string }) {
+function ResultSection({
+  title,
+  summary,
+  hasData,
+  children,
+  note,
+}: {
+  title: string;
+  summary: string;
+  hasData: boolean;
+  children: ReactNode;
+  note?: ReactNode;
+}) {
+  if (!hasData) {
+    return (
+      <section className="results-panel compact-result-panel" aria-label={title}>
+        <div className="results-empty compact-result-empty" role="status">
+          <strong>{title}</strong>
+          <span>{summary}</span>
+        </div>
+      </section>
+    );
+  }
+
   return (
-    <div className="results-empty compact-result-empty" role="status">
-      <strong>{title}</strong>
-      <span>{message}</span>
-    </div>
+    <section className="results-panel compact-result-panel" aria-label={title}>
+      <details className="result-details" open>
+        <summary>
+          <strong>{title}</strong>
+          <span>{summary}</span>
+        </summary>
+        {note ? <p className="panel-note result-section-note">{note}</p> : null}
+        {children}
+      </details>
+    </section>
   );
 }
 
@@ -1771,12 +1800,6 @@ function ResultsTable({
   correctedMeasurements: WellMeasurement[];
   correctionApplied: boolean;
 }) {
-  if (measurements.length === 0) {
-    return (
-      <CompactEmptyResult title="RGB/PAbs Results" message="No RGB/PAbs results yet" />
-    );
-  }
-
   const correctedByWell = new Map(correctedMeasurements.map((measurement) => [measurement.wellId, measurement]));
 
   return (
@@ -1848,12 +1871,6 @@ function ResultsTable({
 }
 
 function CalibrationFitTable({ fits }: { fits: CalibrationFit[] }) {
-  if (fits.length === 0) {
-    return (
-      <CompactEmptyResult title="Calibration Fits" message="No calibration fits yet" />
-    );
-  }
-
   return (
     <div className="results-table-wrap compact-table-wrap">
       <table className="results-table fit-table">
@@ -1888,50 +1905,7 @@ function CalibrationFitTable({ fits }: { fits: CalibrationFit[] }) {
   );
 }
 
-function RgbLowSignalCorrectionTable({ corrections }: { corrections: RgbLowSignalCorrection[] }) {
-  if (corrections.length === 0) {
-    return (
-      <div className="results-empty compact-empty" role="status">
-        No RGB low-signal correction metadata
-      </div>
-    );
-  }
-
-  return (
-    <div className="results-table-wrap low-signal-table-wrap">
-      <table className="results-table low-signal-table">
-        <thead>
-          <tr>
-            <th>Channel</th>
-            <th>S0</th>
-            <th>Forced-zero slope</th>
-            <th>N calibration points</th>
-            <th>N clip points</th>
-          </tr>
-        </thead>
-        <tbody>
-          {corrections.map((correction) => (
-            <tr key={correction.channel}>
-              <td>{correction.channel}</td>
-              <td>{formatFitCell(correction.S0)}</td>
-              <td>{formatFitCell(correction.forcedZeroSlope)}</td>
-              <td>{correction.nCalibrationPoints}</td>
-              <td>{correction.nClipPoints}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function StoredCalibrationTable({ calibration }: { calibration: StoredCalibration | null }) {
-  if (!calibration) {
-    return (
-      <CompactEmptyResult title="Stored Calibration" message="No stored calibration loaded" />
-    );
-  }
-
+function StoredCalibrationTable({ calibration }: { calibration: StoredCalibration }) {
   return (
     <div className="results-table-wrap compact-table-wrap">
       <table className="results-table stored-calibration-table">
@@ -1965,12 +1939,6 @@ function StoredCalibrationTable({ calibration }: { calibration: StoredCalibratio
 }
 
 function StandardAdditionFitTable({ fits }: { fits: StandardAdditionFit[] }) {
-  if (fits.length === 0) {
-    return (
-      <CompactEmptyResult title="Standard Addition Fits" message="No standard-addition fits yet" />
-    );
-  }
-
   return (
     <div className="results-table-wrap compact-table-wrap">
       <table className="results-table standard-table">
@@ -2070,12 +2038,6 @@ function StandardAdditionFitTable({ fits }: { fits: StandardAdditionFit[] }) {
 }
 
 function UnknownResultsTable({ results }: { results: UnknownConcentrationResult[] }) {
-  if (results.length === 0) {
-    return (
-      <CompactEmptyResult title="Unknown Results" message="No unknown results from stored calibration" />
-    );
-  }
-
   return (
     <div className="results-table-wrap compact-table-wrap">
       <table className="results-table unknown-table">
@@ -2501,6 +2463,12 @@ function App() {
     : projectLoadedInfo.savedLowSignalCorrectionEnabled
       ? 'Low-signal correction enabled'
       : 'Low-signal correction disabled';
+  const compactStatusSummary = [
+    image ? 'Image ready' : 'Image waiting',
+    wells.length === 96 ? 'Geometry ready' : 'Geometry waiting',
+    measurements.length > 0 ? 'Results ready' : 'Results waiting',
+    error ? 'Error' : null,
+  ].filter((item): item is string => item !== null).join(' · ');
 
   const clearFits = useCallback(() => {
     setCalibrationFits([]);
@@ -4111,8 +4079,10 @@ function App() {
           {storedCalibrationMetadataWarning ? <p className="panel-note">{storedCalibrationMetadataWarning}</p> : null}
         </section>
 
-        <section className="control-section" aria-labelledby="status-heading">
-          <h2 id="status-heading">Status</h2>
+        <details className="control-section compact-status-section">
+          <summary id="status-heading">
+            <span>Status — {compactStatusSummary}</span>
+          </summary>
           <dl className="status-list">
             <div>
               <dt>Image</dt>
@@ -4180,7 +4150,7 @@ function App() {
             </div>
           </dl>
           {error ? <p className="error-message">{error}</p> : null}
-        </section>
+        </details>
 
       </aside>
 
@@ -4216,43 +4186,46 @@ function App() {
           onExpectedRefsChange={setExpectedRefs}
           onUnitLabelChange={setPlateMapUnit}
         />
-        <section className="results-panel" aria-labelledby="stored-calibration-table-heading">
-          <div className="section-title-row">
-            <h2 id="stored-calibration-table-heading">Stored Calibration</h2>
-          </div>
-          <StoredCalibrationTable calibration={storedCalibration} />
-        </section>
-        <section className="results-panel" aria-labelledby="calibration-fit-heading">
-          <div className="section-title-row">
-            <h2 id="calibration-fit-heading">Calibration Fits</h2>
-          </div>
+        <ResultSection
+          title="Stored Calibration"
+          summary={storedCalibration ? `${storedCalibration.fits.length} channels loaded` : 'No stored calibration loaded'}
+          hasData={Boolean(storedCalibration)}
+        >
+          {storedCalibration ? <StoredCalibrationTable calibration={storedCalibration} /> : null}
+        </ResultSection>
+        <ResultSection
+          title="Calibration Fits"
+          summary={calibrationFits.length > 0 ? `${calibrationFits.length} fits` : 'No calibration fits yet'}
+          hasData={calibrationFits.length > 0}
+        >
           <CalibrationFitTable fits={calibrationFits} />
-        </section>
-        <section className="results-panel" aria-labelledby="standard-fit-heading">
-          <div className="section-title-row">
-            <h2 id="standard-fit-heading">Standard Addition Fits</h2>
-          </div>
-          <p className="panel-note">
-            For plates with internal calibration wells, Internal slope agreement is populated. Stored slope agreement and stored-calibration corrected concentration are populated only when an external stored calibration JSON is loaded.
-          </p>
+        </ResultSection>
+        <ResultSection
+          title="Standard Addition Fits"
+          summary={standardAdditionFitsWithSlopeContext.length > 0 ? `${standardAdditionFitsWithSlopeContext.length} fits` : 'No standard-addition fits yet'}
+          hasData={standardAdditionFitsWithSlopeContext.length > 0}
+          note="For plates with internal calibration wells, Internal slope agreement is populated. Stored slope agreement and stored-calibration corrected concentration are populated only when an external stored calibration JSON is loaded."
+        >
           <StandardAdditionFitTable fits={standardAdditionFitsWithSlopeContext} />
-        </section>
-        <section className="results-panel" aria-labelledby="unknown-results-heading">
-          <div className="section-title-row">
-            <h2 id="unknown-results-heading">Unknown Results</h2>
-          </div>
+        </ResultSection>
+        <ResultSection
+          title="Unknown Results"
+          summary={unknownResults.length > 0 ? `${unknownResults.length} rows` : 'No unknown results from stored calibration'}
+          hasData={unknownResults.length > 0}
+        >
           <UnknownResultsTable results={unknownResults} />
-        </section>
-        <section className="results-panel" aria-labelledby="results-heading">
-          <div className="section-title-row">
-            <h2 id="results-heading">RGB/PAbs Results</h2>
-          </div>
+        </ResultSection>
+        <ResultSection
+          title="RGB/PAbs Results"
+          summary={measurements.length > 0 ? `${measurements.length} wells` : 'No RGB/PAbs results yet'}
+          hasData={measurements.length > 0}
+        >
           <ResultsTable
             measurements={measurements}
             correctedMeasurements={correctedMeasurementSet.measurements}
             correctionApplied={lowSignalCorrectionEffective}
           />
-        </section>
+        </ResultSection>
       </section>
       {isHelpAboutOpen ? <HelpAboutDialog onClose={() => setIsHelpAboutOpen(false)} /> : null}
     </main>
