@@ -1435,6 +1435,31 @@ const PYTHON_RESULTS_CHANNEL_LABELS: Record<FitChannel, string> = {
   B: 'PAbs_Blue',
 };
 
+interface PythonResultsPlotPoint {
+  x: number;
+  y: number;
+  yerr: number;
+  n: number;
+}
+
+interface PythonResultsStandardAdditionGroup {
+  fit: StandardAdditionFit;
+  points: PythonResultsPlotPoint[];
+}
+
+interface PythonResultsChannelRank {
+  channel: FitChannel;
+  score: number;
+  r2Cal: number;
+  r2Std: number;
+  slopeAgreement: number;
+  sigmaCal: number;
+  sigmaSource: string;
+  lod: number;
+  loq: number;
+  scoreFormula: string;
+}
+
 function pabsChannelValue(measurement: WellMeasurement, channel: FitChannel): number {
   if (channel === 'R') {
     return measurement.pabs.r;
@@ -1502,7 +1527,7 @@ Calibration and standard-addition fits use the current TIPICA webapp fitting res
 Ranking score
 For methods with both calibration and standard addition, the Python desktop global score is:
     GlobalScore = slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ)
-with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|). This web export uses the available common factors slope_agreement^2 x sqrt(R2_cal x R2_std) for PNG channel selection. Full LOQ-weighted Python ranking, robust IRLS parity, and REPORT.xlsx parity are not complete yet. Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
+with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|). This web export computes LOQ for PNG channel selection from the median calibration replicate SD when that SD is available, matching the Python RESULTS ranking rule. If LOQ is unavailable, the Python-compatible fallback uses the fit-only common factors. Robust IRLS fitting parity, full REPORT.xlsx parity and RAW_DATA_DETAILS parity are not complete yet. Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
 
 Reference values and recovery
 External reference values, when provided, are used only for external comparison (Delta and recovery). They are not used to choose the ranked RGB method.
@@ -1820,20 +1845,195 @@ function channelDisplayName(channel: FitChannel): string {
   return PYTHON_RESULTS_CHANNEL_LABELS[channel];
 }
 
-function selectBestRgbChannel(calibrationFits: CalibrationFit[], standardAdditionFits: StandardAdditionFit[]): FitChannel {
-  const scoreByChannel = new Map<FitChannel, number>();
+function meanFinite(values: number[]): number {
+  const finiteValues = values.filter((value) => Number.isFinite(value));
 
-  PYTHON_RESULTS_CHANNELS.forEach((channel) => {
+  return finiteValues.length > 0
+    ? finiteValues.reduce((sum, value) => sum + value, 0) / finiteValues.length
+    : Number.NaN;
+}
+
+function sampleStandardDeviation(values: number[]): number {
+  const finiteValues = values.filter((value) => Number.isFinite(value));
+
+  if (finiteValues.length < 2) {
+    return 0;
+  }
+
+  const avg = meanFinite(finiteValues);
+  const variance = finiteValues.reduce((sum, value) => sum + (value - avg) ** 2, 0) / (finiteValues.length - 1);
+  return Math.sqrt(Math.max(0, variance));
+}
+
+function medianFinite(values: number[]): number {
+  const finiteValues = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+
+  if (finiteValues.length === 0) {
+    return Number.NaN;
+  }
+
+  const midpoint = Math.floor(finiteValues.length / 2);
+  return finiteValues.length % 2 === 0
+    ? (finiteValues[midpoint - 1] + finiteValues[midpoint]) / 2
+    : finiteValues[midpoint];
+}
+
+function groupedPythonResultsPoints(groups: Map<number, number[]>): PythonResultsPlotPoint[] {
+  return [...groups.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([x, values]) => ({
+      x,
+      y: meanFinite(values),
+      yerr: sampleStandardDeviation(values),
+      n: values.filter((value) => Number.isFinite(value)).length,
+    }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+}
+
+function collectCalibrationPointsForChannel(
+  channel: FitChannel,
+  measurements: WellMeasurement[],
+  plateMap: WellConfig[],
+): PythonResultsPlotPoint[] {
+  const measurementByWell = new Map(measurements.map((measurement) => [measurement.wellId, measurement]));
+  const grouped = new Map<number, number[]>();
+
+  plateMap.forEach((well) => {
+    if (well.role !== 'C' || well.concentration === null || !Number.isFinite(well.concentration)) {
+      return;
+    }
+
+    const measurement = measurementByWell.get(well.wellId);
+    const y = measurement ? pabsChannelValue(measurement, channel) : Number.NaN;
+
+    if (!Number.isFinite(y)) {
+      return;
+    }
+
+    const values = grouped.get(well.concentration) ?? [];
+    values.push(y);
+    grouped.set(well.concentration, values);
+  });
+
+  return groupedPythonResultsPoints(grouped);
+}
+
+function collectStandardAdditionPointsForFit(
+  fit: StandardAdditionFit,
+  channel: FitChannel,
+  measurements: WellMeasurement[],
+  plateMap: WellConfig[],
+): PythonResultsPlotPoint[] {
+  const measurementByWell = new Map(measurements.map((measurement) => [measurement.wellId, measurement]));
+  const grouped = new Map<number, number[]>();
+  const sampleId = fit.sampleId.trim();
+
+  plateMap.forEach((well) => {
+    if (
+      well.role !== 'A' ||
+      well.concentration === null ||
+      !Number.isFinite(well.concentration) ||
+      well.sampleId.trim() !== sampleId
+    ) {
+      return;
+    }
+
+    const dilutionFactor = Number.isFinite(well.dilutionFactor) ? well.dilutionFactor : 1;
+    if (Math.abs(dilutionFactor - fit.dilutionFactor) > 1e-12) {
+      return;
+    }
+
+    const measurement = measurementByWell.get(well.wellId);
+    const y = measurement ? pabsChannelValue(measurement, channel) : Number.NaN;
+
+    if (!Number.isFinite(y)) {
+      return;
+    }
+
+    const values = grouped.get(well.concentration) ?? [];
+    values.push(y);
+    grouped.set(well.concentration, values);
+  });
+
+  const groupedPoints = groupedPythonResultsPoints(grouped);
+  const pointByX = new Map(groupedPoints.map((point) => [point.x, point]));
+  const fitX = fit.addedConcentrationsUsed ?? [];
+  const fitY = fit.meanSignalValuesUsed ?? [];
+
+  if (fitX.length > 0 && fitY.length > 0) {
+    return fitX.flatMap((x, index) => {
+      const y = fitY[index];
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return [];
+      }
+
+      const groupedPoint = pointByX.get(x);
+      return [{
+        x,
+        y,
+        yerr: groupedPoint?.yerr ?? 0,
+        n: groupedPoint?.n ?? 1,
+      }];
+    });
+  }
+
+  return groupedPoints;
+}
+
+function estimateSigmaForPythonResultsLoq(calibrationPoints: PythonResultsPlotPoint[]): { sigma: number; source: string } {
+  const calibrationSdValues = calibrationPoints
+    .map((point) => point.yerr)
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const medianCalibrationSd = medianFinite(calibrationSdValues);
+
+  if (Number.isFinite(medianCalibrationSd) && medianCalibrationSd > 0) {
+    return { sigma: medianCalibrationSd, source: 'median_calibration_sd' };
+  }
+
+  const zeroSdValues = calibrationPoints
+    .filter((point) => Math.abs(point.x) <= 1e-12)
+    .map((point) => point.yerr)
+    .filter((value) => Number.isFinite(value));
+  const medianZeroSd = medianFinite(zeroSdValues);
+
+  if (Number.isFinite(medianZeroSd)) {
+    return { sigma: medianZeroSd, source: 'blank_zero_calibration' };
+  }
+
+  return { sigma: Number.NaN, source: 'unavailable' };
+}
+
+function computePythonFitBaseScore(
+  r2Cal: number,
+  r2Std: number,
+  slopeAgreement: number,
+  loq: number,
+): number {
+  if (!Number.isFinite(r2Cal) || !Number.isFinite(r2Std) || !Number.isFinite(slopeAgreement)) {
+    return Number.NaN;
+  }
+
+  const base = (slopeAgreement ** 2) * Math.sqrt(Math.max(r2Cal, 0) * Math.max(r2Std, 0));
+  return Number.isFinite(loq) && loq > 0 ? base / loq : base;
+}
+
+function computePythonResultsChannelRankings(
+  calibrationFits: CalibrationFit[],
+  standardAdditionFits: StandardAdditionFit[],
+  measurements: WellMeasurement[],
+  plateMap: WellConfig[],
+): PythonResultsChannelRank[] {
+  return PYTHON_RESULTS_CHANNELS.map((channel) => {
     const cal = calibrationFits.find((fit) => fit.channel === channel);
     const std = standardAdditionFits.filter((fit) => fit.channel === channel);
+    const calibrationPoints = collectCalibrationPointsForChannel(channel, measurements, plateMap);
+    const { sigma, source } = estimateSigmaForPythonResultsLoq(calibrationPoints);
     const r2Cal = cal && Number.isFinite(cal.r2) ? Math.max(0, cal.r2) : Number.NaN;
     const r2StdValues = std
       .map((fit) => fit.r2)
       .filter((value) => Number.isFinite(value))
       .map((value) => Math.max(0, value));
-    const r2Std = r2StdValues.length > 0
-      ? r2StdValues.reduce((sum, value) => sum + value, 0) / r2StdValues.length
-      : Number.NaN;
+    const r2Std = meanFinite(r2StdValues);
     const slopeAgreementValues = std
       .map((fit) => {
         if (typeof fit.internalSlopeAgreement === 'number' && Number.isFinite(fit.internalSlopeAgreement)) {
@@ -1849,28 +2049,94 @@ function selectBestRgbChannel(calibrationFits: CalibrationFit[], standardAdditio
       })
       .filter((value) => Number.isFinite(value))
       .map((value) => Math.max(0, Math.min(1, value)));
-    const slopeAgreement = slopeAgreementValues.length > 0
-      ? slopeAgreementValues.reduce((sum, value) => sum + value, 0) / slopeAgreementValues.length
+    const slopeAgreement = meanFinite(slopeAgreementValues);
+    const slope = cal?.slope ?? Number.NaN;
+    const lod = cal && Number.isFinite(sigma) && sigma > 0 && Number.isFinite(slope) && Math.abs(slope) > 1e-15
+      ? (3 * sigma) / Math.abs(slope)
       : Number.NaN;
-    let score = 0;
+    const loq = cal && Number.isFinite(sigma) && sigma > 0 && Number.isFinite(slope) && Math.abs(slope) > 1e-15
+      ? (10 * sigma) / Math.abs(slope)
+      : Number.NaN;
+    let score = computePythonFitBaseScore(r2Cal, r2Std, slopeAgreement, loq);
+    let scoreFormula = Number.isFinite(loq) && loq > 0
+      ? 'slope_agreement^2 * sqrt(R2_cal * R2_std) * (1/LOQ)'
+      : 'slope_agreement^2 * sqrt(R2_cal * R2_std)';
 
-    if (Number.isFinite(r2Cal) && Number.isFinite(r2Std) && Number.isFinite(slopeAgreement)) {
-      // Python's full score also multiplies by 1/LOQ. LOQ is not yet available
-      // in the web fit model, so PNG channel selection uses the common factors
-      // that are available across current RGB calibration and standard-addition fits.
-      score = (slopeAgreement ** 2) * Math.sqrt(r2Cal * r2Std);
-    } else if (Number.isFinite(r2Cal)) {
-      score = r2Cal;
-    } else if (Number.isFinite(r2Std)) {
-      score = r2Std;
+    if (!Number.isFinite(score) || score <= 0) {
+      if (Number.isFinite(r2Cal)) {
+        score = r2Cal;
+        scoreFormula = 'R2_cal fallback';
+      } else if (Number.isFinite(r2Std)) {
+        score = r2Std;
+        scoreFormula = 'R2_std fallback';
+      } else {
+        score = 0;
+        scoreFormula = 'unavailable';
+      }
     }
 
-    scoreByChannel.set(channel, score);
-  });
-
-  return [...scoreByChannel.entries()]
-    .sort((a, b) => b[1] - a[1] || PYTHON_RESULTS_CHANNELS.indexOf(a[0]) - PYTHON_RESULTS_CHANNELS.indexOf(b[0]))[0]?.[0] ?? 'R';
+    return {
+      channel,
+      score,
+      r2Cal,
+      r2Std,
+      slopeAgreement,
+      sigmaCal: sigma,
+      sigmaSource: source,
+      lod,
+      loq,
+      scoreFormula,
+    };
+  }).sort((a, b) => b.score - a.score || PYTHON_RESULTS_CHANNELS.indexOf(a.channel) - PYTHON_RESULTS_CHANNELS.indexOf(b.channel));
 }
+
+function selectBestRgbChannel(
+  calibrationFits: CalibrationFit[],
+  standardAdditionFits: StandardAdditionFit[],
+  measurements: WellMeasurement[],
+  plateMap: WellConfig[],
+): FitChannel {
+  return computePythonResultsChannelRankings(calibrationFits, standardAdditionFits, measurements, plateMap)[0]?.channel ?? 'R';
+}
+
+function collectStandardAdditionGroupsForChannel(
+  channel: FitChannel,
+  standardFits: StandardAdditionFit[],
+  measurements: WellMeasurement[],
+  plateMap: WellConfig[],
+): PythonResultsStandardAdditionGroup[] {
+  return standardFits
+    .filter((fit) => fit.channel === channel)
+    .map((fit) => ({
+      fit,
+      points: collectStandardAdditionPointsForFit(fit, channel, measurements, plateMap),
+    }));
+}
+
+function drawVerticalErrorBar(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  yLow: number,
+  yHigh: number,
+  capWidth: number,
+  color: string,
+): void {
+  if (!Number.isFinite(x) || !Number.isFinite(yLow) || !Number.isFinite(yHigh) || Math.abs(yHigh - yLow) < 0.01) {
+    return;
+  }
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(x, yLow);
+  ctx.lineTo(x, yHigh);
+  ctx.moveTo(x - capWidth / 2, yLow);
+  ctx.lineTo(x + capWidth / 2, yLow);
+  ctx.moveTo(x - capWidth / 2, yHigh);
+  ctx.lineTo(x + capWidth / 2, yHigh);
+  ctx.stroke();
+}
+
 
 function drawWrappedText(
   ctx: CanvasRenderingContext2D,
@@ -1918,46 +2184,14 @@ function drawWrappedText(
   return cursorY;
 }
 
-function collectCalibrationPointsForChannel(
-  channel: FitChannel,
-  measurements: WellMeasurement[],
-  plateMap: WellConfig[],
-): Array<{ x: number; y: number }> {
-  const measurementByWell = new Map(measurements.map((measurement) => [measurement.wellId, measurement]));
-  const grouped = new Map<number, number[]>();
-
-  plateMap.forEach((well) => {
-    if (well.role !== 'C' || well.concentration === null || !Number.isFinite(well.concentration)) {
-      return;
-    }
-
-    const measurement = measurementByWell.get(well.wellId);
-    const y = measurement ? pabsChannelValue(measurement, channel) : Number.NaN;
-
-    if (!Number.isFinite(y)) {
-      return;
-    }
-
-    const values = grouped.get(well.concentration) ?? [];
-    values.push(y);
-    grouped.set(well.concentration, values);
-  });
-
-  return [...grouped.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([x, values]) => ({
-      x,
-      y: values.reduce((sum, value) => sum + value, 0) / values.length,
-    }));
-}
-
 function drawPythonStyleChannelPanel(
   ctx: CanvasRenderingContext2D,
   bounds: { x: number; y: number; width: number; height: number },
   channel: FitChannel,
   calibrationFit: CalibrationFit | undefined,
-  standardFits: StandardAdditionFit[],
-  calibrationPoints: Array<{ x: number; y: number }>,
+  standardGroups: PythonResultsStandardAdditionGroup[],
+  calibrationPoints: PythonResultsPlotPoint[],
+  rankInfo: PythonResultsChannelRank | undefined,
   unitLabel: string,
   expectedRefs: ExpectedRef[],
   monochrome = false,
@@ -1970,15 +2204,9 @@ function drawPythonStyleChannelPanel(
     width: bounds.width - margin.left - margin.right,
     height: bounds.height - margin.top - margin.bottom,
   };
-  const stdPoints = standardFits.flatMap((fit) => {
-    const xValues = fit.addedConcentrationsUsed ?? [];
-    const yValues = fit.meanSignalValuesUsed ?? [];
-    return xValues.flatMap((x, index) => {
-      const y = yValues[index];
-      return Number.isFinite(x) && Number.isFinite(y) ? [{ x, y }] : [];
-    });
-  });
-  const referenceX = standardFits.flatMap((fit) =>
+  const standardFits = standardGroups.map((group) => group.fit);
+  const stdPoints = standardGroups.flatMap((group) => group.points);
+  const referenceX = standardGroups.flatMap(({ fit }) =>
     expectedRefs.flatMap((ref) => {
       if (ref.refId && fit.sampleId && ref.refId !== fit.sampleId) {
         return [];
@@ -1991,10 +2219,24 @@ function drawPythonStyleChannelPanel(
     ...calibrationPoints.map((point) => point.x),
     ...stdPoints.map((point) => point.x),
     ...referenceX,
+    ...standardFits.flatMap((fit) => {
+      if (!Number.isFinite(fit.slope) || Math.abs(fit.slope) <= 1e-15 || !Number.isFinite(fit.intercept)) {
+        return [];
+      }
+
+      const interceptX = -fit.intercept / fit.slope;
+      return Number.isFinite(interceptX) ? [interceptX] : [];
+    }),
   ];
   const allY = [
     ...calibrationPoints.map((point) => point.y),
+    ...calibrationPoints.flatMap((point) => (
+      Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []
+    )),
     ...stdPoints.map((point) => point.y),
+    ...stdPoints.flatMap((point) => (
+      Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []
+    )),
   ];
   const xRange = finiteRange(allX, 0, 1);
   const yFromFits = [
@@ -2023,6 +2265,17 @@ function drawPythonStyleChannelPanel(
   ctx.fillStyle = '#1d2628';
   ctx.font = '700 18px Inter, Arial, sans-serif';
   ctx.fillText(channelDisplayName(channel), bounds.x + 12, bounds.y + 20);
+  if (rankInfo) {
+    const rankText = [
+      `Score ${formatFitCell(rankInfo.score)}`,
+      `R2cal ${formatFitCell(rankInfo.r2Cal)}`,
+      `R2std ${formatFitCell(rankInfo.r2Std)}`,
+      `LOQ ${formatFitCell(rankInfo.loq)}`,
+    ].join('  ');
+    ctx.font = '11px Inter, Arial, sans-serif';
+    ctx.fillStyle = '#465255';
+    ctx.fillText(rankText, plot.x + Math.max(0, plot.width - ctx.measureText(rankText).width - 4), bounds.y + 20);
+  }
 
   ctx.strokeStyle = '#dce4e1';
   ctx.lineWidth = 1;
@@ -2076,8 +2329,14 @@ function drawPythonStyleChannelPanel(
   }
 
   calibrationPoints.forEach((point) => {
+    const px = xToPx(point.x);
+    const py = yToPx(point.y);
+    if (Number.isFinite(point.yerr) && point.yerr > 0) {
+      drawVerticalErrorBar(ctx, px, yToPx(point.y - point.yerr), yToPx(point.y + point.yerr), 10, color);
+    }
+
     ctx.beginPath();
-    ctx.arc(xToPx(point.x), yToPx(point.y), 5, 0, Math.PI * 2);
+    ctx.arc(px, py, 5, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';
     ctx.fill();
     ctx.strokeStyle = color;
@@ -2085,9 +2344,7 @@ function drawPythonStyleChannelPanel(
     ctx.stroke();
   });
 
-  standardFits.forEach((fit) => {
-    const xValues = fit.addedConcentrationsUsed ?? [];
-    const yValues = fit.meanSignalValuesUsed ?? [];
+  standardGroups.forEach(({ fit, points }) => {
 
     if (Number.isFinite(fit.slope) && Number.isFinite(fit.intercept)) {
       ctx.strokeStyle = color;
@@ -2098,14 +2355,17 @@ function drawPythonStyleChannelPanel(
       ctx.stroke();
     }
 
-    xValues.forEach((x, index) => {
-      const y = yValues[index];
-      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    points.forEach((point) => {
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
         return;
       }
 
-      const px = xToPx(x);
-      const py = yToPx(y);
+      const px = xToPx(point.x);
+      const py = yToPx(point.y);
+      if (Number.isFinite(point.yerr) && point.yerr > 0) {
+        drawVerticalErrorBar(ctx, px, yToPx(point.y - point.yerr), yToPx(point.y + point.yerr), 10, color);
+      }
+
       ctx.fillStyle = color;
       ctx.fillRect(px - 4.5, py - 4.5, 9, 9);
     });
@@ -2178,6 +2438,13 @@ function buildPythonStyleFigureRgbCanvas({
   const width = 2481;
   const height = 2038;
   const ctx = canvas.getContext('2d');
+  const rankingRows = computePythonResultsChannelRankings(
+    calibrationFits,
+    standardAdditionFits,
+    displayMeasurements,
+    plateMap,
+  );
+  const bestRank = rankingRows.find((row) => row.channel === bestChannel);
 
   canvas.width = width;
   canvas.height = height;
@@ -2203,12 +2470,19 @@ function buildPythonStyleFigureRgbCanvas({
   const refSummary = expectedRefs.length > 0
     ? expectedRefs.map((ref) => `${ref.label || ref.refId || 'Reference'}=${formatFitCell(ref.value)} ${unitLabel}`).join('; ')
     : 'No external reference values.';
+  const rankingSummary = rankingRows.map((row, index) => (
+    `${index + 1}. ${channelDisplayName(row.channel)} score=${formatFitCell(row.score)} `
+    + `R2cal=${formatFitCell(row.r2Cal)} R2std=${formatFitCell(row.r2Std)} `
+    + `slope=${formatFitCell(row.slopeAgreement)} LOQ=${formatFitCell(row.loq)}`
+  )).join('\n');
   const summaryText = [
     `Mode: ${formatRoiMode(roiMode)}`,
     `Background: ${formatBackgroundModel(backgroundModel)}`,
     `Measurements: ${measurements.length} wells`,
     `Floor geometry: ${floorGeometryAvailable ? 'available' : 'missing'}`,
     `Selected display channel: ${channelDisplayName(bestChannel)}`,
+    `Ranking formula: ${bestRank?.scoreFormula ?? 'unavailable'}`,
+    `Sigma source: ${bestRank?.sigmaSource ?? 'unavailable'}`,
     '',
     'Calibration',
     calSummary,
@@ -2220,9 +2494,13 @@ function buildPythonStyleFigureRgbCanvas({
     'Reference values',
     refSummary,
     '',
+    'Method ranking',
+    rankingSummary || 'No ranked RGB method.',
+    '',
     'Notes',
     'PAbs = log10(I_BG / I_well).',
-    'PNG channel ranking uses slope agreement and R2 common factors; LOQ-weighted Python ranking, robust IRLS parity, and REPORT.xlsx remain later work.',
+    'PNG channel ranking uses Python GlobalScore when LOQ is available.',
+    'Robust IRLS fitting parity, REPORT.xlsx parity and RAW_DATA_DETAILS parity remain later work.',
   ].join('\n');
 
   ctx.fillStyle = '#253033';
@@ -2239,8 +2517,9 @@ function buildPythonStyleFigureRgbCanvas({
       { x: panelX, y: 70 + index * (panelHeight + 42), width: panelWidth, height: panelHeight },
       channel,
       calibrationFits.find((fit) => fit.channel === channel),
-      standardAdditionFits.filter((fit) => fit.channel === channel),
+      collectStandardAdditionGroupsForChannel(channel, standardAdditionFits, displayMeasurements, plateMap),
       collectCalibrationPointsForChannel(channel, displayMeasurements, plateMap),
+      rankingRows.find((row) => row.channel === channel),
       unitLabel,
       expectedRefs,
     );
@@ -2270,6 +2549,12 @@ function buildPythonStyleBestChannelCanvas({
   const width = 1062;
   const height = 708;
   const ctx = canvas.getContext('2d');
+  const rankingRows = computePythonResultsChannelRankings(
+    calibrationFits,
+    standardAdditionFits,
+    displayMeasurements,
+    plateMap,
+  );
 
   canvas.width = width;
   canvas.height = height;
@@ -2285,8 +2570,9 @@ function buildPythonStyleBestChannelCanvas({
     { x: 28, y: 24, width: width - 56, height: height - 48 },
     bestChannel,
     calibrationFits.find((fit) => fit.channel === bestChannel),
-    standardAdditionFits.filter((fit) => fit.channel === bestChannel),
+    collectStandardAdditionGroupsForChannel(bestChannel, standardAdditionFits, displayMeasurements, plateMap),
     collectCalibrationPointsForChannel(bestChannel, displayMeasurements, plateMap),
+    rankingRows.find((row) => row.channel === bestChannel),
     unitLabel,
     expectedRefs,
     true,
@@ -4167,7 +4453,12 @@ function App() {
           floorRoiRadiusFactor,
           floorGeometryAvailable ? floorCircles : null,
         );
-        const bestChannel = selectBestRgbChannel(calibrationFits, standardAdditionFitsWithSlopeContext);
+        const bestChannel = selectBestRgbChannel(
+          calibrationFits,
+          standardAdditionFitsWithSlopeContext,
+          displayMeasurements,
+          plateMap,
+        );
         const pythonFigureRgbCanvas = buildPythonStyleFigureRgbCanvas({
           imageBase: pythonResultsBase,
           overlayCanvas: pythonPlateOverlayCanvas,
