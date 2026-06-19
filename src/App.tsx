@@ -1502,7 +1502,7 @@ Calibration and standard-addition fits use the current TIPICA webapp fitting res
 Ranking score
 For methods with both calibration and standard addition, the Python desktop global score is:
     GlobalScore = slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ)
-with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|). The web export uses current fit quality to select a display channel until full Python ranking parity is implemented. Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
+with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|). This web export uses the available common factors slope_agreement^2 x sqrt(R2_cal x R2_std) for PNG channel selection. Full LOQ-weighted Python ranking, robust IRLS parity, and REPORT.xlsx parity are not complete yet. Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
 
 Reference values and recovery
 External reference values, when provided, are used only for external comparison (Delta and recovery). They are not used to choose the ranked RGB method.
@@ -1557,8 +1557,8 @@ function buildPythonStylePlateRoiOverlayCanvas(
 ): HTMLCanvasElement {
   const source = createDiagnosticCanvas(imageData).canvas;
   const canvas = document.createElement('canvas');
-  const width = 1063;
-  const height = 709;
+  const width = 1062;
+  const height = 708;
   const scale = Math.min(width / imageData.width, height / imageData.height);
   const dx = (width - imageData.width * scale) / 2;
   const dy = (height - imageData.height * scale) / 2;
@@ -1826,19 +1826,50 @@ function selectBestRgbChannel(calibrationFits: CalibrationFit[], standardAdditio
   PYTHON_RESULTS_CHANNELS.forEach((channel) => {
     const cal = calibrationFits.find((fit) => fit.channel === channel);
     const std = standardAdditionFits.filter((fit) => fit.channel === channel);
-    const finiteR2 = [
-      cal?.r2,
-      ...std.map((fit) => fit.r2),
-    ].filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-    const r2Score = finiteR2.length > 0
-      ? finiteR2.reduce((sum, value) => sum + Math.max(0, value), 0) / finiteR2.length
-      : 0;
-    const slopeScore = cal && Number.isFinite(cal.slope) ? Math.abs(cal.slope) : 0;
+    const r2Cal = cal && Number.isFinite(cal.r2) ? Math.max(0, cal.r2) : Number.NaN;
+    const r2StdValues = std
+      .map((fit) => fit.r2)
+      .filter((value) => Number.isFinite(value))
+      .map((value) => Math.max(0, value));
+    const r2Std = r2StdValues.length > 0
+      ? r2StdValues.reduce((sum, value) => sum + value, 0) / r2StdValues.length
+      : Number.NaN;
+    const slopeAgreementValues = std
+      .map((fit) => {
+        if (typeof fit.internalSlopeAgreement === 'number' && Number.isFinite(fit.internalSlopeAgreement)) {
+          return fit.internalSlopeAgreement;
+        }
 
-    scoreByChannel.set(channel, r2Score * Math.max(slopeScore, 1e-9));
+        if (cal && Number.isFinite(cal.slope) && Number.isFinite(fit.slope)) {
+          const denominator = Math.max(Math.abs(cal.slope), Math.abs(fit.slope), 1e-12);
+          return Math.min(Math.abs(cal.slope), Math.abs(fit.slope)) / denominator;
+        }
+
+        return Number.NaN;
+      })
+      .filter((value) => Number.isFinite(value))
+      .map((value) => Math.max(0, Math.min(1, value)));
+    const slopeAgreement = slopeAgreementValues.length > 0
+      ? slopeAgreementValues.reduce((sum, value) => sum + value, 0) / slopeAgreementValues.length
+      : Number.NaN;
+    let score = 0;
+
+    if (Number.isFinite(r2Cal) && Number.isFinite(r2Std) && Number.isFinite(slopeAgreement)) {
+      // Python's full score also multiplies by 1/LOQ. LOQ is not yet available
+      // in the web fit model, so PNG channel selection uses the common factors
+      // that are available across current RGB calibration and standard-addition fits.
+      score = (slopeAgreement ** 2) * Math.sqrt(r2Cal * r2Std);
+    } else if (Number.isFinite(r2Cal)) {
+      score = r2Cal;
+    } else if (Number.isFinite(r2Std)) {
+      score = r2Std;
+    }
+
+    scoreByChannel.set(channel, score);
   });
 
-  return [...scoreByChannel.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'R';
+  return [...scoreByChannel.entries()]
+    .sort((a, b) => b[1] - a[1] || PYTHON_RESULTS_CHANNELS.indexOf(a[0]) - PYTHON_RESULTS_CHANNELS.indexOf(b[0]))[0]?.[0] ?? 'R';
 }
 
 function drawWrappedText(
@@ -1893,17 +1924,31 @@ function collectCalibrationPointsForChannel(
   plateMap: WellConfig[],
 ): Array<{ x: number; y: number }> {
   const measurementByWell = new Map(measurements.map((measurement) => [measurement.wellId, measurement]));
+  const grouped = new Map<number, number[]>();
 
-  return plateMap.flatMap((well) => {
+  plateMap.forEach((well) => {
     if (well.role !== 'C' || well.concentration === null || !Number.isFinite(well.concentration)) {
-      return [];
+      return;
     }
 
     const measurement = measurementByWell.get(well.wellId);
     const y = measurement ? pabsChannelValue(measurement, channel) : Number.NaN;
 
-    return Number.isFinite(y) ? [{ x: well.concentration, y }] : [];
+    if (!Number.isFinite(y)) {
+      return;
+    }
+
+    const values = grouped.get(well.concentration) ?? [];
+    values.push(y);
+    grouped.set(well.concentration, values);
   });
+
+  return [...grouped.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([x, values]) => ({
+      x,
+      y: values.reduce((sum, value) => sum + value, 0) / values.length,
+    }));
 }
 
 function drawPythonStyleChannelPanel(
@@ -2130,8 +2175,8 @@ function buildPythonStyleFigureRgbCanvas({
   bestChannel: FitChannel;
 }): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
-  const width = 1654;
-  const height = 2339;
+  const width = 2481;
+  const height = 2038;
   const ctx = canvas.getContext('2d');
 
   canvas.width = width;
@@ -2143,11 +2188,11 @@ function buildPythonStyleFigureRgbCanvas({
 
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
-  drawImageCover(ctx, overlayCanvas, overlayCanvas.width, overlayCanvas.height, 70, 70, 700, 470);
+  drawImageCover(ctx, overlayCanvas, overlayCanvas.width, overlayCanvas.height, 110, 70, 940, 626);
 
   ctx.fillStyle = '#172026';
-  ctx.font = '700 26px Inter, Arial, sans-serif';
-  ctx.fillText(`${imageBase} RGB/PAbs report`, 70, 590);
+  ctx.font = '700 34px Inter, Arial, sans-serif';
+  ctx.fillText(`${imageBase} RGB/PAbs report`, 110, 760);
 
   const calSummary = calibrationFits.length > 0
     ? calibrationFits.map((fit) => `${channelDisplayName(fit.channel)} R2=${formatFitCell(fit.r2)}`).join('; ')
@@ -2177,21 +2222,21 @@ function buildPythonStyleFigureRgbCanvas({
     '',
     'Notes',
     'PAbs = log10(I_BG / I_well).',
-    'Python desktop uses robust IRLS and a richer ranking score; this 36A export starts filename and figure-structure parity without changing calculations.',
+    'PNG channel ranking uses slope agreement and R2 common factors; LOQ-weighted Python ranking, robust IRLS parity, and REPORT.xlsx remain later work.',
   ].join('\n');
 
   ctx.fillStyle = '#253033';
-  ctx.font = '18px Consolas, "Courier New", monospace';
-  drawWrappedText(ctx, summaryText, 70, 630, 700, 26, height - 100);
+  ctx.font = '23px Consolas, "Courier New", monospace';
+  drawWrappedText(ctx, summaryText, 110, 812, 940, 34, height - 95);
 
-  const panelX = 850;
-  const panelWidth = 720;
-  const panelHeight = 600;
+  const panelX = 1190;
+  const panelWidth = 1160;
+  const panelHeight = 575;
 
   PYTHON_RESULTS_CHANNELS.forEach((channel, index) => {
     drawPythonStyleChannelPanel(
       ctx,
-      { x: panelX, y: 70 + index * (panelHeight + 48), width: panelWidth, height: panelHeight },
+      { x: panelX, y: 70 + index * (panelHeight + 42), width: panelWidth, height: panelHeight },
       channel,
       calibrationFits.find((fit) => fit.channel === channel),
       standardAdditionFits.filter((fit) => fit.channel === channel),
@@ -2222,8 +2267,8 @@ function buildPythonStyleBestChannelCanvas({
   unitLabel: string;
 }): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
-  const width = 1063;
-  const height = 709;
+  const width = 1062;
+  const height = 708;
   const ctx = canvas.getContext('2d');
 
   canvas.width = width;
