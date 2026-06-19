@@ -1428,6 +1428,13 @@ const FIT_CHANNEL_COLORS: Record<FitChannel, string> = {
   B: '#2563c7',
 };
 
+const PYTHON_RESULTS_CHANNELS: FitChannel[] = ['R', 'G', 'B'];
+const PYTHON_RESULTS_CHANNEL_LABELS: Record<FitChannel, string> = {
+  R: 'PAbs_Red',
+  G: 'PAbs_Green',
+  B: 'PAbs_Blue',
+};
+
 function pabsChannelValue(measurement: WellMeasurement, channel: FitChannel): number {
   if (channel === 'R') {
     return measurement.pabs.r;
@@ -1438,6 +1445,180 @@ function pabsChannelValue(measurement: WellMeasurement, channel: FitChannel): nu
   }
 
   return measurement.pabs.b;
+}
+
+function safePythonResultsBaseName(imageName: string | null): string {
+  const rawBase = (imageName ?? 'TIPICA').replace(/\.[^.]+$/, '').trim() || 'TIPICA';
+  const safe = rawBase
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .replace(/[. ]+$/g, '')
+    .trim();
+
+  return safe || 'TIPICA';
+}
+
+function addManifestedBlob(
+  files: { name: string; blob: Blob }[],
+  addManifestFile: (
+    path: string,
+    kind: string,
+    mediaType: string,
+    required: boolean,
+    condition?: string,
+  ) => void,
+  name: string,
+  blob: Blob,
+  kind: string,
+  required: boolean,
+  condition?: string,
+): void {
+  files.push({ name, blob });
+  addManifestFile(name, kind, blob.type || 'application/octet-stream', required, condition);
+}
+
+function createPythonResultsCaptionText(imageBase: string, unitLabel: string, expectedRefs: ExpectedRef[]): string {
+  const referenceLines = expectedRefs.length > 0
+    ? expectedRefs.map((ref, index) => {
+      const label = ref.label || ref.refId || `Reference ${index + 1}`;
+      const sdText = ref.sd !== null && Number.isFinite(ref.sd) ? ` +/- ${formatFitCell(ref.sd)}` : '';
+      return `- ${label}: ${formatFitCell(ref.value)}${sdText} ${unitLabel}`;
+    }).join('\n')
+    : '- No external reference values were configured.';
+
+  return `RESULTS caption - RGB quantitative output
+
+File scope
+This caption applies to the primary RGB outputs in the RESULTS folder for ${imageBase}, especially the *_FIGURE_RGB.png and *_REPORT.xlsx files.
+
+Analytical signal
+The primary RGB signal is pseudo-absorbance, reported as PAbs_Red, PAbs_Green and PAbs_Blue:
+    PAbs = log10(I_BG / I_well) = -log10(I_well / I_BG)
+where I_well is the median intensity from the well ROI and I_BG is the local inter-well background predicted for that well. This is an image-derived pseudo-absorbance and is not assumed to be a spectrophotometric absorbance.
+
+Fitting and quantification
+Calibration and standard-addition fits use the current TIPICA webapp fitting results. Python desktop uses robust residual-based IRLS linear regression; web parity of the fitting implementation is tracked separately and no formulas are changed by this export. For standard addition, the original-sample concentration is C0 = DF x q/m, where y = m x + q and x is the added concentration.
+
+Ranking score
+For methods with both calibration and standard addition, the Python desktop global score is:
+    GlobalScore = slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ)
+with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|). The web export uses current fit quality to select a display channel until full Python ranking parity is implemented. Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
+
+Reference values and recovery
+External reference values, when provided, are used only for external comparison (Delta and recovery). They are not used to choose the ranked RGB method.
+${referenceLines}
+
+Quality control
+Image, plate, geometry and floor-QC messages are alerts on data quality. No automatic image correction is applied.
+
+Geometry and epsilon/path-length quantification
+When epsilon-based unknown quantification is used, the Python desktop estimates optical path length from configured liquid volume and nominal flat-bottom well area. This web milestone does not implement epsilon/path-length quantification; when added, it must assume ANSI/SLAS-compatible flat-bottom microplate geometry and flag non-flat or non-certified geometries for separate validation.
+
+Units
+Reported concentrations are expressed in ${unitLabel}.
+`;
+}
+
+function drawImageCover(
+  ctx: CanvasRenderingContext2D,
+  source: CanvasImageSource,
+  sourceWidth: number,
+  sourceHeight: number,
+  dx: number,
+  dy: number,
+  dw: number,
+  dh: number,
+): void {
+  const sourceAspect = sourceWidth / sourceHeight;
+  const destAspect = dw / dh;
+  let sx = 0;
+  let sy = 0;
+  let sw = sourceWidth;
+  let sh = sourceHeight;
+
+  if (sourceAspect > destAspect) {
+    sw = sourceHeight * destAspect;
+    sx = (sourceWidth - sw) / 2;
+  } else {
+    sh = sourceWidth / destAspect;
+    sy = (sourceHeight - sh) / 2;
+  }
+
+  ctx.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh);
+}
+
+function buildPythonStylePlateRoiOverlayCanvas(
+  imageData: ImageData,
+  wells: WellCenter[],
+  measurements: WellMeasurement[],
+  radiusFactor: number,
+  floorRoiRadiusFactor: number,
+  floorCircles: FloorCircle[] | null,
+): HTMLCanvasElement {
+  const source = createDiagnosticCanvas(imageData).canvas;
+  const canvas = document.createElement('canvas');
+  const width = 1063;
+  const height = 709;
+  const scale = Math.min(width / imageData.width, height / imageData.height);
+  const dx = (width - imageData.width * scale) / 2;
+  const dy = (height - imageData.height * scale) / 2;
+  const ctx = canvas.getContext('2d');
+
+  canvas.width = width;
+  canvas.height = height;
+
+  if (!ctx) {
+    throw new Error('Could not create Python-style ROI overlay canvas.');
+  }
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(source, dx, dy, imageData.width * scale, imageData.height * scale);
+
+  const measurementByWell = new Map(measurements.map((measurement) => [measurement.wellId, measurement]));
+
+  ctx.save();
+  ctx.translate(dx, dy);
+  ctx.scale(scale, scale);
+  ctx.lineWidth = Math.max(1, 2 / scale);
+
+  wells.forEach((well) => {
+    const measurement = measurementByWell.get(well.wellId);
+    const mode = measurement?.roiMode ?? 'simple';
+    const mouthRadius = measurement?.mouthRadiusUsed && measurement.mouthRadiusUsed > 0
+      ? measurement.mouthRadiusUsed
+      : estimateRoiRadius(wells, well.row, well.col, radiusFactor);
+    const floorCircle = floorCircles && floorCircles.length === wells.length
+      ? floorCircles[well.row * 12 + well.col]
+      : null;
+    const floorRadius = floorCircle
+      ? measurement?.floorRadiusUsed && measurement.floorRadiusUsed > 0
+        ? measurement.floorRadiusUsed
+        : Math.max(1, floorCircle.r * floorRoiRadiusFactor)
+      : 0;
+
+    ctx.beginPath();
+    ctx.arc(well.x, well.y, mouthRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(0, 190, 80, 0.95)';
+    ctx.stroke();
+
+    if (floorCircle) {
+      ctx.beginPath();
+      ctx.arc(floorCircle.x, floorCircle.y, floorRadius, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(0, 210, 230, 0.95)';
+      ctx.stroke();
+
+      if (mode === 'floor-aware' || mode === 'mouth-floor-intersection') {
+        ctx.beginPath();
+        ctx.arc(floorCircle.x, floorCircle.y, floorRadius, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 230, 40, 0.10)';
+        ctx.fill();
+      }
+    }
+  });
+
+  ctx.restore();
+  return canvas;
 }
 
 function finiteRange(values: number[], fallbackMin = 0, fallbackMax = 1): { min: number; max: number } {
@@ -1633,6 +1814,440 @@ function buildRgbStandardAdditionFitCanvas(fits: StandardAdditionFit[]): HTMLCan
   });
 
   return buildFitFigureCanvas('RGB standard-addition fits', 'Added concentration', 'PAbs', series);
+}
+
+function channelDisplayName(channel: FitChannel): string {
+  return PYTHON_RESULTS_CHANNEL_LABELS[channel];
+}
+
+function selectBestRgbChannel(calibrationFits: CalibrationFit[], standardAdditionFits: StandardAdditionFit[]): FitChannel {
+  const scoreByChannel = new Map<FitChannel, number>();
+
+  PYTHON_RESULTS_CHANNELS.forEach((channel) => {
+    const cal = calibrationFits.find((fit) => fit.channel === channel);
+    const std = standardAdditionFits.filter((fit) => fit.channel === channel);
+    const finiteR2 = [
+      cal?.r2,
+      ...std.map((fit) => fit.r2),
+    ].filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    const r2Score = finiteR2.length > 0
+      ? finiteR2.reduce((sum, value) => sum + Math.max(0, value), 0) / finiteR2.length
+      : 0;
+    const slopeScore = cal && Number.isFinite(cal.slope) ? Math.abs(cal.slope) : 0;
+
+    scoreByChannel.set(channel, r2Score * Math.max(slopeScore, 1e-9));
+  });
+
+  return [...scoreByChannel.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'R';
+}
+
+function drawWrappedText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  lineHeight: number,
+  maxY: number,
+): number {
+  const paragraphs = text.split('\n');
+  let cursorY = y;
+
+  for (const paragraph of paragraphs) {
+    const words = paragraph.split(/\s+/).filter((word) => word.length > 0);
+
+    if (words.length === 0) {
+      cursorY += lineHeight;
+      continue;
+    }
+
+    let line = '';
+    for (const word of words) {
+      const nextLine = line ? `${line} ${word}` : word;
+
+      if (ctx.measureText(nextLine).width > maxWidth && line) {
+        if (cursorY > maxY) {
+          return cursorY;
+        }
+        ctx.fillText(line, x, cursorY);
+        cursorY += lineHeight;
+        line = word;
+      } else {
+        line = nextLine;
+      }
+    }
+
+    if (cursorY > maxY) {
+      return cursorY;
+    }
+    ctx.fillText(line, x, cursorY);
+    cursorY += lineHeight;
+  }
+
+  return cursorY;
+}
+
+function collectCalibrationPointsForChannel(
+  channel: FitChannel,
+  measurements: WellMeasurement[],
+  plateMap: WellConfig[],
+): Array<{ x: number; y: number }> {
+  const measurementByWell = new Map(measurements.map((measurement) => [measurement.wellId, measurement]));
+
+  return plateMap.flatMap((well) => {
+    if (well.role !== 'C' || well.concentration === null || !Number.isFinite(well.concentration)) {
+      return [];
+    }
+
+    const measurement = measurementByWell.get(well.wellId);
+    const y = measurement ? pabsChannelValue(measurement, channel) : Number.NaN;
+
+    return Number.isFinite(y) ? [{ x: well.concentration, y }] : [];
+  });
+}
+
+function drawPythonStyleChannelPanel(
+  ctx: CanvasRenderingContext2D,
+  bounds: { x: number; y: number; width: number; height: number },
+  channel: FitChannel,
+  calibrationFit: CalibrationFit | undefined,
+  standardFits: StandardAdditionFit[],
+  calibrationPoints: Array<{ x: number; y: number }>,
+  unitLabel: string,
+  expectedRefs: ExpectedRef[],
+  monochrome = false,
+): void {
+  const color = monochrome ? '#111111' : FIT_CHANNEL_COLORS[channel];
+  const margin = { left: 76, right: 20, top: 26, bottom: 56 };
+  const plot = {
+    x: bounds.x + margin.left,
+    y: bounds.y + margin.top,
+    width: bounds.width - margin.left - margin.right,
+    height: bounds.height - margin.top - margin.bottom,
+  };
+  const stdPoints = standardFits.flatMap((fit) => {
+    const xValues = fit.addedConcentrationsUsed ?? [];
+    const yValues = fit.meanSignalValuesUsed ?? [];
+    return xValues.flatMap((x, index) => {
+      const y = yValues[index];
+      return Number.isFinite(x) && Number.isFinite(y) ? [{ x, y }] : [];
+    });
+  });
+  const referenceX = standardFits.flatMap((fit) =>
+    expectedRefs.flatMap((ref) => {
+      if (ref.refId && fit.sampleId && ref.refId !== fit.sampleId) {
+        return [];
+      }
+      const x = ref.value / Math.max(fit.dilutionFactor, 1e-12);
+      return Number.isFinite(x) ? [x] : [];
+    }),
+  );
+  const allX = [
+    ...calibrationPoints.map((point) => point.x),
+    ...stdPoints.map((point) => point.x),
+    ...referenceX,
+  ];
+  const allY = [
+    ...calibrationPoints.map((point) => point.y),
+    ...stdPoints.map((point) => point.y),
+  ];
+  const xRange = finiteRange(allX, 0, 1);
+  const yFromFits = [
+    calibrationFit && Number.isFinite(calibrationFit.slope) && Number.isFinite(calibrationFit.intercept)
+      ? calibrationFit.slope * xRange.min + calibrationFit.intercept
+      : Number.NaN,
+    calibrationFit && Number.isFinite(calibrationFit.slope) && Number.isFinite(calibrationFit.intercept)
+      ? calibrationFit.slope * xRange.max + calibrationFit.intercept
+      : Number.NaN,
+    ...standardFits.flatMap((fit) => (
+      Number.isFinite(fit.slope) && Number.isFinite(fit.intercept)
+        ? [fit.slope * xRange.min + fit.intercept, fit.slope * xRange.max + fit.intercept]
+        : []
+    )),
+  ];
+  const yRange = finiteRange([...allY, ...yFromFits], 0, 1);
+  const xToPx = (value: number) => plot.x + ((value - xRange.min) / (xRange.max - xRange.min)) * plot.width;
+  const yToPx = (value: number) => plot.y + plot.height - ((value - yRange.min) / (yRange.max - yRange.min)) * plot.height;
+
+  ctx.save();
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
+  ctx.strokeStyle = '#d6dedb';
+  ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+
+  ctx.fillStyle = '#1d2628';
+  ctx.font = '700 18px Inter, Arial, sans-serif';
+  ctx.fillText(channelDisplayName(channel), bounds.x + 12, bounds.y + 20);
+
+  ctx.strokeStyle = '#dce4e1';
+  ctx.lineWidth = 1;
+  ctx.font = '12px Inter, Arial, sans-serif';
+  ctx.fillStyle = '#465255';
+  for (let tick = 0; tick <= 4; tick += 1) {
+    const tx = plot.x + (plot.width * tick) / 4;
+    const ty = plot.y + (plot.height * tick) / 4;
+    ctx.beginPath();
+    ctx.moveTo(tx, plot.y);
+    ctx.lineTo(tx, plot.y + plot.height);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(plot.x, ty);
+    ctx.lineTo(plot.x + plot.width, ty);
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = '#2b3437';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(plot.x, plot.y, plot.width, plot.height);
+
+  ctx.fillStyle = '#465255';
+  ctx.font = '11px Inter, Arial, sans-serif';
+  for (let tick = 0; tick <= 4; tick += 1) {
+    const xValue = xRange.min + ((xRange.max - xRange.min) * tick) / 4;
+    const yValue = yRange.min + ((yRange.max - yRange.min) * (4 - tick)) / 4;
+    ctx.fillText(formatFitCell(xValue), plot.x + (plot.width * tick) / 4 - 14, plot.y + plot.height + 18);
+    ctx.fillText(formatPAbsCell(yValue), bounds.x + 8, plot.y + (plot.height * tick) / 4 + 4);
+  }
+
+  ctx.fillStyle = '#263238';
+  ctx.font = '700 12px Inter, Arial, sans-serif';
+  ctx.fillText(`Added concentration (${unitLabel})`, plot.x + plot.width / 2 - 86, bounds.y + bounds.height - 14);
+  ctx.save();
+  ctx.translate(bounds.x + 18, plot.y + plot.height / 2 + 42);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText(channelDisplayName(channel), 0, 0);
+  ctx.restore();
+
+  if (calibrationFit && Number.isFinite(calibrationFit.slope) && Number.isFinite(calibrationFit.intercept)) {
+    ctx.save();
+    ctx.setLineDash([8, 6]);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(xToPx(xRange.min), yToPx(calibrationFit.slope * xRange.min + calibrationFit.intercept));
+    ctx.lineTo(xToPx(xRange.max), yToPx(calibrationFit.slope * xRange.max + calibrationFit.intercept));
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  calibrationPoints.forEach((point) => {
+    ctx.beginPath();
+    ctx.arc(xToPx(point.x), yToPx(point.y), 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  });
+
+  standardFits.forEach((fit) => {
+    const xValues = fit.addedConcentrationsUsed ?? [];
+    const yValues = fit.meanSignalValuesUsed ?? [];
+
+    if (Number.isFinite(fit.slope) && Number.isFinite(fit.intercept)) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(xToPx(xRange.min), yToPx(fit.slope * xRange.min + fit.intercept));
+      ctx.lineTo(xToPx(xRange.max), yToPx(fit.slope * xRange.max + fit.intercept));
+      ctx.stroke();
+    }
+
+    xValues.forEach((x, index) => {
+      const y = yValues[index];
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return;
+      }
+
+      const px = xToPx(x);
+      const py = yToPx(y);
+      ctx.fillStyle = color;
+      ctx.fillRect(px - 4.5, py - 4.5, 9, 9);
+    });
+
+    expectedRefs.forEach((ref) => {
+      if (ref.refId && fit.sampleId && ref.refId !== fit.sampleId) {
+        return;
+      }
+
+      const x = ref.value / Math.max(fit.dilutionFactor, 1e-12);
+      if (!Number.isFinite(x)) {
+        return;
+      }
+
+      const px = xToPx(x);
+      ctx.save();
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = '#8a3ffc';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(px, plot.y);
+      ctx.lineTo(px, plot.y + plot.height);
+      ctx.stroke();
+      ctx.restore();
+    });
+  });
+
+  ctx.fillStyle = '#344044';
+  ctx.font = '11px Inter, Arial, sans-serif';
+  ctx.fillText('open circles: calibration, dashed fit', plot.x + 4, bounds.y + bounds.height - 36);
+  ctx.fillText('filled squares: standard addition, solid fit', plot.x + 4, bounds.y + bounds.height - 22);
+  if (expectedRefs.length > 0) {
+    ctx.fillStyle = '#6d36c9';
+    ctx.fillText('purple dashed: external reference check', plot.x + 248, bounds.y + bounds.height - 22);
+  }
+
+  ctx.restore();
+}
+
+function buildPythonStyleFigureRgbCanvas({
+  imageBase,
+  overlayCanvas,
+  measurements,
+  displayMeasurements,
+  plateMap,
+  calibrationFits,
+  standardAdditionFits,
+  expectedRefs,
+  unitLabel,
+  roiMode,
+  backgroundModel,
+  floorGeometryAvailable,
+  bestChannel,
+}: {
+  imageBase: string;
+  overlayCanvas: HTMLCanvasElement;
+  measurements: WellMeasurement[];
+  displayMeasurements: WellMeasurement[];
+  plateMap: WellConfig[];
+  calibrationFits: CalibrationFit[];
+  standardAdditionFits: StandardAdditionFit[];
+  expectedRefs: ExpectedRef[];
+  unitLabel: string;
+  roiMode: RoiMode;
+  backgroundModel: BackgroundModel;
+  floorGeometryAvailable: boolean;
+  bestChannel: FitChannel;
+}): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  const width = 1654;
+  const height = 2339;
+  const ctx = canvas.getContext('2d');
+
+  canvas.width = width;
+  canvas.height = height;
+
+  if (!ctx) {
+    throw new Error('Could not create Python-style RGB report canvas.');
+  }
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+  drawImageCover(ctx, overlayCanvas, overlayCanvas.width, overlayCanvas.height, 70, 70, 700, 470);
+
+  ctx.fillStyle = '#172026';
+  ctx.font = '700 26px Inter, Arial, sans-serif';
+  ctx.fillText(`${imageBase} RGB/PAbs report`, 70, 590);
+
+  const calSummary = calibrationFits.length > 0
+    ? calibrationFits.map((fit) => `${channelDisplayName(fit.channel)} R2=${formatFitCell(fit.r2)}`).join('; ')
+    : 'No calibration fits.';
+  const stdSummary = standardAdditionFits.length > 0
+    ? `${standardAdditionFits.length} standard-addition fits across ${new Set(standardAdditionFits.map((fit) => fit.sampleId)).size} sample IDs.`
+    : 'No standard-addition fits.';
+  const refSummary = expectedRefs.length > 0
+    ? expectedRefs.map((ref) => `${ref.label || ref.refId || 'Reference'}=${formatFitCell(ref.value)} ${unitLabel}`).join('; ')
+    : 'No external reference values.';
+  const summaryText = [
+    `Mode: ${formatRoiMode(roiMode)}`,
+    `Background: ${formatBackgroundModel(backgroundModel)}`,
+    `Measurements: ${measurements.length} wells`,
+    `Floor geometry: ${floorGeometryAvailable ? 'available' : 'missing'}`,
+    `Selected display channel: ${channelDisplayName(bestChannel)}`,
+    '',
+    'Calibration',
+    calSummary,
+    '',
+    'Standard addition',
+    stdSummary,
+    'C0 = DF x q/m from current webapp fit results.',
+    '',
+    'Reference values',
+    refSummary,
+    '',
+    'Notes',
+    'PAbs = log10(I_BG / I_well).',
+    'Python desktop uses robust IRLS and a richer ranking score; this 36A export starts filename and figure-structure parity without changing calculations.',
+  ].join('\n');
+
+  ctx.fillStyle = '#253033';
+  ctx.font = '18px Consolas, "Courier New", monospace';
+  drawWrappedText(ctx, summaryText, 70, 630, 700, 26, height - 100);
+
+  const panelX = 850;
+  const panelWidth = 720;
+  const panelHeight = 600;
+
+  PYTHON_RESULTS_CHANNELS.forEach((channel, index) => {
+    drawPythonStyleChannelPanel(
+      ctx,
+      { x: panelX, y: 70 + index * (panelHeight + 48), width: panelWidth, height: panelHeight },
+      channel,
+      calibrationFits.find((fit) => fit.channel === channel),
+      standardAdditionFits.filter((fit) => fit.channel === channel),
+      collectCalibrationPointsForChannel(channel, displayMeasurements, plateMap),
+      unitLabel,
+      expectedRefs,
+    );
+  });
+
+  return canvas;
+}
+
+function buildPythonStyleBestChannelCanvas({
+  bestChannel,
+  displayMeasurements,
+  plateMap,
+  calibrationFits,
+  standardAdditionFits,
+  expectedRefs,
+  unitLabel,
+}: {
+  bestChannel: FitChannel;
+  displayMeasurements: WellMeasurement[];
+  plateMap: WellConfig[];
+  calibrationFits: CalibrationFit[];
+  standardAdditionFits: StandardAdditionFit[];
+  expectedRefs: ExpectedRef[];
+  unitLabel: string;
+}): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  const width = 1063;
+  const height = 709;
+  const ctx = canvas.getContext('2d');
+
+  canvas.width = width;
+  canvas.height = height;
+
+  if (!ctx) {
+    throw new Error('Could not create Python-style best-channel canvas.');
+  }
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+  drawPythonStyleChannelPanel(
+    ctx,
+    { x: 28, y: 24, width: width - 56, height: height - 48 },
+    bestChannel,
+    calibrationFits.find((fit) => fit.channel === bestChannel),
+    standardAdditionFits.filter((fit) => fit.channel === bestChannel),
+    collectCalibrationPointsForChannel(bestChannel, displayMeasurements, plateMap),
+    unitLabel,
+    expectedRefs,
+    true,
+  );
+
+  return canvas;
 }
 
 function buildStandardAdditionGroupingSummary(fits: StandardAdditionFit[]): string {
@@ -3317,6 +3932,8 @@ function App() {
       const files: { name: string; blob: Blob }[] = [];
       const manifestFiles: ExportManifestFileEntry[] = [];
       const generatedAt = new Date().toISOString();
+      const pythonResultsBase = safePythonResultsBaseName(imageName);
+      const pythonResultsPrefix = `RESULTS/${pythonResultsBase}`;
       const addManifestFile = (
         path: string,
         kind: string,
@@ -3443,6 +4060,7 @@ function App() {
         [
           'TIPICA complete analysis ZIP export',
           '',
+          'RESULTS/ contains Python-style primary RGB output filenames added for parity work.',
           'results/ contains quantitative CSV outputs.',
           'diagnostics/ contains diagnostic images, diagnostic CSV files, reference values, and export_manifest.json.',
           'method_summary.json summarizes analysis settings and method metadata.',
@@ -3453,6 +4071,13 @@ function App() {
         'text/plain;charset=utf-8',
         'readme',
         true,
+      );
+      addTextFile(
+        `${pythonResultsPrefix}_RESULTS_CAPTION.txt`,
+        createPythonResultsCaptionText(pythonResultsBase, plateMapUnit, expectedRefs),
+        'text/plain;charset=utf-8',
+        'python_parity_results_caption',
+        false,
       );
 
       if (geometry) {
@@ -3486,6 +4111,71 @@ function App() {
 
       if (image && measurements.length > 0 && wells.length === 96) {
         const imageData = createAnalysisImageData(image, wells);
+        const displayMeasurements = lowSignalCorrectionEffective
+          ? correctedMeasurementSet.measurements
+          : measurements;
+        const pythonPlateOverlayCanvas = buildPythonStylePlateRoiOverlayCanvas(
+          imageData,
+          wells,
+          measurements,
+          radiusFactor,
+          floorRoiRadiusFactor,
+          floorGeometryAvailable ? floorCircles : null,
+        );
+        const bestChannel = selectBestRgbChannel(calibrationFits, standardAdditionFitsWithSlopeContext);
+        const pythonFigureRgbCanvas = buildPythonStyleFigureRgbCanvas({
+          imageBase: pythonResultsBase,
+          overlayCanvas: pythonPlateOverlayCanvas,
+          measurements,
+          displayMeasurements,
+          plateMap,
+          calibrationFits,
+          standardAdditionFits: standardAdditionFitsWithSlopeContext,
+          expectedRefs,
+          unitLabel: plateMapUnit,
+          roiMode: currentMethodMetadata.roiMode,
+          backgroundModel,
+          floorGeometryAvailable,
+          bestChannel,
+        });
+        const pythonBestChannelCanvas = buildPythonStyleBestChannelCanvas({
+          bestChannel,
+          displayMeasurements,
+          plateMap,
+          calibrationFits,
+          standardAdditionFits: standardAdditionFitsWithSlopeContext,
+          expectedRefs,
+          unitLabel: plateMapUnit,
+        });
+
+        addManifestedBlob(
+          files,
+          addManifestFile,
+          `${pythonResultsPrefix}_PLATE_ROI_OVERLAY.png`,
+          await canvasToPngBlob(pythonPlateOverlayCanvas),
+          'python_parity_plate_roi_overlay',
+          false,
+          'included when extraction results and image are available',
+        );
+        addManifestedBlob(
+          files,
+          addManifestFile,
+          `${pythonResultsPrefix}_FIGURE_RGB.png`,
+          await canvasToPngBlob(pythonFigureRgbCanvas),
+          'python_parity_figure_rgb',
+          false,
+          'included when extraction results and image are available',
+        );
+        addManifestedBlob(
+          files,
+          addManifestFile,
+          `${pythonResultsPrefix}_BEST_CHANNEL.png`,
+          await canvasToPngBlob(pythonBestChannelCanvas),
+          'python_parity_best_channel',
+          false,
+          'included when extraction results and image are available',
+        );
+
         const roiCanvas = buildRoiDiagnosticCanvas(
           imageData,
           wells,
