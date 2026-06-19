@@ -29,6 +29,14 @@ import {
   hasFloorGeometry,
 } from './core/plate';
 import {
+  FLOOR_CIRCLE_REFERENCES,
+  geometryWithFloorCircles,
+  geometryWithoutFloorCircles,
+  getReferenceFloorCircles,
+  reconcileLoadedGeometryFloor,
+  type FloorGeometrySource,
+} from './core/geometryReconciliation';
+import {
   createEmptyPlateMap,
 } from './core/plateMap';
 import type { ExpectedRef } from './core/plateConfigurator';
@@ -69,16 +77,6 @@ const LIMITED_STORED_CALIBRATION_METADATA_WARNING = 'Stored calibration has limi
 const STORED_CALIBRATION_METHOD_MISMATCH_WARNING = 'Stored calibration method differs from current extraction method; results may not be comparable.';
 const MISSING_VALUE = 'Not available';
 
-type FloorGeometrySource = 'none' | 'json' | 'manual' | 'project';
-type FloorCircleKey = 'floor_a1_circle_img' | 'floor_a12_circle_img' | 'floor_h12_circle_img' | 'floor_h1_circle_img';
-
-const FLOOR_CIRCLE_REFERENCES: { label: string; key: FloorCircleKey; row: number; col: number }[] = [
-  { label: 'A1', key: 'floor_a1_circle_img', row: 0, col: 0 },
-  { label: 'A12', key: 'floor_a12_circle_img', row: 0, col: 11 },
-  { label: 'H12', key: 'floor_h12_circle_img', row: 7, col: 11 },
-  { label: 'H1', key: 'floor_h1_circle_img', row: 7, col: 0 },
-];
-
 function geometryFromManualPoints(points: Point[]): PlateGeometry | null {
   if (points.length !== 4) {
     return null;
@@ -94,13 +92,6 @@ function geometryFromManualPoints(points: Point[]): PlateGeometry | null {
 
 function pointDistance(a: Point, b: Point): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function mouthGeometryMatches(a: PlateGeometry, b: PlateGeometry, tolerancePx = 2): boolean {
-  return pointDistance(a.corner_a1, b.corner_a1) <= tolerancePx &&
-    pointDistance(a.corner_a12, b.corner_a12) <= tolerancePx &&
-    pointDistance(a.corner_h12, b.corner_h12) <= tolerancePx &&
-    pointDistance(a.corner_h1, b.corner_h1) <= tolerancePx;
 }
 
 function medianNumber(values: number[]): number | null {
@@ -167,76 +158,6 @@ function estimateInitialManualMouthRadius(wells: WellCenter[], radiusFactor: num
   }
 
   return clampManualMouthRadiusPx(estimateRoiRadius(wells, a1.row, a1.col, radiusFactor));
-}
-
-function geometryWithFloorCircles(geometry: PlateGeometry, circles: FloorCircle[]): PlateGeometry {
-  return {
-    ...geometry,
-    floor_a1_circle_img: { ...circles[0] },
-    floor_a12_circle_img: { ...circles[1] },
-    floor_h12_circle_img: { ...circles[2] },
-    floor_h1_circle_img: { ...circles[3] },
-  };
-}
-
-function geometryWithoutFloorCircles(geometry: PlateGeometry): PlateGeometry {
-  return {
-    corner_a1: geometry.corner_a1,
-    corner_a12: geometry.corner_a12,
-    corner_h12: geometry.corner_h12,
-    corner_h1: geometry.corner_h1,
-    ...(geometry.mouth_radius_px ? { mouth_radius_px: geometry.mouth_radius_px } : {}),
-    ...(geometry.roi_radius_factor ? { roi_radius_factor: geometry.roi_radius_factor } : {}),
-  };
-}
-
-function reconcileLoadedGeometryFloor(
-  loadedGeometry: PlateGeometry,
-  loadedFloorGeometrySource: FloorGeometrySource,
-  currentGeometry: PlateGeometry | null,
-  currentFloorGeometrySource: FloorGeometrySource,
-): { geometry: PlateGeometry; floorGeometrySource: FloorGeometrySource; preservedCurrentFloorGeometry: boolean } {
-  if (hasFloorGeometry(loadedGeometry)) {
-    return {
-      geometry: loadedGeometry,
-      floorGeometrySource: loadedFloorGeometrySource,
-      preservedCurrentFloorGeometry: false,
-    };
-  }
-
-  const currentReferenceFloorCircles = getReferenceFloorCircles(currentGeometry);
-
-  if (
-    currentGeometry &&
-    currentReferenceFloorCircles.length === FLOOR_CIRCLE_REFERENCES.length &&
-    mouthGeometryMatches(loadedGeometry, currentGeometry)
-  ) {
-    // Project and geometry files can be loaded in either order. If the newly loaded
-    // file is mouth-only, keep compatible floor circles already loaded from the
-    // companion project/geometry file so derived floorCircles and extraction math
-    // do not depend on load order.
-    return {
-      geometry: geometryWithFloorCircles(loadedGeometry, currentReferenceFloorCircles),
-      floorGeometrySource: currentFloorGeometrySource === 'none' ? 'json' : currentFloorGeometrySource,
-      preservedCurrentFloorGeometry: true,
-    };
-  }
-
-  return {
-    geometry: loadedGeometry,
-    floorGeometrySource: 'none',
-    preservedCurrentFloorGeometry: false,
-  };
-}
-
-function getReferenceFloorCircles(geometry: PlateGeometry | null): FloorCircle[] {
-  if (!geometry) {
-    return [];
-  }
-
-  return FLOOR_CIRCLE_REFERENCES
-    .map(({ key }) => geometry[key])
-    .filter((circle): circle is FloorCircle => Boolean(circle));
 }
 
 function getReferenceMouthCircle(wells: WellCenter[], referenceIndex: number, radiusFactor: number): FloorCircle | null {
@@ -879,16 +800,20 @@ function parseProjectJson(raw: unknown) {
   }
 
   const roiModeValue = project.roiMode;
-  const roiMode: 'simple' | 'floor-aware' | 'mouth-floor-intersection' = (roiModeValue === 'floor-aware' || roiModeValue === 'mouth-floor-intersection') ? roiModeValue : 'simple';
+  const roiMode: RoiMode | null =
+    roiModeValue === 'simple' || roiModeValue === 'floor-aware' || roiModeValue === 'mouth-floor-intersection'
+      ? roiModeValue
+      : null;
   const roiPixelStatisticsModeValue = project.roiPixelStatisticsMode;
-  const roiPixelStatisticsMode: RoiPixelStatisticsMode = roiPixelStatisticsModeValue === 'robust-trimmed-v1'
-    ? 'robust-trimmed-v1'
-    : 'simple-median';
+  const roiPixelStatisticsMode: RoiPixelStatisticsMode | null =
+    roiPixelStatisticsModeValue === 'simple-median' || roiPixelStatisticsModeValue === 'robust-trimmed-v1'
+      ? roiPixelStatisticsModeValue
+      : null;
 
   const floorRoiRadiusFactorValue = project.floorRoiRadiusFactor;
   const floorRoiRadiusFactor = typeof floorRoiRadiusFactorValue === 'number' && Number.isFinite(floorRoiRadiusFactorValue)
     ? floorRoiRadiusFactorValue
-    : 0.85;
+    : null;
 
   const analysisSize = project.imageAnalysisSize;
 
@@ -896,10 +821,12 @@ function parseProjectJson(raw: unknown) {
     throw new Error('Invalid imageAnalysisSize in project JSON.');
   }
 
-  const backgroundModel: BackgroundModel =
+  const backgroundModel: BackgroundModel | null =
     backgroundModelValue === 'robust-interwell-v1' || backgroundModelValue === 'physical-interwell-polynomial-v1'
       ? backgroundModelValue
-      : 'annular';
+      : backgroundModelValue === 'annular'
+        ? backgroundModelValue
+        : null;
 
   return {
     version: project.version,
@@ -2879,14 +2806,20 @@ function App() {
         project.floorGeometrySource,
         geometry,
         floorGeometrySource,
+        {
+          allowApproximateMouthGeometryMatch: true,
+          preferCurrentFloorGeometry: true,
+        },
       );
 
       setGeometry(reconciledGeometry.geometry);
       setGeometryName('Loaded project geometry');
       setGeometrySource('json');
       setFloorGeometrySource(reconciledGeometry.floorGeometrySource);
-      setFloorGeometryNotice(reconciledGeometry.preservedCurrentFloorGeometry
-        ? 'Project did not include floor circles; preserved compatible floor circles already loaded.'
+      setFloorGeometryNotice(reconciledGeometry.preservedCurrentPlateGeometry
+        ? 'Project did not include floor circles; preserved the already-loaded floor-capable geometry and applied project settings.'
+        : reconciledGeometry.preservedCurrentFloorGeometry
+          ? 'Project did not include floor circles; preserved compatible floor circles already loaded.'
         : !hasFloorGeometry(project.geometry) && hadFloorGeometry
           ? 'Project geometry does not include floor circles; existing floor circles were not preserved because the mouth/corner geometry differs.'
           : null);
@@ -2894,25 +2827,28 @@ function App() {
       setManualMouthRadiusPx(reconciledGeometry.geometry.mouth_radius_px
         ? clampManualMouthRadiusPx(reconciledGeometry.geometry.mouth_radius_px)
         : DEFAULT_MANUAL_MOUTH_RADIUS_PX);
-      setRoiMode(project.roiMode);
-      setRoiPixelStatisticsMode(project.roiPixelStatisticsMode);
-      setFloorRoiRadiusFactor(project.floorRoiRadiusFactor);
+      // Older projects may not carry ROI/background method settings. Missing or
+      // invalid settings are treated as "no opinion" so loading a project cannot
+      // silently downgrade an already floor/intersection-capable analysis path.
+      setRoiMode(project.roiMode ?? roiMode);
+      setRoiPixelStatisticsMode(project.roiPixelStatisticsMode ?? roiPixelStatisticsMode);
+      setFloorRoiRadiusFactor(project.floorRoiRadiusFactor ?? floorRoiRadiusFactor);
       setPlateMap(project.plateMap);
       setExpectedRefs(project.expectedRefs);
       setStoredCalibration(project.storedCalibration);
-      setBackgroundModel(project.backgroundModel);
+      setBackgroundModel(project.backgroundModel ?? backgroundModel);
       setUseLowSignalCorrection(project.lowSignalCorrectionEnabled);
       setLowSignalCorrectionTouched(true);
       const loadedMethodMetadata = project.methodMetadata as Record<string, unknown> | null;
       const savedRoiMode = loadedMethodMetadata && typeof loadedMethodMetadata.roiMode === 'string'
         ? loadedMethodMetadata.roiMode
-        : undefined;
+        : project.roiMode ?? undefined;
       const savedRoiPixelStatisticsMode = loadedMethodMetadata && typeof loadedMethodMetadata.roiPixelStatisticsMode === 'string'
         ? loadedMethodMetadata.roiPixelStatisticsMode
-        : undefined;
+        : project.roiPixelStatisticsMode ?? undefined;
       const savedBackgroundModel = loadedMethodMetadata && typeof loadedMethodMetadata.backgroundModel === 'string'
         ? loadedMethodMetadata.backgroundModel
-        : undefined;
+        : project.backgroundModel ?? undefined;
       const savedLowSignalCorrectionEnabled = loadedMethodMetadata && typeof loadedMethodMetadata.lowSignalCorrectionEnabled === 'boolean'
         ? loadedMethodMetadata.lowSignalCorrectionEnabled
         : undefined;
@@ -2942,7 +2878,15 @@ function App() {
     } finally {
       event.currentTarget.value = '';
     }
-  }, [clearMeasurementsAndFits, floorGeometrySource, geometry]);
+  }, [
+    backgroundModel,
+    clearMeasurementsAndFits,
+    floorGeometrySource,
+    floorRoiRadiusFactor,
+    geometry,
+    roiMode,
+    roiPixelStatisticsMode,
+  ]);
 
   const handleClearProject = useCallback(() => {
     setGeometry(null);

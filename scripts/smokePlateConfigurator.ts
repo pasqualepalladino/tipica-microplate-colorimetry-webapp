@@ -9,6 +9,9 @@ import {
   wellId,
   wellConfigsToPlateEditorState,
 } from '../src/core/plateConfigurator.js';
+import { reconcileLoadedGeometryFloor } from '../src/core/geometryReconciliation.js';
+import { hasFloorGeometry } from '../src/core/plate.js';
+import type { PlateGeometry } from '../src/types/geometry.js';
 import type { WellConfig } from '../src/types/plateMap.js';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -240,6 +243,55 @@ function testWellConfigsToPlateEditorState(): void {
   assertEqual(state.grid['1_0'], '0 C mix 3', 'mixed row should keep explicit cell overrides');
 }
 
+function testProjectAfterGeometryPreservesFloorPath(): void {
+  const geometryJson: PlateGeometry = {
+    corner_a1: { x: 257.44049072265625, y: 299.1071472167969 },
+    corner_a12: { x: 1766.3690185546875, y: 296.1309509277344 },
+    corner_h12: { x: 1770.8333740234375, y: 1252.9761962890625 },
+    corner_h1: { x: 257.44049072265625, y: 1260.4166259765625 },
+    floor_a1_circle_img: { x: 285.71429443359375, y: 322.9166564941406, r: 52.65758514404297 },
+    floor_a12_circle_img: { x: 1747.0238037109375, y: 318.452392578125, r: 52.31482696533203 },
+    floor_h12_circle_img: { x: 1751.488037109375, y: 1247.0238037109375, r: 52.52491760253906 },
+    floor_h1_circle_img: { x: 287.202392578125, y: 1250, r: 52.87022399902344 },
+  };
+  const mouthOnlyProjectGeometry: PlateGeometry = {
+    corner_a1: { x: 265.717674970344, y: 303.4373765310154 },
+    corner_a12: { x: 1755.6346381969156, y: 305.80798103516395 },
+    corner_h12: { x: 1758.0071174377224, y: 1256.4203871987356 },
+    corner_h1: { x: 260.9727164887307, y: 1263.5322007111813 },
+  };
+
+  const projectAfterGeometry = reconcileLoadedGeometryFloor(
+    mouthOnlyProjectGeometry,
+    'none',
+    geometryJson,
+    'json',
+    {
+      allowApproximateMouthGeometryMatch: true,
+      preferCurrentFloorGeometry: true,
+    },
+  );
+
+  assert(projectAfterGeometry.preservedCurrentPlateGeometry, 'project-after-geometry should preserve floor-capable geometry');
+  assert(hasFloorGeometry(projectAfterGeometry.geometry), 'project-after-geometry should keep floor circles available');
+  assertEqual(projectAfterGeometry.geometry.corner_a1.x, geometryJson.corner_a1.x, 'project-after-geometry should keep geometry JSON A1 x');
+  assertEqual(projectAfterGeometry.floorGeometrySource, 'json', 'project-after-geometry floor source');
+
+  const geometryAfterProject = reconcileLoadedGeometryFloor(
+    geometryJson,
+    'json',
+    mouthOnlyProjectGeometry,
+    'none',
+  );
+
+  assert(hasFloorGeometry(geometryAfterProject.geometry), 'geometry-after-project should load floor geometry');
+  assertEqual(
+    geometryAfterProject.geometry.corner_a1.x,
+    projectAfterGeometry.geometry.corner_a1.x,
+    'both load orders should converge on the same A1 x',
+  );
+}
+
 function run(): void {
   testRowLabelFromIndex();
   testRowIndexFromLabel();
@@ -249,6 +301,7 @@ function run(): void {
   testBuildPlateMapTemplateCsv();
   testImportPlateMapCsv();
   testWellConfigsToPlateEditorState();
+  testProjectAfterGeometryPreservesFloorPath();
 
   console.log('smoke:plate-configurator passed');
 }
