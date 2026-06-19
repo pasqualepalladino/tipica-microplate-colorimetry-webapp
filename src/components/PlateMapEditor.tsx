@@ -519,7 +519,7 @@ export function PlateMapEditor({
               }
             />
             {index === expectedRows.length - 1 ? (
-              <>
+              <div className="plate-config-reference-actions">
                 <button type="button" className="secondary-button plate-config-icon-button" onClick={addExpectedRow}>
                   +
                 </button>
@@ -532,7 +532,7 @@ export function PlateMapEditor({
                   -
                 </button>
                 <p className="panel-note plate-config-reference-count">Valid reference rows: {collectedExpectedRefs.length}</p>
-              </>
+              </div>
             ) : null}
           </div>
         ))}
@@ -541,7 +541,7 @@ export function PlateMapEditor({
       <section className="nested-control-section" aria-labelledby="plate-map-editor-heading">
         <h3 id="plate-map-editor-heading">Plate map editor</h3>
 
-        <div className="button-row left-aligned-button-row">
+        <div className="button-row left-aligned-button-row plate-map-editor-actions">
           <button type="button" className="secondary-button" onClick={handleCopyRowA}>
             Copy row A
           </button>
@@ -571,8 +571,10 @@ export function PlateMapEditor({
           />
         </div>
 
-        <p className="panel-note">Configured wells: {configuredWellCount}</p>
-        <p className="panel-note">Empty cell = no data (0 is treated as a value).</p>
+        <div className="plate-config-editor-summary">
+          <p className="panel-note">Configured wells: {configuredWellCount}</p>
+          <p className="panel-note">Empty cell = no data (0 is treated as a value).</p>
+        </div>
 
         <div className="plate-map-wrap">
           <table className="plate-map-grid">
