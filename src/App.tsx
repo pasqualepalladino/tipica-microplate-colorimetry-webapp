@@ -4,12 +4,6 @@ import { ImageGeometryLoader } from './components/ImageGeometryLoader';
 import { PlateCanvas } from './components/PlateCanvas';
 import { PlateMapEditor } from './components/PlateMapEditor';
 import packageJson from '../package.json';
-import {
-  calibrationFitsToCsv,
-  standardAdditionFitsToCsv,
-  unknownResultsToCsv,
-  wellMeasurementsToCsv,
-} from './core/exportCsv';
 import { fitCalibration, fitStandardAddition } from './core/fitting';
 import {
   addCorrectionMetadataToCalibrationFits,
@@ -17,7 +11,7 @@ import {
   applyRgbLowSignalCorrections,
   computeRgbLowSignalCorrections,
 } from './core/lowSignalCorrection';
-import { computePAbs } from './core/pabs';
+import { computePAbs, linearizeRgb } from './core/pabs';
 import {
   computeGeometryAlignmentDiagnostics,
   estimateLocalPitch,
@@ -1242,6 +1236,716 @@ The workbook collects diagnostic tables that support auditability, QC and method
 Units
 Reported concentrations are expressed in ${unitLabel}.
 `;
+}
+
+type XlsxCellValue = string | number | boolean | null | undefined;
+type XlsxRow = Record<string, XlsxCellValue>;
+
+interface XlsxSheet {
+  name: string;
+  rows: XlsxCellValue[][];
+}
+
+interface PythonReportWorkbookOptions {
+  imageBase: string;
+  imageName: string | null;
+  unitLabel: string;
+  selectedChannel: FitChannel;
+  generatedAt: string;
+  measurements: WellMeasurement[];
+  displayMeasurements: WellMeasurement[];
+  plateMap: WellConfig[];
+  calibrationFits: CalibrationFit[];
+  standardAdditionFits: StandardAdditionFit[];
+  unknownResults: UnknownConcentrationResult[];
+  expectedRefs: ExpectedRef[];
+  rankings: PythonResultsChannelRank[];
+  methodMetadata: MethodMetadata;
+  geometryName: string | null;
+  geometrySource: string;
+  floorGeometryAvailable: boolean;
+  correctionApplied: boolean;
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function excelColumnName(index: number): string {
+  let column = '';
+  let value = index + 1;
+
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    column = String.fromCharCode(65 + remainder) + column;
+    value = Math.floor((value - 1) / 26);
+  }
+
+  return column;
+}
+
+function xlsxCellXml(value: XlsxCellValue, rowIndex: number, columnIndex: number): string {
+  const ref = `${excelColumnName(columnIndex)}${rowIndex + 1}`;
+
+  if (value === null || value === undefined || value === '') {
+    return `<c r="${ref}"/>`;
+  }
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value)
+      ? `<c r="${ref}" t="n"><v>${value}</v></c>`
+      : `<c r="${ref}"/>`;
+  }
+
+  if (typeof value === 'boolean') {
+    return `<c r="${ref}" t="b"><v>${value ? 1 : 0}</v></c>`;
+  }
+
+  return `<c r="${ref}" t="inlineStr"><is><t>${escapeXml(value)}</t></is></c>`;
+}
+
+function xlsxWorksheetXml(rows: XlsxCellValue[][]): string {
+  const sheetRows = rows.map((row, rowIndex) => (
+    `<row r="${rowIndex + 1}">${row.map((value, columnIndex) => xlsxCellXml(value, rowIndex, columnIndex)).join('')}</row>`
+  )).join('');
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>${sheetRows}</sheetData>
+</worksheet>`;
+}
+
+function tableRows(headers: string[], rows: XlsxRow[]): XlsxCellValue[][] {
+  return [
+    headers,
+    ...rows.map((row) => headers.map((header) => row[header] ?? '')),
+  ];
+}
+
+async function createXlsxWorkbookBlob(sheets: XlsxSheet[]): Promise<Blob> {
+  const contentTypeOverrides = sheets.map((_, index) => (
+    `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
+  )).join('');
+  const workbookSheets = sheets.map((sheet, index) => (
+    `<sheet name="${escapeXml(sheet.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`
+  )).join('');
+  const workbookRelationships = sheets.map((_, index) => (
+    `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`
+  )).join('');
+  const xlsxFiles = [
+    {
+      name: '[Content_Types].xml',
+      blob: new Blob([`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  ${contentTypeOverrides}
+</Types>`], { type: 'application/xml' }),
+    },
+    {
+      name: '_rels/.rels',
+      blob: new Blob([`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`], { type: 'application/xml' }),
+    },
+    {
+      name: 'xl/workbook.xml',
+      blob: new Blob([`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>${workbookSheets}</sheets>
+</workbook>`], { type: 'application/xml' }),
+    },
+    {
+      name: 'xl/_rels/workbook.xml.rels',
+      blob: new Blob([`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${workbookRelationships}
+  <Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`], { type: 'application/xml' }),
+    },
+    {
+      name: 'xl/styles.xml',
+      blob: new Blob([`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fills count="1"><fill><patternFill patternType="none"/></fill></fills>
+  <borders count="1"><border/></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
+</styleSheet>`], { type: 'application/xml' }),
+    },
+    ...sheets.map((sheet, index) => ({
+      name: `xl/worksheets/sheet${index + 1}.xml`,
+      blob: new Blob([xlsxWorksheetXml(sheet.rows)], { type: 'application/xml' }),
+    })),
+  ];
+
+  return createZipBlob(xlsxFiles);
+}
+
+function reportChannelName(channel: FitChannel): string {
+  return PYTHON_RESULTS_CHANNEL_LABELS[channel];
+}
+
+function sampleSdOrBlank(values: number[]): number | '' {
+  const finiteValues = values.filter(Number.isFinite);
+  return finiteValues.length >= 2 ? sampleStandardDeviation(finiteValues) : '';
+}
+
+function meanOrBlank(values: number[]): number | '' {
+  const value = meanFinite(values);
+  return Number.isFinite(value) ? value : '';
+}
+
+function medianOrBlank(values: number[]): number | '' {
+  const value = medianFinite(values);
+  return Number.isFinite(value) ? value : '';
+}
+
+function finiteRmse(points: { x: number; y: number }[], slope: number, intercept: number): number | '' {
+  if (!Number.isFinite(slope) || !Number.isFinite(intercept)) {
+    return '';
+  }
+
+  const residuals = points
+    .map((point) => (Number.isFinite(point.x) && Number.isFinite(point.y) ? point.y - (slope * point.x + intercept) : Number.NaN))
+    .filter(Number.isFinite);
+
+  if (residuals.length === 0) {
+    return '';
+  }
+
+  return Math.sqrt(residuals.reduce((sum, residual) => sum + residual ** 2, 0) / residuals.length);
+}
+
+function expectedRefKey(label: string, index: number): string {
+  const safe = label.trim().replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return safe || `Reference_${index}`;
+}
+
+function referenceMatchesSample(ref: ExpectedRef, sampleId: string): boolean {
+  const refId = ref.refId.trim().toLowerCase();
+  const label = ref.label.trim().toLowerCase();
+  const sample = sampleId.trim().toLowerCase();
+  return Boolean(sample && (sample === refId || sample === label));
+}
+
+function buildReportRawRows(
+  measurements: WellMeasurement[],
+  displayMeasurements: WellMeasurement[],
+  plateMap: WellConfig[],
+): XlsxRow[] {
+  const configByWell = new Map(plateMap.map((well) => [well.wellId, well]));
+  const displayByWell = new Map(displayMeasurements.map((measurement) => [measurement.wellId, measurement]));
+
+  return measurements.map((measurement) => {
+    const config = configByWell.get(measurement.wellId);
+    const display = displayByWell.get(measurement.wellId) ?? measurement;
+    const wellLinear = linearizeRgb(measurement.rgbWell);
+    const backgroundLinear = linearizeRgb(measurement.rgbBackground);
+    const signalTRed = backgroundLinear.r > 0 ? wellLinear.r / backgroundLinear.r : Number.NaN;
+    const signalTGreen = backgroundLinear.g > 0 ? wellLinear.g / backgroundLinear.g : Number.NaN;
+    const signalTBlue = backgroundLinear.b > 0 ? wellLinear.b / backgroundLinear.b : Number.NaN;
+
+    return {
+      Row: String.fromCharCode(65 + measurement.row),
+      Col: measurement.col + 1,
+      Well: measurement.wellId,
+      ID: config?.sampleId ?? '',
+      Type: config?.role ?? '',
+      Conc: config?.concentration ?? '',
+      DF: config?.dilutionFactor ?? '',
+      MeanW_Red: wellLinear.r,
+      MeanW_Green: wellLinear.g,
+      MeanW_Blue: wellLinear.b,
+      MeanBG_Red: backgroundLinear.r,
+      MeanBG_Green: backgroundLinear.g,
+      MeanBG_Blue: backgroundLinear.b,
+      SignalT_Red: Number.isFinite(signalTRed) ? signalTRed : '',
+      SignalT_Green: Number.isFinite(signalTGreen) ? signalTGreen : '',
+      SignalT_Blue: Number.isFinite(signalTBlue) ? signalTBlue : '',
+      PAbs_Red: display.pabs.r,
+      PAbs_Green: display.pabs.g,
+      PAbs_Blue: display.pabs.b,
+      ImageWarning: measurement.warnings.length > 0 || Boolean(measurement.roiStatisticsWarning || measurement.geometryAlignmentWarning) ? 1 : 0,
+    };
+  });
+}
+
+function buildReportReplicateRows(
+  displayMeasurements: WellMeasurement[],
+  plateMap: WellConfig[],
+): XlsxRow[] {
+  const configByWell = new Map(plateMap.map((well) => [well.wellId, well]));
+  const groups = new Map<string, { config: WellConfig; measurements: WellMeasurement[] }>();
+
+  displayMeasurements.forEach((measurement) => {
+    const config = configByWell.get(measurement.wellId);
+    if (!config || config.role === 'EMPTY') {
+      return;
+    }
+
+    const key = [
+      config.sampleId.trim(),
+      config.role,
+      config.concentration ?? '',
+      Number.isFinite(config.dilutionFactor) ? config.dilutionFactor : 1,
+    ].join('|');
+    const group = groups.get(key);
+
+    if (group) {
+      group.measurements.push(measurement);
+    } else {
+      groups.set(key, { config, measurements: [measurement] });
+    }
+  });
+
+  return [...groups.values()]
+    .sort((a, b) => (
+      String(a.config.role).localeCompare(String(b.config.role)) ||
+      a.config.sampleId.localeCompare(b.config.sampleId) ||
+      (a.config.concentration ?? -Infinity) - (b.config.concentration ?? -Infinity) ||
+      a.config.dilutionFactor - b.config.dilutionFactor
+    ))
+    .map(({ config, measurements: groupMeasurements }) => {
+      const pabsRed = groupMeasurements.map((measurement) => measurement.pabs.r);
+      const pabsGreen = groupMeasurements.map((measurement) => measurement.pabs.g);
+      const pabsBlue = groupMeasurements.map((measurement) => measurement.pabs.b);
+      const warningCount = groupMeasurements.filter((measurement) => measurement.warnings.length > 0 || measurement.roiStatisticsWarning).length;
+      const criticalCount = groupMeasurements.filter((measurement) => (
+        [...measurement.warnings, measurement.roiStatisticsWarning ?? '', measurement.geometryAlignmentWarning ?? '']
+          .some((warning) => warning.toLowerCase().includes('critical'))
+      )).length;
+
+      return {
+        ID: config.sampleId,
+        DF: config.dilutionFactor,
+        Type: config.role,
+        Conc: config.concentration ?? '',
+        PAbs_Red_median: medianOrBlank(pabsRed),
+        PAbs_Red_sd: sampleSdOrBlank(pabsRed),
+        PAbs_Green_median: medianOrBlank(pabsGreen),
+        PAbs_Green_sd: sampleSdOrBlank(pabsGreen),
+        PAbs_Blue_median: medianOrBlank(pabsBlue),
+        PAbs_Blue_sd: sampleSdOrBlank(pabsBlue),
+        NReplicates: groupMeasurements.length,
+        QCFlagged: warningCount > 0 ? 1 : 0,
+        QCCritical: criticalCount > 0 ? 1 : 0,
+      };
+    });
+}
+
+function buildReportFitRows(
+  calibrationFits: CalibrationFit[],
+  standardAdditionFits: StandardAdditionFit[],
+  unknownResults: UnknownConcentrationResult[],
+  displayMeasurements: WellMeasurement[],
+  plateMap: WellConfig[],
+  rankings: PythonResultsChannelRank[],
+): XlsxRow[] {
+  const rows: XlsxRow[] = [];
+  const rankingByChannel = new Map(rankings.map((ranking) => [ranking.channel, ranking]));
+
+  calibrationFits.forEach((fit) => {
+    const points = collectCalibrationPointsForChannel(fit.channel, displayMeasurements, plateMap);
+    const pointRows = points.map((point) => ({ x: point.x, y: point.y }));
+    const ranking = rankingByChannel.get(fit.channel);
+    const sigmaCal = ranking?.sigmaCal ?? Number.NaN;
+
+    rows.push({
+      Channel: reportChannelName(fit.channel),
+      FitType: 'Calibration',
+      n_points: fit.n,
+      m: fit.slope,
+      q: fit.intercept,
+      R2: fit.r2,
+      RMSE: finiteRmse(pointRows, fit.slope, fit.intercept),
+      sigma_cal: Number.isFinite(sigmaCal) ? sigmaCal : '',
+      sigma_source: ranking?.sigmaSource ?? '',
+      SNR: Number.isFinite(sigmaCal) && sigmaCal > 0 ? Math.abs(fit.slope) / sigmaCal : '',
+      LOD: ranking && Number.isFinite(ranking.lod) ? ranking.lod : '',
+      LOQ: ranking && Number.isFinite(ranking.loq) ? ranking.loq : '',
+      S0_calibration: fit.S0 ?? '',
+      S0_applied: fit.S0 ?? '',
+      NClipPoints: '',
+      ClipX: '',
+      ClipDelta: fit.meanClipDelta ?? '',
+    });
+  });
+
+  standardAdditionFits.forEach((fit) => {
+    const cal = calibrationFits.find((calFit) => calFit.channel === fit.channel);
+    const beta = cal && Number.isFinite(cal.slope) && Math.abs(cal.slope) > 1e-15
+      ? fit.slope / cal.slope
+      : Number.NaN;
+    const points = (fit.addedConcentrationsUsed ?? []).map((x, index) => ({
+      x,
+      y: fit.meanSignalValuesUsed?.[index] ?? Number.NaN,
+    }));
+
+    rows.push({
+      Channel: reportChannelName(fit.channel),
+      FitType: 'StdAdd',
+      n_points: fit.n,
+      m: fit.slope,
+      q: fit.intercept,
+      R2: fit.r2,
+      RMSE: finiteRmse(points, fit.slope, fit.intercept),
+      sigma_cal: '',
+      sigma_source: '',
+      SNR: '',
+      LOD: '',
+      LOQ: '',
+      ID: fit.sampleId,
+      DF: fit.dilutionFactor,
+      C0: fit.concentrationInOriginalSample,
+      C0_sd: '',
+      beta_k: Number.isFinite(beta) ? beta : '',
+      bias_index_k: Number.isFinite(beta) ? Math.abs(beta - 1) : '',
+      S0_calibration: '',
+      S0_applied: fit.S0 ?? '',
+      NClipPoints: '',
+      ClipX: '',
+      ClipDelta: fit.meanClipDelta ?? '',
+    });
+  });
+
+  unknownResults.forEach((result) => {
+    rows.push({
+      Channel: reportChannelName(result.channel),
+      FitType: 'UnknownFromCal',
+      n_points: '',
+      m: result.storedCalibrationSlope,
+      q: result.storedCalibrationIntercept,
+      R2: '',
+      RMSE: '',
+      sigma_cal: '',
+      sigma_source: 'stored_calibration',
+      SNR: '',
+      LOD: '',
+      LOQ: '',
+      ID: result.sampleId,
+      DF: result.dilutionFactor,
+      C0: result.concentrationInOriginalSample,
+      C0_sd: '',
+      beta_k: '',
+      bias_index_k: '',
+      S0_calibration: '',
+      S0_applied: result.correctionApplied ? result.S0 : '',
+      NClipPoints: '',
+      ClipX: '',
+      ClipDelta: result.correctionApplied ? result.clipDelta : '',
+    });
+  });
+
+  return rows;
+}
+
+function buildReportMethodComparisonRows(
+  rankings: PythonResultsChannelRank[],
+  calibrationFits: CalibrationFit[],
+  standardAdditionFits: StandardAdditionFit[],
+  unknownResults: UnknownConcentrationResult[],
+  expectedRefs: ExpectedRef[],
+): XlsxRow[] {
+  return rankings.map((ranking, index) => {
+    const cal = calibrationFits.find((fit) => fit.channel === ranking.channel);
+    const stdFits = standardAdditionFits.filter((fit) => fit.channel === ranking.channel);
+    const unknownChannelResults = unknownResults.filter((result) => result.channel === ranking.channel);
+    const mStdValues = stdFits.map((fit) => fit.slope).filter(Number.isFinite);
+    const c0Values = stdFits.map((fit) => fit.concentrationInOriginalSample).filter(Number.isFinite);
+    const unknownC0Values = unknownChannelResults.map((result) => result.concentrationInOriginalSample).filter(Number.isFinite);
+    const estimateValue = unknownC0Values.length > 0 ? medianFinite(unknownC0Values) : medianFinite(c0Values);
+    const baseRow: XlsxRow = {
+      Selected: index === 0 ? 1 : 0,
+      Rank: index + 1,
+      Method: reportChannelName(ranking.channel),
+      Family: 'PAbs',
+      ComparableGroup: Number.isFinite(ranking.r2Cal) && Number.isFinite(ranking.r2Std) ? 'calibration_plus_stdadd' : Number.isFinite(ranking.r2Cal) ? 'calibration_only' : 'stdadd_only',
+      CommonFactorsN: Number.isFinite(ranking.r2Cal) && Number.isFinite(ranking.r2Std) ? 3 : 1,
+      Score: ranking.score,
+      ScoreFormula: ranking.scoreFormula,
+      RankMode: Number.isFinite(ranking.r2Cal) && Number.isFinite(ranking.r2Std) ? 'calibration_plus_stdadd' : Number.isFinite(ranking.r2Cal) ? 'calibration_only' : 'stdadd_only',
+      R2_cal: ranking.r2Cal,
+      R2_std_mean: ranking.r2Std,
+      m_cal: cal?.slope ?? '',
+      m_std_mean: meanOrBlank(mStdValues),
+      SlopeAgreement: ranking.slopeAgreement,
+      beta_mean: cal && Number.isFinite(cal.slope) && Math.abs(cal.slope) > 1e-15 ? meanOrBlank(mStdValues.map((slope) => slope / cal.slope)) : '',
+      bias_index_mean: cal && Number.isFinite(cal.slope) && Math.abs(cal.slope) > 1e-15 ? meanOrBlank(mStdValues.map((slope) => Math.abs((slope / cal.slope) - 1))) : '',
+      SNR: cal && Number.isFinite(ranking.sigmaCal) && ranking.sigmaCal > 0 ? Math.abs(cal.slope) / ranking.sigmaCal : '',
+      LOD: ranking.lod,
+      LOQ: ranking.loq,
+      n_stdadd: stdFits.length,
+      n_unknown: unknownChannelResults.length,
+      C0_mean: meanOrBlank(c0Values),
+      C0_median: medianOrBlank(c0Values),
+      C0_sd_median: '',
+      Estimate_value: Number.isFinite(estimateValue) ? estimateValue : '',
+      Estimate_sd: '',
+      Estimate_source: unknownC0Values.length > 0 ? 'unknown_from_calibration' : c0Values.length > 0 ? 'standard_addition' : '',
+    };
+
+    expectedRefs.forEach((ref, refIndex) => {
+      const label = ref.label || ref.refId || `Reference ${refIndex + 1}`;
+      const key = expectedRefKey(label, refIndex + 1);
+      const matchedStd = stdFits
+        .filter((fit) => referenceMatchesSample(ref, fit.sampleId))
+        .map((fit) => fit.concentrationInOriginalSample)
+        .filter(Number.isFinite);
+      const matchedUnknown = unknownChannelResults
+        .filter((result) => referenceMatchesSample(ref, result.sampleId))
+        .map((result) => result.concentrationInOriginalSample)
+        .filter(Number.isFinite);
+      const estimateForRef = matchedUnknown.length > 0
+        ? medianFinite(matchedUnknown)
+        : matchedStd.length > 0
+          ? medianFinite(matchedStd)
+          : estimateValue;
+
+      baseRow[`expected_label_${key}`] = label;
+      baseRow[`expected_id_${key}`] = ref.refId;
+      baseRow[`expected_value_${key}`] = ref.value;
+      baseRow[`expected_sd_${key}`] = ref.sd ?? '';
+      baseRow[`estimate_for_expected_${key}`] = Number.isFinite(estimateForRef) ? estimateForRef : '';
+      baseRow[`delta_expected_${key}`] = Number.isFinite(estimateForRef) && Number.isFinite(ref.value) ? estimateForRef - ref.value : '';
+      baseRow[`recovery_pct_${key}`] = Number.isFinite(estimateForRef) && Number.isFinite(ref.value) && Math.abs(ref.value) > 1e-15 ? (100 * estimateForRef) / ref.value : '';
+      baseRow[`rel_error_${key}`] = Number.isFinite(estimateForRef) && Number.isFinite(ref.value) && Math.abs(ref.value) > 1e-15 ? (100 * (estimateForRef - ref.value)) / ref.value : '';
+    });
+
+    return baseRow;
+  });
+}
+
+function buildReportOverviewRows(
+  imageBase: string,
+  unitLabel: string,
+  selectedChannel: FitChannel,
+  rankings: PythonResultsChannelRank[],
+  methodComparisonRows: XlsxRow[],
+): XlsxRow[] {
+  const best = methodComparisonRows[0] ?? {};
+
+  return [
+    { Field: 'Report', Value: imageBase },
+    { Field: 'Unit', Value: unitLabel },
+    { Field: 'Mode', Value: calibrationAndStdAddModeLabel(methodComparisonRows) },
+    { Field: 'Selected method from rank', Value: best.Method ?? reportChannelName(selectedChannel) },
+    { Field: 'Selected family', Value: best.Family ?? 'PAbs' },
+    { Field: 'Ranking mode', Value: best.RankMode ?? '' },
+    { Field: 'Selected method score', Value: best.Score ?? '' },
+    { Field: 'R2 calibration', Value: best.R2_cal ?? '' },
+    { Field: 'R2 std add', Value: best.R2_std_mean ?? '' },
+    { Field: 'Slope agreement', Value: best.SlopeAgreement ?? '' },
+    { Field: 'C0 median', Value: best.C0_median ?? '' },
+    { Field: 'C0 SD median', Value: best.C0_sd_median ?? '' },
+    { Field: 'beta (mean)', Value: best.beta_mean ?? '' },
+    { Field: 'Bias index (mean)', Value: best.bias_index_mean ?? '' },
+    { Field: 'LOD', Value: best.LOD ?? '' },
+    { Field: 'LOQ', Value: best.LOQ ?? '' },
+    { Field: 'Quantification', Value: rankings.some((ranking) => ranking.score > 0) ? 'available' : 'not_available' },
+    { Field: 'Reliability score', Value: '' },
+    { Field: 'Confidence class', Value: '' },
+    { Field: 'Reliability note', Value: 'Python reliability scoring is not yet implemented in the webapp report.' },
+  ];
+}
+
+function calibrationAndStdAddModeLabel(methodComparisonRows: XlsxRow[]): string {
+  const hasCal = methodComparisonRows.some((row) => row.R2_cal !== '');
+  const hasStd = methodComparisonRows.some((row) => row.R2_std_mean !== '');
+  const hasUnknown = methodComparisonRows.some((row) => Number(row.n_unknown) > 0);
+
+  if (hasCal && hasStd && hasUnknown) {
+    return 'Mode: calibration + standard addition + unknown';
+  }
+
+  if (hasCal && hasStd) {
+    return 'Mode: calibration + standard addition';
+  }
+
+  if (hasCal && hasUnknown) {
+    return 'Mode: calibration + unknown';
+  }
+
+  if (hasCal) {
+    return 'Mode: calibration only';
+  }
+
+  if (hasStd) {
+    return 'Mode: standard addition only';
+  }
+
+  return 'Mode: no valid analytical fit available';
+}
+
+function buildReportMetadataRows(options: PythonReportWorkbookOptions): XlsxRow[] {
+  return [
+    { Field: 'Image basename', Value: options.imageBase, Notes: '' },
+    { Field: 'Image file', Value: options.imageName ?? '', Notes: '' },
+    { Field: 'Generated at', Value: options.generatedAt, Notes: 'Browser export timestamp.' },
+    { Field: 'Application', Value: 'TIPICA webapp', Notes: '' },
+    { Field: 'Application version', Value: packageJson.version, Notes: '' },
+    { Field: 'ROI mode', Value: options.methodMetadata.roiMode, Notes: '' },
+    { Field: 'ROI pixel statistics mode', Value: options.methodMetadata.roiPixelStatisticsMode, Notes: '' },
+    { Field: 'Background model', Value: options.methodMetadata.backgroundModel, Notes: '' },
+    { Field: 'Background actual model', Value: options.methodMetadata.backgroundActualModel ?? '', Notes: '' },
+    { Field: 'Background mask algorithm', Value: options.methodMetadata.backgroundMaskAlgorithm ?? '', Notes: '' },
+    { Field: 'Background candidate pixels', Value: options.methodMetadata.backgroundCandidatePixels ?? '', Notes: '' },
+    { Field: 'Background accepted samples', Value: options.methodMetadata.backgroundAcceptedSamples ?? '', Notes: '' },
+    { Field: 'Background warning', Value: options.methodMetadata.backgroundWarning ?? '', Notes: '' },
+    { Field: 'Low-signal correction applied', Value: options.correctionApplied ? 1 : 0, Notes: '' },
+    { Field: 'Low-signal correction source', Value: options.methodMetadata.correctionSource ?? '', Notes: '' },
+    { Field: 'Low-signal correction metadata', Value: options.methodMetadata.correctionMetadata ?? '', Notes: '' },
+    { Field: 'Geometry source', Value: options.geometrySource, Notes: '' },
+    { Field: 'Geometry name', Value: options.geometryName ?? '', Notes: '' },
+    { Field: 'Floor geometry available', Value: options.floorGeometryAvailable ? 1 : 0, Notes: '' },
+    { Field: 'Measurements', Value: options.measurements.length, Notes: '' },
+    { Field: 'Plate map entries', Value: options.plateMap.length, Notes: '' },
+    { Field: 'Expected reference values', Value: options.expectedRefs.length, Notes: '' },
+    { Field: 'Calibration fits', Value: options.calibrationFits.length, Notes: '' },
+    { Field: 'Standard-addition fits', Value: options.standardAdditionFits.length, Notes: '' },
+    { Field: 'Unknown concentration rows', Value: options.unknownResults.length, Notes: '' },
+  ];
+}
+
+function buildReportLegendRows(unitLabel: string): XlsxRow[] {
+  return [
+    { Term: 'PAbs', Meaning: 'Image-derived RGB pseudo-absorbance', Formula: 'PAbs = log10(I_BG / I_well)', Unit: 'dimensionless', 'Where used': '04_RAW, 05_REPLICATES_MEAN, 06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'always', Notes: 'No formula changes are made by the workbook export.' },
+    { Term: 'MeanW_Red/MeanW_Green/MeanW_Blue', Meaning: 'Linearized median well intensity for each RGB channel', Formula: 'I_lin = (I/255)^2.2', Unit: 'dimensionless', 'Where used': '04_RAW', 'Shown when': 'always', Notes: '' },
+    { Term: 'MeanBG_Red/MeanBG_Green/MeanBG_Blue', Meaning: 'Linearized local background intensity for each RGB channel', Formula: 'I_lin = (I/255)^2.2', Unit: 'dimensionless', 'Where used': '04_RAW', 'Shown when': 'always', Notes: '' },
+    { Term: 'SignalT_Red/SignalT_Green/SignalT_Blue', Meaning: 'Transmittance-like ratio before logarithmic conversion', Formula: 'SignalT = MeanW / MeanBG', Unit: 'dimensionless', 'Where used': '04_RAW', 'Shown when': 'always', Notes: '' },
+    { Term: 'm/q', Meaning: 'Slope and intercept of the current webapp linear fit', Formula: 'y = m x + q', Unit: 'response / concentration and response', 'Where used': '06_FITTING', 'Shown when': 'fit rows present', Notes: 'The webapp currently uses its existing least-squares fit implementation; robust IRLS parity remains separate work.' },
+    { Term: 'R2', Meaning: 'Coefficient of determination from current webapp fit', Formula: '1 - SSE/SST', Unit: 'dimensionless', 'Where used': '06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'fit rows present', Notes: '' },
+    { Term: 'RMSE', Meaning: 'Root mean squared residual against the exported fit row', Formula: 'sqrt(mean(residual^2))', Unit: 'response unit', 'Where used': '06_FITTING', 'Shown when': 'fit rows present', Notes: 'Diagnostic workbook value derived from existing fit parameters.' },
+    { Term: 'LOD/LOQ', Meaning: 'Detection and quantification limits used for RGB ranking', Formula: 'LOD = 3 x sigma_cal / |m|; LOQ = 10 x sigma_cal / |m|', Unit: unitLabel, 'Where used': '03_OVERVIEW, 06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'calibration present', Notes: 'sigma_cal follows the existing Python-style PNG ranking helper.' },
+    { Term: 'Score', Meaning: 'Common method-ranking score', Formula: 'slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ) when LOQ is available', Unit: `1/${unitLabel}`, 'Where used': '03_OVERVIEW, 07_METHOD_COMPARISON', 'Shown when': 'method comparison present', Notes: 'Expected/reference values and recovery are external checks only.' },
+    { Term: 'C0', Meaning: 'Estimated original-sample concentration', Formula: 'standard addition: DF x q/m; stored calibration unknown: DF x (y - q)/m', Unit: unitLabel, 'Where used': '06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'standard addition or unknown rows present', Notes: 'C0_sd is blank because the webapp does not yet compute Python workbook uncertainty.' },
+    { Term: 'Replicate medians and SD', Meaning: 'Replicate-group summary by ID, DF, type and concentration', Formula: 'median(PAbs) and sample SD over finite replicate wells', Unit: 'dimensionless', 'Where used': '05_REPLICATES_MEAN', 'Shown when': 'replicate groups present', Notes: '' },
+    { Term: 'ImageWarning/QCFlagged/QCCritical', Meaning: 'Available webapp warning indicators', Formula: '1 when warnings are present; critical when warning text contains critical', Unit: '0/1', 'Where used': '04_RAW, 05_REPLICATES_MEAN', 'Shown when': 'always', Notes: 'Python optical QC critical scoring is not fully implemented in the webapp report.' },
+    { Term: 'Expected/reference values', Meaning: 'External reference metadata configured by the user', Formula: 'user/configurator input', Unit: unitLabel, 'Where used': '03_OVERVIEW, 07_METHOD_COMPARISON', 'Shown when': 'reference values configured', Notes: 'External references are not used in Score.' },
+    { Term: 'Blank cells', Meaning: 'Unavailable fields', Formula: 'left blank when the webapp does not currently compute the Python field', Unit: 'mixed', 'Where used': 'all sheets', 'Shown when': 'as needed', Notes: 'No placeholder or fake values are generated.' },
+  ];
+}
+
+function uniqueHeaders(preferred: string[], rows: XlsxRow[]): string[] {
+  const headers = [...preferred];
+  rows.forEach((row) => {
+    Object.keys(row).forEach((key) => {
+      if (!headers.includes(key)) {
+        headers.push(key);
+      }
+    });
+  });
+  return headers;
+}
+
+async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptions): Promise<Blob> {
+  const contentsRows: XlsxRow[] = [
+    { Sheet: '01_CONTENTS', Purpose: 'Index of primary results workbook sheets.' },
+    { Sheet: '02_METADATA', Purpose: 'Image-level metadata and current webapp analysis settings used to audit the analysis.' },
+    { Sheet: '03_OVERVIEW', Purpose: 'Final quantitative summary, selected method and external reference checks when provided.' },
+    { Sheet: '04_RAW', Purpose: 'Well-level analytical values used by the fitting pipeline.' },
+    { Sheet: '05_REPLICATES_MEAN', Purpose: 'Replicate-group medians, SDs and available group QC flags.' },
+    { Sheet: '06_FITTING', Purpose: 'Calibration, standard-addition and stored-calibration unknown fit results.' },
+    { Sheet: '07_METHOD_COMPARISON', Purpose: 'Method ranking using only common score factors; expected values are external checks only.' },
+    { Sheet: '08_LEGENDS', Purpose: 'Definitions for fields reported in this workbook and primary RGB figure.' },
+  ];
+  const rawRows = buildReportRawRows(options.measurements, options.displayMeasurements, options.plateMap);
+  const replicateRows = buildReportReplicateRows(options.displayMeasurements, options.plateMap);
+  const fitRows = buildReportFitRows(
+    options.calibrationFits,
+    options.standardAdditionFits,
+    options.unknownResults,
+    options.displayMeasurements,
+    options.plateMap,
+    options.rankings,
+  );
+  const methodComparisonRows = buildReportMethodComparisonRows(
+    options.rankings,
+    options.calibrationFits,
+    options.standardAdditionFits,
+    options.unknownResults,
+    options.expectedRefs,
+  );
+  const overviewRows = buildReportOverviewRows(
+    options.imageBase,
+    options.unitLabel,
+    options.selectedChannel,
+    options.rankings,
+    methodComparisonRows,
+  );
+  const methodComparisonPreferred = [
+    'Selected',
+    'Rank',
+    'Method',
+    'Family',
+    'ComparableGroup',
+    'CommonFactorsN',
+    'Score',
+    'ScoreFormula',
+    'RankMode',
+    'R2_cal',
+    'R2_std_mean',
+    'm_cal',
+    'm_std_mean',
+    'SlopeAgreement',
+    'beta_mean',
+    'bias_index_mean',
+    'SNR',
+    'LOD',
+    'LOQ',
+    'n_stdadd',
+    'n_unknown',
+    'C0_mean',
+    'C0_median',
+    'C0_sd_median',
+    'Estimate_value',
+    'Estimate_sd',
+    'Estimate_source',
+  ];
+
+  return createXlsxWorkbookBlob([
+    { name: '01_CONTENTS', rows: tableRows(['Sheet', 'Purpose'], contentsRows) },
+    { name: '02_METADATA', rows: tableRows(['Field', 'Value', 'Notes'], buildReportMetadataRows(options)) },
+    { name: '03_OVERVIEW', rows: tableRows(['Field', 'Value'], overviewRows) },
+    {
+      name: '04_RAW',
+      rows: tableRows(
+        ['Row', 'Col', 'Well', 'ID', 'Type', 'Conc', 'DF', 'MeanW_Red', 'MeanW_Green', 'MeanW_Blue', 'MeanBG_Red', 'MeanBG_Green', 'MeanBG_Blue', 'SignalT_Red', 'SignalT_Green', 'SignalT_Blue', 'PAbs_Red', 'PAbs_Green', 'PAbs_Blue', 'ImageWarning'],
+        rawRows,
+      ),
+    },
+    {
+      name: '05_REPLICATES_MEAN',
+      rows: tableRows(
+        ['ID', 'DF', 'Type', 'Conc', 'PAbs_Red_median', 'PAbs_Red_sd', 'PAbs_Green_median', 'PAbs_Green_sd', 'PAbs_Blue_median', 'PAbs_Blue_sd', 'NReplicates', 'QCFlagged', 'QCCritical'],
+        replicateRows,
+      ),
+    },
+    {
+      name: '06_FITTING',
+      rows: tableRows(
+        ['Channel', 'FitType', 'n_points', 'm', 'q', 'R2', 'RMSE', 'sigma_cal', 'sigma_source', 'SNR', 'LOD', 'LOQ', 'ID', 'DF', 'C0', 'C0_sd', 'beta_k', 'bias_index_k', 'S0_calibration', 'S0_applied', 'NClipPoints', 'ClipX', 'ClipDelta'],
+        fitRows,
+      ),
+    },
+    {
+      name: '07_METHOD_COMPARISON',
+      rows: tableRows(uniqueHeaders(methodComparisonPreferred, methodComparisonRows), methodComparisonRows),
+    },
+    {
+      name: '08_LEGENDS',
+      rows: tableRows(['Term', 'Meaning', 'Formula', 'Unit', 'Where used', 'Shown when', 'Notes'], buildReportLegendRows(options.unitLabel)),
+    },
+  ]);
 }
 
 function drawImageCover(
@@ -3796,12 +4500,19 @@ function App() {
       ) => {
         files.push({ name, blob: new Blob([text], { type }) });
       };
+      const displayMeasurements = lowSignalCorrectionEffective
+        ? correctedMeasurementSet.measurements
+        : measurements;
+      const rankings = computePythonResultsChannelRankings(
+        calibrationFits,
+        standardAdditionFitsWithSlopeContext,
+        displayMeasurements,
+        plateMap,
+      );
+      const bestChannel = rankings[0]?.channel ?? 'R';
 
       if (image && measurements.length > 0 && wells.length === 96) {
         const imageData = createAnalysisImageData(image, wells);
-        const displayMeasurements = lowSignalCorrectionEffective
-          ? correctedMeasurementSet.measurements
-          : measurements;
         const pythonPlateOverlayCanvas = buildPythonStylePlateRoiOverlayCanvas(
           imageData,
           wells,
@@ -3809,12 +4520,6 @@ function App() {
           radiusFactor,
           floorRoiRadiusFactor,
           floorGeometryAvailable ? floorCircles : null,
-        );
-        const bestChannel = selectBestRgbChannel(
-          calibrationFits,
-          standardAdditionFitsWithSlopeContext,
-          displayMeasurements,
-          plateMap,
         );
         const pythonFigureRgbCanvas = buildPythonStyleFigureRgbCanvas({
           imageBase: pythonResultsBase,
@@ -3876,6 +4581,31 @@ function App() {
         }
       }
 
+      addZipBlob(
+        files,
+        `${pythonResultsPrefix}_REPORT.xlsx`,
+        await createPythonReportWorkbookBlob({
+          imageBase: pythonResultsBase,
+          imageName,
+          unitLabel: plateMapUnit,
+          selectedChannel: bestChannel,
+          generatedAt: new Date().toISOString(),
+          measurements,
+          displayMeasurements,
+          plateMap,
+          calibrationFits,
+          standardAdditionFits: standardAdditionFitsWithSlopeContext,
+          unknownResults,
+          expectedRefs,
+          rankings,
+          methodMetadata: currentMethodMetadata,
+          geometryName,
+          geometrySource: currentMethodMetadata.geometrySource ?? 'unknown',
+          floorGeometryAvailable,
+          correctionApplied: lowSignalCorrectionEffective,
+        }),
+      );
+
       addTextFile(
         `${pythonResultsPrefix}_RESULTS_CAPTION.txt`,
         createPythonResultsCaptionText(pythonResultsBase, plateMapUnit, expectedRefs),
@@ -3906,6 +4636,7 @@ function App() {
     floorGeometryAvailable,
     floorRoiRadiusFactor,
     geometry,
+    geometryName,
     image,
     imageName,
     lowSignalCorrectionEffective,
@@ -3915,6 +4646,7 @@ function App() {
     expectedRefs,
     radiusFactor,
     standardAdditionFitsWithSlopeContext,
+    unknownResults,
     wells,
   ]);
 
