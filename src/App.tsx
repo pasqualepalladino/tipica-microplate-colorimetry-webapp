@@ -1219,19 +1219,16 @@ function createPythonRawDataDetailsCaptionText(imageBase: string, unitLabel: str
   return `RAW_DATA_DETAILS caption - diagnostics and method-development outputs
 
 File scope
-This caption applies to diagnostic outputs in RAW_DATA_DETAILS for ${imageBase}, including BG_STAT_MASK.png, FIGURE_CIELAB_DELTAE.png, METHOD_COMPARISON.png and the DIAGNOSTICS.xlsx workbook.
+This caption applies to diagnostic PNG outputs in RAW_DATA_DETAILS for ${imageBase}: BG_STAT_MASK.png, FIGURE_CIELAB_DELTAE.png and METHOD_COMPARISON.png.
 
 BG_STAT_MASK.png
 White pixels are accepted inter-well background samples used by the physical background model. Black pixels are rejected or unavailable pixels. The mask supports auditability of background sampling and does not change calculations.
 
 FIGURE_CIELAB_DELTAE.png
-This Python output is not yet implemented in the web export.
+Diagnostic CIELAB and DeltaE plots derived from extracted well RGB values. DeltaE uses the zero-calibration wells as the reference when available; otherwise it uses the lowest calibration concentration available. These descriptors support method review and do not replace the primary RGB/PAbs results.
 
 METHOD_COMPARISON.png
-This Python output is not yet implemented in the web export.
-
-DIAGNOSTICS.xlsx
-The workbook collects diagnostic tables that support auditability, QC and method development. Full workbook parity is not yet implemented in the web export.
+Cross-method diagnostic comparison for currently available webapp methods. Score uses common fit-quality factors; external reference values and recovery checks are displayed as checks and do not affect ranking.
 
 Units
 Reported concentrations are expressed in ${unitLabel}.
@@ -1948,6 +1945,427 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
   ]);
 }
 
+interface LabValue {
+  l: number;
+  a: number;
+  b: number;
+}
+
+interface CielabDiagnosticPoint extends LabValue {
+  wellId: string;
+  type: string;
+  id: string;
+  df: number;
+  conc: number | '';
+  deltaL: number | '';
+  deltaA: number | '';
+  deltaB: number | '';
+  deltaE: number | '';
+  deltaEChroma: number | '';
+}
+
+function srgbToLinearChannel(value: number): number {
+  const normalized = Math.max(0, Math.min(1, value / 255));
+  return normalized <= 0.04045
+    ? normalized / 12.92
+    : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+function rgbToLab(rgb: Rgb): LabValue {
+  const r = srgbToLinearChannel(rgb.r);
+  const g = srgbToLinearChannel(rgb.g);
+  const b = srgbToLinearChannel(rgb.b);
+  const x = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047;
+  const y = (0.2126729 * r + 0.7151522 * g + 0.0721750 * b);
+  const z = (0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / 1.08883;
+  const f = (value: number) => (value > 216 / 24389 ? Math.cbrt(value) : (841 / 108) * value + 4 / 29);
+  const fx = f(x);
+  const fy = f(y);
+  const fz = f(z);
+
+  return {
+    l: 116 * fy - 16,
+    a: 500 * (fx - fy),
+    b: 200 * (fy - fz),
+  };
+}
+
+function medianLab(values: LabValue[]): LabValue | null {
+  if (values.length === 0) {
+    return null;
+  }
+
+  return {
+    l: medianFinite(values.map((value) => value.l)),
+    a: medianFinite(values.map((value) => value.a)),
+    b: medianFinite(values.map((value) => value.b)),
+  };
+}
+
+function buildCielabDiagnosticPoints(
+  measurements: WellMeasurement[],
+  plateMap: WellConfig[],
+): { points: CielabDiagnosticPoint[]; reference: LabValue | null; referenceSource: string } {
+  const configByWell = new Map(plateMap.map((well) => [well.wellId, well]));
+  const labByWell = new Map(measurements.map((measurement) => [measurement.wellId, rgbToLab(measurement.rgbWell)]));
+  const calibrationConfigs = plateMap.filter((well) => (
+    well.role === 'C' &&
+    well.concentration !== null &&
+    Number.isFinite(well.concentration) &&
+    labByWell.has(well.wellId)
+  ));
+  const zeroCalibration = calibrationConfigs.filter((well) => Math.abs(well.concentration ?? Number.NaN) <= 1e-12);
+  const referenceCandidates = zeroCalibration.length > 0
+    ? zeroCalibration
+    : calibrationConfigs.filter((well) => well.concentration === Math.min(...calibrationConfigs.map((candidate) => candidate.concentration ?? Number.POSITIVE_INFINITY)));
+  const reference = medianLab(referenceCandidates.map((well) => labByWell.get(well.wellId)).filter((value): value is LabValue => Boolean(value)));
+  const referenceSource = reference
+    ? zeroCalibration.length > 0
+      ? 'zero calibration wells'
+      : 'lowest calibration concentration wells'
+    : 'unavailable';
+
+  const points = measurements.map((measurement) => {
+    const config = configByWell.get(measurement.wellId);
+    const lab = labByWell.get(measurement.wellId) ?? rgbToLab(measurement.rgbWell);
+    const deltaL = reference ? lab.l - reference.l : Number.NaN;
+    const deltaA = reference ? lab.a - reference.a : Number.NaN;
+    const deltaB = reference ? lab.b - reference.b : Number.NaN;
+    const deltaE = reference ? Math.sqrt(deltaL ** 2 + deltaA ** 2 + deltaB ** 2) : Number.NaN;
+    const deltaEChroma = reference ? Math.sqrt(deltaA ** 2 + deltaB ** 2) : Number.NaN;
+    const conc: number | '' = typeof config?.concentration === 'number' && Number.isFinite(config.concentration)
+      ? config.concentration
+      : '';
+    const maybeNumber = (value: number): number | '' => (Number.isFinite(value) ? value : '');
+
+    return {
+      wellId: measurement.wellId,
+      type: config?.role ?? '',
+      id: config?.sampleId ?? '',
+      df: config?.dilutionFactor ?? 1,
+      conc,
+      l: lab.l,
+      a: lab.a,
+      b: lab.b,
+      deltaL: maybeNumber(deltaL),
+      deltaA: maybeNumber(deltaA),
+      deltaB: maybeNumber(deltaB),
+      deltaE: maybeNumber(deltaE),
+      deltaEChroma: maybeNumber(deltaEChroma),
+    };
+  });
+
+  return { points, reference, referenceSource };
+}
+
+function pointColorForRole(role: string): string {
+  if (role === 'C') {
+    return '#2563c7';
+  }
+  if (role === 'A') {
+    return '#1f8a4c';
+  }
+  if (role === 'U') {
+    return '#cf2e2e';
+  }
+  return '#6b7280';
+}
+
+function drawSimpleAxis(
+  ctx: CanvasRenderingContext2D,
+  plot: { x: number; y: number; width: number; height: number },
+  xRange: { min: number; max: number },
+  yRange: { min: number; max: number },
+  xLabel: string,
+  yLabel: string,
+): { xToPx: (value: number) => number; yToPx: (value: number) => number } {
+  const xToPx = (value: number) => plot.x + ((value - xRange.min) / (xRange.max - xRange.min)) * plot.width;
+  const yToPx = (value: number) => plot.y + plot.height - ((value - yRange.min) / (yRange.max - yRange.min)) * plot.height;
+  const xTicks = niceTicks(xRange.min, xRange.max, 5);
+  const yTicks = niceTicks(yRange.min, yRange.max, 5);
+
+  ctx.strokeStyle = '#dce4e1';
+  ctx.lineWidth = 1;
+  xTicks.forEach((tick) => {
+    const x = xToPx(tick);
+    ctx.beginPath();
+    ctx.moveTo(x, plot.y);
+    ctx.lineTo(x, plot.y + plot.height);
+    ctx.stroke();
+  });
+  yTicks.forEach((tick) => {
+    const y = yToPx(tick);
+    ctx.beginPath();
+    ctx.moveTo(plot.x, y);
+    ctx.lineTo(plot.x + plot.width, y);
+    ctx.stroke();
+  });
+
+  ctx.strokeStyle = '#263238';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(plot.x, plot.y, plot.width, plot.height);
+  ctx.fillStyle = '#465255';
+  ctx.font = '18px Inter, Arial, sans-serif';
+  xTicks.forEach((tick) => ctx.fillText(formatFitCell(tick), xToPx(tick) - 20, plot.y + plot.height + 28));
+  yTicks.forEach((tick) => ctx.fillText(formatFitCell(tick), plot.x - 68, yToPx(tick) + 6));
+  ctx.fillStyle = '#263238';
+  ctx.font = '700 20px Inter, Arial, sans-serif';
+  ctx.fillText(xLabel, plot.x + plot.width / 2 - 120, plot.y + plot.height + 58);
+  ctx.save();
+  ctx.translate(plot.x - 92, plot.y + plot.height / 2 + 70);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText(yLabel, 0, 0);
+  ctx.restore();
+
+  return { xToPx, yToPx };
+}
+
+function buildPythonStyleCielabDeltaECanvas(
+  imageBase: string,
+  measurements: WellMeasurement[],
+  plateMap: WellConfig[],
+  unitLabel: string,
+): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  const width = 2481;
+  const height = 3021;
+  const ctx = canvas.getContext('2d');
+  canvas.width = width;
+  canvas.height = height;
+
+  if (!ctx) {
+    throw new Error('Could not create CIELAB/DeltaE diagnostic canvas.');
+  }
+
+  const { points, referenceSource } = buildCielabDiagnosticPoints(measurements, plateMap);
+  const descriptors = [
+    { key: 'l', label: 'L*' },
+    { key: 'a', label: 'a*' },
+    { key: 'b', label: 'b*' },
+    { key: 'deltaE', label: 'DeltaE_ab' },
+    { key: 'deltaEChroma', label: 'DeltaE_ab_chroma' },
+  ] as const;
+  const xValues = points.map((point) => (typeof point.conc === 'number' ? point.conc : Number.NaN)).filter(Number.isFinite);
+  const xRange = rangeWithPadding(xValues, 0, 1);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = '#172026';
+  ctx.font = '700 40px Inter, Arial, sans-serif';
+  ctx.fillText(`${imageBase} CIELAB / DeltaE diagnostics`, 110, 75);
+  ctx.font = '22px Inter, Arial, sans-serif';
+  ctx.fillStyle = '#344044';
+  ctx.fillText(`Reference source: ${referenceSource}. Derived from extracted well RGB values; diagnostic only.`, 110, 112);
+
+  const plotX = 210;
+  const plotWidth = 2100;
+  const plotHeight = 470;
+  const plotGap = 92;
+  const top = 175;
+
+  descriptors.forEach((descriptor, index) => {
+    const plot = { x: plotX, y: top + index * (plotHeight + plotGap), width: plotWidth, height: plotHeight };
+    const values = points.map((point) => point[descriptor.key]).filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    const yRange = rangeWithPadding(values, 0, 1, 0.12);
+    const { xToPx, yToPx } = drawSimpleAxis(ctx, plot, xRange, yRange, `Concentration (${unitLabel})`, descriptor.label);
+
+    points.forEach((point) => {
+      if (typeof point.conc !== 'number') {
+        return;
+      }
+      const value = point[descriptor.key];
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        return;
+      }
+
+      const x = xToPx(point.conc);
+      const y = yToPx(value);
+      ctx.fillStyle = pointColorForRole(point.type);
+      if (point.type === 'C') {
+        ctx.beginPath();
+        ctx.arc(x, y, 7, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (point.type === 'A') {
+        ctx.fillRect(x - 6, y - 6, 12, 12);
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(x, y - 8);
+        ctx.lineTo(x + 8, y);
+        ctx.lineTo(x, y + 8);
+        ctx.lineTo(x - 8, y);
+        ctx.closePath();
+        ctx.fill();
+      }
+    });
+  });
+
+  ctx.font = '22px Inter, Arial, sans-serif';
+  ctx.fillStyle = '#2563c7';
+  ctx.fillText('● calibration', 210, height - 80);
+  ctx.fillStyle = '#1f8a4c';
+  ctx.fillText('■ standard addition', 420, height - 80);
+  ctx.fillStyle = '#cf2e2e';
+  ctx.fillText('◆ unknown', 700, height - 80);
+
+  return canvas;
+}
+
+function xlsxNumber(row: XlsxRow, key: string): number {
+  const value = row[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
+}
+
+function buildPythonStyleMethodComparisonCanvas(
+  imageBase: string,
+  comparisonRows: XlsxRow[],
+  expectedRefs: ExpectedRef[],
+  unitLabel: string,
+): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  const width = 2160;
+  const height = 1420;
+  const ctx = canvas.getContext('2d');
+  canvas.width = width;
+  canvas.height = height;
+
+  if (!ctx) {
+    throw new Error('Could not create method-comparison diagnostic canvas.');
+  }
+
+  const rows = comparisonRows.filter((row) => Number.isFinite(xlsxNumber(row, 'Estimate_value')) || Number.isFinite(xlsxNumber(row, 'C0_median')));
+  const methods = rows.map((row) => String(row.Method ?? ''));
+  const xPositions = rows.map((_, index) => index);
+  const panelLeft = 165;
+  const panelWidth = 1840;
+  const panelHeight = 315;
+  const panelGap = 95;
+  const top = 150;
+  const xRange = { min: -0.5, max: Math.max(rows.length - 0.5, 0.5) };
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = '#172026';
+  ctx.font = '700 38px Inter, Arial, sans-serif';
+  ctx.fillText(`${imageBase} method comparison`, 100, 72);
+  ctx.font = '20px Inter, Arial, sans-serif';
+  ctx.fillStyle = '#344044';
+  ctx.fillText('Score uses common fit factors only; external references are checks and do not affect ranking.', 100, 108);
+
+  const drawMethodLabels = (plot: { x: number; y: number; width: number; height: number }, xToPx: (value: number) => number) => {
+    ctx.save();
+    ctx.fillStyle = '#344044';
+    ctx.font = '18px Inter, Arial, sans-serif';
+    methods.forEach((method, index) => {
+      ctx.save();
+      ctx.translate(xToPx(index) - 8, plot.y + plot.height + 28);
+      ctx.rotate(-Math.PI / 5);
+      ctx.fillText(method, 0, 0);
+      ctx.restore();
+    });
+    ctx.restore();
+  };
+
+  const agreementValues = rows.flatMap((row) => [xlsxNumber(row, 'SlopeAgreement'), xlsxNumber(row, 'bias_index_mean')]).filter(Number.isFinite);
+  const agreementPlot = { x: panelLeft, y: top, width: panelWidth, height: panelHeight };
+  const agreementAxis = drawSimpleAxis(ctx, agreementPlot, xRange, rangeWithPadding([...agreementValues, 0, 1], 0, 1, 0.10), 'Method', 'agreement / bias');
+  ctx.strokeStyle = '#2563c7';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  rows.forEach((row, index) => {
+    const value = xlsxNumber(row, 'SlopeAgreement');
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    const x = agreementAxis.xToPx(index);
+    const y = agreementAxis.yToPx(value);
+    if (index === 0) {
+      ctx.moveTo(x, y);
+    } else {
+      ctx.lineTo(x, y);
+    }
+  });
+  ctx.stroke();
+  rows.forEach((row, index) => {
+    const slope = xlsxNumber(row, 'SlopeAgreement');
+    const bias = xlsxNumber(row, 'bias_index_mean');
+    if (Number.isFinite(slope)) {
+      ctx.fillStyle = '#2563c7';
+      ctx.beginPath();
+      ctx.arc(agreementAxis.xToPx(index), agreementAxis.yToPx(slope), 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (Number.isFinite(bias)) {
+      ctx.fillStyle = '#cf2e2e';
+      ctx.fillRect(agreementAxis.xToPx(index) - 7, agreementAxis.yToPx(bias) - 7, 14, 14);
+    }
+  });
+
+  const estimateValues = rows.map((row) => xlsxNumber(row, 'Estimate_value')).filter(Number.isFinite);
+  const refValues = expectedRefs.map((ref) => ref.value).filter(Number.isFinite);
+  const referencePlot = { x: panelLeft, y: top + panelHeight + panelGap, width: panelWidth, height: panelHeight };
+  const referenceAxis = drawSimpleAxis(ctx, referencePlot, xRange, rangeWithPadding([...estimateValues, ...refValues], 0, 1, 0.16), 'Method', `Reference value (${unitLabel})`);
+  expectedRefs.forEach((ref, index) => {
+    const color = index === 0 ? '#8a3ffc' : '#0f766e';
+    const y = referenceAxis.yToPx(ref.value);
+    ctx.save();
+    ctx.setLineDash([8, 6]);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(referencePlot.x, y);
+    ctx.lineTo(referencePlot.x + referencePlot.width, y);
+    ctx.stroke();
+    ctx.restore();
+    if (ref.sd !== null && Number.isFinite(ref.sd) && ref.sd > 0) {
+      ctx.fillStyle = index === 0 ? 'rgba(138, 63, 252, 0.10)' : 'rgba(15, 118, 110, 0.10)';
+      ctx.fillRect(referencePlot.x, referenceAxis.yToPx(ref.value + ref.sd), referencePlot.width, Math.abs(referenceAxis.yToPx(ref.value - ref.sd) - referenceAxis.yToPx(ref.value + ref.sd)));
+    }
+  });
+  rows.forEach((row, index) => {
+    const estimate = xlsxNumber(row, 'Estimate_value');
+    if (!Number.isFinite(estimate)) {
+      return;
+    }
+    const x = referenceAxis.xToPx(index);
+    const y = referenceAxis.yToPx(estimate);
+    ctx.fillStyle = '#2563c7';
+    ctx.beginPath();
+    ctx.arc(x, y, 8, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  const r2Values = rows.flatMap((row) => [xlsxNumber(row, 'R2_cal'), xlsxNumber(row, 'R2_std_mean')]).filter(Number.isFinite);
+  const r2Plot = { x: panelLeft, y: top + 2 * (panelHeight + panelGap), width: panelWidth, height: panelHeight };
+  const r2Axis = drawSimpleAxis(ctx, r2Plot, xRange, rangeWithPadding([...r2Values, 0, 1], 0, 1, 0.05), 'Method', 'R2');
+  rows.forEach((row, index) => {
+    const r2Cal = xlsxNumber(row, 'R2_cal');
+    const r2Std = xlsxNumber(row, 'R2_std_mean');
+    if (Number.isFinite(r2Cal)) {
+      ctx.fillStyle = '#2563c7';
+      ctx.beginPath();
+      ctx.arc(r2Axis.xToPx(index) - 7, r2Axis.yToPx(r2Cal), 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (Number.isFinite(r2Std)) {
+      ctx.fillStyle = '#1f8a4c';
+      ctx.fillRect(r2Axis.xToPx(index) + 1, r2Axis.yToPx(r2Std) - 7, 14, 14);
+    }
+  });
+  drawMethodLabels(r2Plot, r2Axis.xToPx);
+
+  ctx.font = '20px Inter, Arial, sans-serif';
+  ctx.fillStyle = '#2563c7';
+  ctx.fillText('● slope agreement / estimate / R2 calibration', 170, height - 72);
+  ctx.fillStyle = '#cf2e2e';
+  ctx.fillText('■ bias index', 650, height - 72);
+  ctx.fillStyle = '#1f8a4c';
+  ctx.fillText('■ R2 standard addition', 850, height - 72);
+  ctx.fillStyle = '#8a3ffc';
+  ctx.fillText('dashed bands: external reference ± SD when available', 1180, height - 72);
+
+  return canvas;
+}
+
 function drawImageCover(
   ctx: CanvasRenderingContext2D,
   source: CanvasImageSource,
@@ -2366,6 +2784,90 @@ function drawVerticalErrorBar(
   ctx.stroke();
 }
 
+function drawHorizontalErrorBar(
+  ctx: CanvasRenderingContext2D,
+  xLow: number,
+  xHigh: number,
+  y: number,
+  capHeight: number,
+  color: string,
+): void {
+  if (!Number.isFinite(xLow) || !Number.isFinite(xHigh) || !Number.isFinite(y) || Math.abs(xHigh - xLow) < 0.01) {
+    return;
+  }
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(xLow, y);
+  ctx.lineTo(xHigh, y);
+  ctx.moveTo(xLow, y - capHeight / 2);
+  ctx.lineTo(xLow, y + capHeight / 2);
+  ctx.moveTo(xHigh, y - capHeight / 2);
+  ctx.lineTo(xHigh, y + capHeight / 2);
+  ctx.stroke();
+}
+
+function niceTickStep(span: number, targetTickCount: number): number {
+  if (!Number.isFinite(span) || span <= 0) {
+    return 1;
+  }
+
+  const rawStep = span / Math.max(1, targetTickCount - 1);
+  const power = 10 ** Math.floor(Math.log10(rawStep));
+  const scaled = rawStep / power;
+  const nice = scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10;
+  return nice * power;
+}
+
+function niceTicks(min: number, max: number, targetTickCount = 5): number[] {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return [0, 1];
+  }
+
+  let lo = min;
+  let hi = max;
+  if (lo === hi) {
+    const padding = Math.max(1, Math.abs(lo) * 0.1);
+    lo -= padding;
+    hi += padding;
+  }
+
+  const step = niceTickStep(hi - lo, targetTickCount);
+  const start = Math.ceil(lo / step) * step;
+  const end = Math.floor(hi / step) * step;
+  const ticks: number[] = [];
+
+  for (let value = start; value <= end + step * 0.5; value += step) {
+    const rounded = Math.abs(value) < step * 1e-10 ? 0 : Number(value.toPrecision(12));
+    ticks.push(rounded);
+  }
+
+  if (ticks.length < 2) {
+    return [lo, hi];
+  }
+
+  return ticks;
+}
+
+function rangeWithPadding(values: number[], fallbackMin = 0, fallbackMax = 1, fraction = 0.08): { min: number; max: number } {
+  const finiteValues = values.filter(Number.isFinite);
+  if (finiteValues.length === 0) {
+    return { min: fallbackMin, max: fallbackMax };
+  }
+
+  let min = Math.min(...finiteValues);
+  let max = Math.max(...finiteValues);
+  if (min === max) {
+    const padding = Math.max(1, Math.abs(min) * 0.1);
+    min -= padding;
+    max += padding;
+  }
+
+  const padding = Math.max(1e-12, (max - min) * fraction);
+  return { min: min - padding, max: max + padding };
+}
+
 
 function drawWrappedText(
   ctx: CanvasRenderingContext2D,
@@ -2437,11 +2939,16 @@ function drawPythonStyleChannelPanel(
   const stdPoints = standardGroups.flatMap((group) => group.points);
   const referenceX = standardGroups.flatMap(({ fit }) =>
     expectedRefs.flatMap((ref) => {
-      if (ref.refId && fit.sampleId && ref.refId !== fit.sampleId) {
+      if (!referenceMatchesSample(ref, fit.sampleId)) {
         return [];
       }
-      const x = ref.value / Math.max(fit.dilutionFactor, 1e-12);
-      return Number.isFinite(x) ? [x] : [];
+      const x = -ref.value / Math.max(fit.dilutionFactor, 1e-12);
+      const xSd = ref.sd !== null && Number.isFinite(ref.sd)
+        ? Math.abs(ref.sd / Math.max(fit.dilutionFactor, 1e-12))
+        : Number.NaN;
+      return Number.isFinite(x)
+        ? [x, Number.isFinite(xSd) ? x - xSd : Number.NaN, Number.isFinite(xSd) ? x + xSd : Number.NaN]
+        : [];
     }),
   );
   const allX = [
@@ -2458,6 +2965,7 @@ function drawPythonStyleChannelPanel(
     }),
   ];
   const allY = [
+    ...(referenceX.length > 0 ? [0] : []),
     ...calibrationPoints.map((point) => point.y),
     ...calibrationPoints.flatMap((point) => (
       Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []
@@ -2467,7 +2975,7 @@ function drawPythonStyleChannelPanel(
       Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []
     )),
   ];
-  const xRange = finiteRange(allX, 0, 1);
+  const xRange = rangeWithPadding(allX, 0, 1);
   const yFromFits = [
     calibrationFit && Number.isFinite(calibrationFit.slope) && Number.isFinite(calibrationFit.intercept)
       ? calibrationFit.slope * xRange.min + calibrationFit.intercept
@@ -2481,9 +2989,11 @@ function drawPythonStyleChannelPanel(
         : []
     )),
   ];
-  const yRange = finiteRange([...allY, ...yFromFits], 0, 1);
+  const yRange = rangeWithPadding([...allY, ...yFromFits], 0, 1);
   const xToPx = (value: number) => plot.x + ((value - xRange.min) / (xRange.max - xRange.min)) * plot.width;
   const yToPx = (value: number) => plot.y + plot.height - ((value - yRange.min) / (yRange.max - yRange.min)) * plot.height;
+  const xTicks = niceTicks(xRange.min, xRange.max, 5);
+  const yTicks = niceTicks(yRange.min, yRange.max, 5);
 
   ctx.save();
   ctx.fillStyle = '#ffffff';
@@ -2510,18 +3020,20 @@ function drawPythonStyleChannelPanel(
   ctx.lineWidth = 1;
   ctx.font = '12px Inter, Arial, sans-serif';
   ctx.fillStyle = '#465255';
-  for (let tick = 0; tick <= 4; tick += 1) {
-    const tx = plot.x + (plot.width * tick) / 4;
-    const ty = plot.y + (plot.height * tick) / 4;
+  xTicks.forEach((tick) => {
+    const tx = xToPx(tick);
     ctx.beginPath();
     ctx.moveTo(tx, plot.y);
     ctx.lineTo(tx, plot.y + plot.height);
     ctx.stroke();
+  });
+  yTicks.forEach((tick) => {
+    const ty = yToPx(tick);
     ctx.beginPath();
     ctx.moveTo(plot.x, ty);
     ctx.lineTo(plot.x + plot.width, ty);
     ctx.stroke();
-  }
+  });
 
   ctx.strokeStyle = '#2b3437';
   ctx.lineWidth = 1.5;
@@ -2529,12 +3041,12 @@ function drawPythonStyleChannelPanel(
 
   ctx.fillStyle = '#465255';
   ctx.font = '11px Inter, Arial, sans-serif';
-  for (let tick = 0; tick <= 4; tick += 1) {
-    const xValue = xRange.min + ((xRange.max - xRange.min) * tick) / 4;
-    const yValue = yRange.min + ((yRange.max - yRange.min) * (4 - tick)) / 4;
-    ctx.fillText(formatFitCell(xValue), plot.x + (plot.width * tick) / 4 - 14, plot.y + plot.height + 18);
-    ctx.fillText(formatPAbsCell(yValue), bounds.x + 8, plot.y + (plot.height * tick) / 4 + 4);
-  }
+  xTicks.forEach((tick) => {
+    ctx.fillText(formatFitCell(tick), xToPx(tick) - 14, plot.y + plot.height + 18);
+  });
+  yTicks.forEach((tick) => {
+    ctx.fillText(formatPAbsCell(tick), bounds.x + 8, yToPx(tick) + 4);
+  });
 
   ctx.fillStyle = '#263238';
   ctx.font = '700 12px Inter, Arial, sans-serif';
@@ -2600,23 +3112,32 @@ function drawPythonStyleChannelPanel(
     });
 
     expectedRefs.forEach((ref) => {
-      if (ref.refId && fit.sampleId && ref.refId !== fit.sampleId) {
+      if (!referenceMatchesSample(ref, fit.sampleId)) {
         return;
       }
 
-      const x = ref.value / Math.max(fit.dilutionFactor, 1e-12);
+      const x = -ref.value / Math.max(fit.dilutionFactor, 1e-12);
       if (!Number.isFinite(x)) {
         return;
       }
 
       const px = xToPx(x);
+      const py = yToPx(0);
+      const xSd = ref.sd !== null && Number.isFinite(ref.sd)
+        ? Math.abs(ref.sd / Math.max(fit.dilutionFactor, 1e-12))
+        : Number.NaN;
       ctx.save();
-      ctx.setLineDash([4, 4]);
       ctx.strokeStyle = '#8a3ffc';
       ctx.lineWidth = 1.4;
+      if (Number.isFinite(xSd) && xSd > 0) {
+        drawHorizontalErrorBar(ctx, xToPx(x - xSd), xToPx(x + xSd), py, 10, '#8a3ffc');
+      }
       ctx.beginPath();
-      ctx.moveTo(px, plot.y);
-      ctx.lineTo(px, plot.y + plot.height);
+      ctx.moveTo(px, py - 6);
+      ctx.lineTo(px + 6, py);
+      ctx.lineTo(px, py + 6);
+      ctx.lineTo(px - 6, py);
+      ctx.closePath();
       ctx.stroke();
       ctx.restore();
     });
@@ -2628,7 +3149,7 @@ function drawPythonStyleChannelPanel(
   ctx.fillText('filled squares: standard addition, solid fit', plot.x + 4, bounds.y + bounds.height - 22);
   if (expectedRefs.length > 0) {
     ctx.fillStyle = '#6d36c9';
-    ctx.fillText('purple dashed: external reference check', plot.x + 248, bounds.y + bounds.height - 22);
+    ctx.fillText('purple open diamonds: reference at -ref/DF with SD', plot.x + 248, bounds.y + bounds.height - 22);
   }
 
   ctx.restore();
@@ -4509,6 +5030,13 @@ function App() {
         displayMeasurements,
         plateMap,
       );
+      const methodComparisonRows = buildReportMethodComparisonRows(
+        rankings,
+        calibrationFits,
+        standardAdditionFitsWithSlopeContext,
+        unknownResults,
+        expectedRefs,
+      );
       const bestChannel = rankings[0]?.channel ?? 'R';
 
       if (image && measurements.length > 0 && wells.length === 96) {
@@ -4605,6 +5133,30 @@ function App() {
           correctionApplied: lowSignalCorrectionEffective,
         }),
       );
+      if (measurements.length > 0) {
+        addZipBlob(
+          files,
+          `${pythonRawDataDetailsPrefix}_FIGURE_CIELAB_DELTAE.png`,
+          await canvasToPngBlob(buildPythonStyleCielabDeltaECanvas(
+            pythonResultsBase,
+            measurements,
+            plateMap,
+            plateMapUnit,
+          )),
+        );
+      }
+      if (methodComparisonRows.length > 0) {
+        addZipBlob(
+          files,
+          `${pythonRawDataDetailsPrefix}_METHOD_COMPARISON.png`,
+          await canvasToPngBlob(buildPythonStyleMethodComparisonCanvas(
+            pythonResultsBase,
+            methodComparisonRows,
+            expectedRefs,
+            plateMapUnit,
+          )),
+        );
+      }
 
       addTextFile(
         `${pythonResultsPrefix}_RESULTS_CAPTION.txt`,
