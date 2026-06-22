@@ -4,7 +4,7 @@ import { ImageGeometryLoader } from './components/ImageGeometryLoader';
 import { PlateCanvas } from './components/PlateCanvas';
 import { PlateMapEditor } from './components/PlateMapEditor';
 import packageJson from '../package.json';
-import { fitCalibration, fitStandardAddition } from './core/fitting';
+import { fitCalibration, fitLinearRegression, fitStandardAddition } from './core/fitting';
 import {
   addCorrectionMetadataToCalibrationFits,
   addCorrectionMetadataToStandardAdditionFits,
@@ -1219,7 +1219,7 @@ function createPythonRawDataDetailsCaptionText(imageBase: string, unitLabel: str
   return `RAW_DATA_DETAILS caption - diagnostics and method-development outputs
 
 File scope
-This caption applies to diagnostic PNG outputs in RAW_DATA_DETAILS for ${imageBase}: BG_STAT_MASK.png, FIGURE_CIELAB_DELTAE.png and METHOD_COMPARISON.png.
+This caption applies to diagnostic outputs in RAW_DATA_DETAILS for ${imageBase}: BG_STAT_MASK.png, FIGURE_CIELAB_DELTAE.png, METHOD_COMPARISON.png and DIAGNOSTICS.xlsx.
 
 BG_STAT_MASK.png
 White pixels are accepted inter-well background samples used by the physical background model. Black pixels are rejected or unavailable pixels. The mask supports auditability of background sampling and does not change calculations.
@@ -1229,6 +1229,9 @@ Diagnostic CIELAB and DeltaE plots derived from extracted well RGB values. Delta
 
 METHOD_COMPARISON.png
 Cross-method diagnostic comparison for currently available webapp methods. Score uses common fit-quality factors; external reference values and recovery checks are displayed as checks and do not affect ranking.
+
+DIAGNOSTICS.xlsx
+Python-style diagnostic workbook with available background, ROI, geometry, spatial, method-comparison and CIELAB fitting tables. Fields not computed by the webapp are left blank.
 
 Units
 Reported concentrations are expressed in ${unitLabel}.
@@ -1941,6 +1944,753 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     {
       name: '08_LEGENDS',
       rows: tableRows(['Term', 'Meaning', 'Formula', 'Unit', 'Where used', 'Shown when', 'Notes'], buildReportLegendRows(options.unitLabel)),
+    },
+  ]);
+}
+
+interface PythonDiagnosticsWorkbookOptions extends PythonReportWorkbookOptions {
+  wells: WellCenter[];
+  geometry: PlateGeometry | null;
+  backgroundDiagnostics: BackgroundVisualDiagnostics | null;
+  radiusFactor: number;
+  floorRoiRadiusFactor: number;
+  floorCircles: FloorCircle[] | null;
+}
+
+function rowLabel(rowZeroBased: number): string {
+  return Number.isFinite(rowZeroBased) ? String.fromCharCode(65 + rowZeroBased) : '';
+}
+
+function parseWellPosition(wellId: string): { row: number; col: number } | null {
+  const match = /^([A-H])(\d{1,2})$/i.exec(wellId.trim());
+
+  if (!match) {
+    return null;
+  }
+
+  const row = match[1].toUpperCase().charCodeAt(0) - 65;
+  const col = Number(match[2]) - 1;
+
+  return Number.isInteger(row) && Number.isInteger(col) ? { row, col } : null;
+}
+
+function finiteOrBlank(value: number | null | undefined): number | '' {
+  return typeof value === 'number' && Number.isFinite(value) ? value : '';
+}
+
+function diagnosticWellContext(
+  wellId: string,
+  wellsById: Map<string, WellCenter>,
+): { row: number; col: number; rowName: string; colName: number | ''; center: WellCenter | null } {
+  const center = wellsById.get(wellId) ?? null;
+  const parsed = parseWellPosition(wellId);
+  const row = center?.row ?? parsed?.row ?? Number.NaN;
+  const col = center?.col ?? parsed?.col ?? Number.NaN;
+
+  return {
+    row,
+    col,
+    rowName: rowLabel(row),
+    colName: Number.isFinite(col) ? col + 1 : '',
+    center,
+  };
+}
+
+function associatedWellsForBackgroundCell(cellRow: number, cellCol: number): string {
+  if (!Number.isInteger(cellRow) || !Number.isInteger(cellCol) || cellRow < 0 || cellCol < 0 || cellRow > 6 || cellCol > 10) {
+    return '';
+  }
+
+  return [
+    `${rowLabel(cellRow)}${cellCol + 1}`,
+    `${rowLabel(cellRow)}${cellCol + 2}`,
+    `${rowLabel(cellRow + 1)}${cellCol + 1}`,
+    `${rowLabel(cellRow + 1)}${cellCol + 2}`,
+  ].join('-');
+}
+
+function buildDiagnosticsContentsRows(): XlsxRow[] {
+  return [
+    { Sheet: '01_CONTENTS', Purpose: 'Index of diagnostic sheets.' },
+    { Sheet: '02_BG_SAMPLES', Purpose: 'Accepted inter-well background samples used to fit the BG surface.' },
+    { Sheet: '03_BG_WELL_FIT', Purpose: 'Predicted local background at each well.' },
+    { Sheet: '04_WELL_ROBUST_STATS', Purpose: 'Well-level robust pixel statistics and optical QC.' },
+    { Sheet: '05_GEOMETRY_QC', Purpose: 'Floor/mouth geometry quality-control descriptors.' },
+    { Sheet: '06_WELL_BOTTOM', Purpose: 'Detailed well-bottom and mouth geometry measurements.' },
+    { Sheet: '07_PLATE_GEOMETRY', Purpose: 'Nominal plate geometry parameters used by the analyzer.' },
+    { Sheet: '08_EMPTY_WELLS', Purpose: 'Empty-well diagnostic values when empty wells are present.' },
+    { Sheet: '09_SPATIAL_DIAGNOSTICS', Purpose: 'Spatial trends across row/column positions.' },
+    { Sheet: '10_METHOD_COMPARISON', Purpose: 'Cross-method diagnostic comparison using common score factors.' },
+    { Sheet: '11_CIELAB_FITTING', Purpose: 'CIELAB/DeltaE diagnostic fit rows.' },
+    { Sheet: '12_LEGENDS', Purpose: 'Definitions for diagnostic workbook fields and figures.' },
+  ];
+}
+
+function buildDiagnosticsBackgroundSampleRows(options: PythonDiagnosticsWorkbookOptions): XlsxRow[] {
+  const cellDiagnostics = options.backgroundDiagnostics?.diagnostics.cellDiagnostics ?? [];
+
+  return cellDiagnostics.map((cell) => ({
+    BG_Cell_Row: cell.cellRow,
+    BG_Cell_Col: cell.cellColumn,
+    Associated_Wells: associatedWellsForBackgroundCell(cell.cellRow, cell.cellColumn),
+    x: '',
+    y: '',
+    area: cell.finalAcceptedPixels,
+    Red_median_raw: '',
+    Green_median_raw: '',
+    Blue_median_raw: '',
+  }));
+}
+
+function buildDiagnosticsBackgroundWellFitRows(options: PythonDiagnosticsWorkbookOptions): XlsxRow[] {
+  const wellsById = new Map(options.wells.map((well) => [well.wellId, well]));
+
+  return options.measurements.map((measurement) => {
+    const context = diagnosticWellContext(measurement.wellId, wellsById);
+
+    return {
+      Row: context.rowName,
+      Col: context.colName,
+      Well: measurement.wellId,
+      x: finiteOrBlank(context.center?.x),
+      y: finiteOrBlank(context.center?.y),
+      BG_Red_raw: measurement.rgbBackground.r,
+      BG_Green_raw: measurement.rgbBackground.g,
+      BG_Blue_raw: measurement.rgbBackground.b,
+    };
+  });
+}
+
+function buildDiagnosticsWellRobustStatsRows(
+  options: PythonDiagnosticsWorkbookOptions,
+  cielabPoints: CielabDiagnosticPoint[],
+): XlsxRow[] {
+  const wellsById = new Map(options.wells.map((well) => [well.wellId, well]));
+  const labByWell = new Map(cielabPoints.map((point) => [point.wellId, point]));
+
+  return options.measurements.map((measurement) => {
+    const context = diagnosticWellContext(measurement.wellId, wellsById);
+    const lab = labByWell.get(measurement.wellId);
+    const warnings = [
+      ...measurement.warnings,
+      measurement.roiStatisticsWarning ?? '',
+      measurement.geometryAlignmentWarning ?? '',
+    ].filter((warning) => warning.trim() !== '');
+
+    return {
+      Row: context.rowName,
+      Col: context.colName,
+      Well: measurement.wellId,
+      n_roi: measurement.roiFullPixels ?? measurement.roiPixels,
+      n_core: measurement.roiCorePixels ?? '',
+      n_used: measurement.roiUsedPixels ?? measurement.roiPixels,
+      used_fraction: measurement.roiUsedFraction ?? '',
+      highlight_fraction_roi: '',
+      highlight_fraction_core: '',
+      Gray_mean: '',
+      Gray_median: '',
+      Gray_sd: '',
+      Gray_p10: '',
+      Gray_p25: '',
+      Gray_p50: '',
+      Gray_p75: '',
+      Gray_p90: '',
+      Gray_iqr: '',
+      Purple_mean: '',
+      Purple_median: '',
+      Purple_sd: '',
+      Purple_p10: '',
+      Purple_p25: '',
+      Purple_p50: '',
+      Purple_p75: '',
+      Purple_p90: '',
+      Purple_iqr: '',
+      L_mean: '',
+      L_median: lab?.l ?? '',
+      L_sd: '',
+      L_p10: '',
+      L_p25: '',
+      L_p50: lab?.l ?? '',
+      L_p75: '',
+      L_p90: '',
+      L_iqr: '',
+      a_mean: '',
+      a_median: lab?.a ?? '',
+      a_sd: '',
+      a_p10: '',
+      a_p25: '',
+      a_p50: lab?.a ?? '',
+      a_p75: '',
+      a_p90: '',
+      a_iqr: '',
+      b_mean: '',
+      b_median: lab?.b ?? '',
+      b_sd: '',
+      b_p10: '',
+      b_p25: '',
+      b_p50: lab?.b ?? '',
+      b_p75: '',
+      b_p90: '',
+      b_iqr: '',
+      BrightExcludedFraction: '',
+      BrightExcludedMeanGray: '',
+      BrightExcessMeanGray: '',
+      HighlightIndex: '',
+      is_image_quality_warning: warnings.length > 0 ? 1 : 0,
+      warning_reason: warnings.join('; '),
+      Red_mean: '',
+      Green_mean: '',
+      Blue_mean: '',
+      Red_median: measurement.rgbWell.r,
+      Green_median: measurement.rgbWell.g,
+      Blue_median: measurement.rgbWell.b,
+      Red_sd: '',
+      Green_sd: '',
+      Blue_sd: '',
+      Red_p10: '',
+      Green_p10: '',
+      Blue_p10: '',
+      Red_p25: '',
+      Green_p25: '',
+      Blue_p25: '',
+      Red_p50: measurement.rgbWell.r,
+      Green_p50: measurement.rgbWell.g,
+      Blue_p50: measurement.rgbWell.b,
+      Red_p75: '',
+      Green_p75: '',
+      Blue_p75: '',
+      Red_p90: '',
+      Green_p90: '',
+      Blue_p90: '',
+      Red_iqr: '',
+      Green_iqr: '',
+      Blue_iqr: '',
+    };
+  });
+}
+
+function buildDiagnosticsGeometryQcRows(options: PythonDiagnosticsWorkbookOptions): XlsxRow[] {
+  const wellsById = new Map(options.wells.map((well) => [well.wellId, well]));
+
+  return options.measurements.map((measurement) => {
+    const context = diagnosticWellContext(measurement.wellId, wellsById);
+    const floor = Number.isFinite(context.row) && Number.isFinite(context.col) && options.floorCircles?.length === options.wells.length
+      ? options.floorCircles[context.row * 12 + context.col]
+      : null;
+    const mouthRadius = Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
+      ? estimateRoiRadius(options.wells, context.row, context.col, options.radiusFactor)
+      : measurement.mouthRadiusUsed;
+    const floorRadius = floor ? floor.r * options.floorRoiRadiusFactor : measurement.floorRadiusUsed;
+    const finiteMouthRadius = finiteOrBlank(mouthRadius);
+    const finiteFloorRadius = finiteOrBlank(floorRadius);
+    const shiftPx = floor && context.center ? Math.hypot(floor.x - context.center.x, floor.y - context.center.y) : Number.NaN;
+    const ratio = typeof finiteMouthRadius === 'number' && finiteMouthRadius > 0 && typeof finiteFloorRadius === 'number' && finiteFloorRadius > 0
+      ? finiteFloorRadius / finiteMouthRadius
+      : Number.NaN;
+
+    return {
+      Row: context.rowName,
+      Col: context.colName,
+      Well: measurement.wellId,
+      floor_source: options.floorGeometryAvailable ? options.geometrySource : 'none',
+      local_pitch_px: Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
+        ? estimateLocalPitch(options.wells, context.row, context.col)
+        : measurement.medianPitch ?? '',
+      mouth_r: finiteMouthRadius,
+      floor_r: finiteFloorRadius,
+      shift_px: finiteOrBlank(shiftPx),
+      shift_frac_of_mouth_r: Number.isFinite(shiftPx) && typeof finiteMouthRadius === 'number' && finiteMouthRadius > 0 ? shiftPx / finiteMouthRadius : '',
+      floor_to_mouth_r_ratio: finiteOrBlank(ratio),
+      floor_to_mouth_area_ratio: Number.isFinite(ratio) ? ratio ** 2 : '',
+      D_warning: '',
+      D_critical: '',
+    };
+  });
+}
+
+function buildDiagnosticsWellBottomRows(options: PythonDiagnosticsWorkbookOptions): XlsxRow[] {
+  const wellsById = new Map(options.wells.map((well) => [well.wellId, well]));
+
+  return options.measurements.map((measurement) => {
+    const context = diagnosticWellContext(measurement.wellId, wellsById);
+    const floor = Number.isFinite(context.row) && Number.isFinite(context.col) && options.floorCircles?.length === options.wells.length
+      ? options.floorCircles[context.row * 12 + context.col]
+      : null;
+    const localPitch = Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
+      ? estimateLocalPitch(options.wells, context.row, context.col)
+      : Number.NaN;
+    const mouthRadius = Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
+      ? estimateRoiRadius(options.wells, context.row, context.col, options.radiusFactor)
+      : measurement.mouthRadiusUsed;
+    const floorRadius = floor ? floor.r * options.floorRoiRadiusFactor : measurement.floorRadiusUsed;
+    const shiftPx = floor && context.center ? Math.hypot(floor.x - context.center.x, floor.y - context.center.y) : Number.NaN;
+
+    return {
+      Row: context.rowName,
+      Col: context.colName,
+      Well: measurement.wellId,
+      cx: finiteOrBlank(context.center?.x),
+      cy: finiteOrBlank(context.center?.y),
+      local_pitch_px: finiteOrBlank(localPitch),
+      px_per_mm: Number.isFinite(localPitch) ? localPitch / 9 : '',
+      cyl_r_bg: measurement.wellExclusionRadiusApprox ?? '',
+      mouth_r_geom: finiteOrBlank(mouthRadius),
+      floor_r_geom: finiteOrBlank(floorRadius),
+      mouth_cx: finiteOrBlank(context.center?.x),
+      mouth_cy: finiteOrBlank(context.center?.y),
+      mouth_r: finiteOrBlank(mouthRadius),
+      mouth_score: '',
+      floor_cx: finiteOrBlank(floor?.x),
+      floor_cy: finiteOrBlank(floor?.y),
+      floor_r: finiteOrBlank(floorRadius),
+      floor_score: '',
+      shift_px: finiteOrBlank(shiftPx),
+    };
+  });
+}
+
+function buildDiagnosticsPlateGeometryRows(options: PythonDiagnosticsWorkbookOptions): XlsxRow[] {
+  const geometry = options.geometry;
+  const diagnostics = options.backgroundDiagnostics?.diagnostics;
+  const rows: XlsxRow[] = [
+    { key: 'image_basename', value: options.imageBase },
+    { key: 'image_file', value: options.imageName ?? '' },
+    { key: 'application', value: 'TIPICA webapp' },
+    { key: 'application_version', value: packageJson.version },
+    { key: 'geometry_name', value: options.geometryName ?? '' },
+    { key: 'geometry_source', value: options.geometrySource },
+    { key: 'roi_mode', value: options.methodMetadata.roiMode },
+    { key: 'roi_pixel_statistics_mode', value: options.methodMetadata.roiPixelStatisticsMode },
+    { key: 'background_model', value: options.methodMetadata.backgroundModel },
+    { key: 'background_actual_model', value: options.methodMetadata.backgroundActualModel ?? '' },
+    { key: 'background_mask_algorithm', value: options.methodMetadata.backgroundMaskAlgorithm ?? diagnostics?.maskAlgorithm ?? '' },
+    { key: 'background_candidate_pixels', value: options.methodMetadata.backgroundCandidatePixels ?? diagnostics?.candidatePixels ?? '' },
+    { key: 'background_accepted_pixels', value: diagnostics?.acceptedPixels ?? '' },
+    { key: 'background_accepted_samples', value: options.methodMetadata.backgroundAcceptedSamples ?? diagnostics?.acceptedSamples ?? '' },
+    { key: 'background_fit_success', value: diagnostics?.fitSuccess === undefined ? '' : diagnostics.fitSuccess ? 1 : 0 },
+    { key: 'floor_geometry_available', value: options.floorGeometryAvailable ? 1 : 0 },
+    { key: 'roi_radius_factor', value: options.radiusFactor },
+    { key: 'floor_roi_radius_factor', value: options.floorRoiRadiusFactor },
+    { key: 'unit_label', value: options.unitLabel },
+    { key: 'measurements', value: options.measurements.length },
+    { key: 'plate_map_entries', value: options.plateMap.length },
+    { key: 'missing_fields_note', value: 'Blank cells indicate Python diagnostic quantities not yet computed by the webapp.' },
+  ];
+
+  if (geometry) {
+    rows.push(
+      { key: 'corner_a1_x', value: geometry.corner_a1.x },
+      { key: 'corner_a1_y', value: geometry.corner_a1.y },
+      { key: 'corner_a12_x', value: geometry.corner_a12.x },
+      { key: 'corner_a12_y', value: geometry.corner_a12.y },
+      { key: 'corner_h12_x', value: geometry.corner_h12.x },
+      { key: 'corner_h12_y', value: geometry.corner_h12.y },
+      { key: 'corner_h1_x', value: geometry.corner_h1.x },
+      { key: 'corner_h1_y', value: geometry.corner_h1.y },
+      { key: 'mouth_radius_px', value: geometry.mouth_radius_px ?? '' },
+      { key: 'geometry_roi_radius_factor', value: geometry.roi_radius_factor ?? '' },
+    );
+  }
+
+  return rows;
+}
+
+function buildDiagnosticsEmptyWellRows(
+  options: PythonDiagnosticsWorkbookOptions,
+  cielabPoints: CielabDiagnosticPoint[],
+): XlsxRow[] {
+  const configByWell = new Map(options.plateMap.map((well) => [well.wellId, well]));
+  const displayByWell = new Map(options.displayMeasurements.map((measurement) => [measurement.wellId, measurement]));
+  const wellsById = new Map(options.wells.map((well) => [well.wellId, well]));
+  const labByWell = new Map(cielabPoints.map((point) => [point.wellId, point]));
+
+  return options.measurements
+    .filter((measurement) => configByWell.get(measurement.wellId)?.role === 'EMPTY')
+    .map((measurement) => {
+      const display = displayByWell.get(measurement.wellId) ?? measurement;
+      const context = diagnosticWellContext(measurement.wellId, wellsById);
+      const lab = labByWell.get(measurement.wellId);
+      const wellLinear = linearizeRgb(measurement.rgbWell);
+      const backgroundLinear = linearizeRgb(measurement.rgbBackground);
+
+      return {
+        Row: context.rowName,
+        Col: context.colName,
+        Well: measurement.wellId,
+        MeanW_Red: wellLinear.r,
+        MeanBG_Red: backgroundLinear.r,
+        PAbs_Red: display.pabs.r,
+        MeanW_Green: wellLinear.g,
+        MeanBG_Green: backgroundLinear.g,
+        PAbs_Green: display.pabs.g,
+        MeanW_Blue: wellLinear.b,
+        MeanBG_Blue: backgroundLinear.b,
+        PAbs_Blue: display.pabs.b,
+        L: lab?.l ?? '',
+        a: lab?.a ?? '',
+        b: lab?.b ?? '',
+        UsedFraction: measurement?.roiUsedFraction ?? '',
+        BrightExcludedFraction: '',
+        HighlightIndex: '',
+      };
+    });
+}
+
+function pearsonCorrelation(xs: number[], ys: number[]): number {
+  if (xs.length !== ys.length || xs.length < 2) {
+    return Number.NaN;
+  }
+
+  const xMean = meanFinite(xs);
+  const yMean = meanFinite(ys);
+  const numerator = xs.reduce((sum, x, index) => sum + (x - xMean) * (ys[index] - yMean), 0);
+  const xDenominator = Math.sqrt(xs.reduce((sum, x) => sum + (x - xMean) ** 2, 0));
+  const yDenominator = Math.sqrt(ys.reduce((sum, y) => sum + (y - yMean) ** 2, 0));
+
+  return xDenominator > 0 && yDenominator > 0 ? numerator / (xDenominator * yDenominator) : Number.NaN;
+}
+
+function buildSpatialDiagnosticRow(dataset: string, measurements: WellMeasurement[]): XlsxRow {
+  const points = measurements
+    .map((measurement) => ({
+      row: parseWellPosition(measurement.wellId)?.row ?? Number.NaN,
+      col: parseWellPosition(measurement.wellId)?.col ?? Number.NaN,
+      y: measurement.pabs.r,
+    }))
+    .filter((point) => Number.isFinite(point.row) && Number.isFinite(point.col) && Number.isFinite(point.y));
+
+  if (points.length < 3) {
+    return {
+      Dataset: dataset,
+      Status: 'not_applied',
+      Applicability: 'requires usable unknown or empty wells distributed across rows/columns',
+      Reason: 'fewer than 3 usable wells available for this spatial-trend dataset',
+      n: points.length,
+      intercept: '',
+      slope_col: '',
+      slope_row: '',
+      R2: '',
+      corr_col: '',
+      corr_row: '',
+    };
+  }
+
+  const colFit = fitLinearRegression(points.map((point) => point.col), points.map((point) => point.y));
+  const rowFit = fitLinearRegression(points.map((point) => point.row), points.map((point) => point.y));
+  const slopeCol = Number.isFinite(colFit.slope) ? colFit.slope : 0;
+  const slopeRow = Number.isFinite(rowFit.slope) ? rowFit.slope : 0;
+  const intercept = meanFinite(points.map((point) => point.y))
+    - slopeCol * meanFinite(points.map((point) => point.col))
+    - slopeRow * meanFinite(points.map((point) => point.row));
+  const residuals = points.map((point) => point.y - (intercept + slopeCol * point.col + slopeRow * point.row));
+  const yMean = meanFinite(points.map((point) => point.y));
+  const sse = residuals.reduce((sum, residual) => sum + residual ** 2, 0);
+  const sst = points.reduce((sum, point) => sum + (point.y - yMean) ** 2, 0);
+  const r2 = sst > 1e-12 ? 1 - sse / sst : Number.NaN;
+
+  return {
+    Dataset: dataset,
+    Status: 'applied',
+    Applicability: 'requires usable unknown or empty wells distributed across rows/columns',
+    Reason: '',
+    n: points.length,
+    intercept,
+    slope_col: slopeCol,
+    slope_row: slopeRow,
+    R2: finiteOrBlank(r2),
+    corr_col: finiteOrBlank(pearsonCorrelation(points.map((point) => point.col), points.map((point) => point.y))),
+    corr_row: finiteOrBlank(pearsonCorrelation(points.map((point) => point.row), points.map((point) => point.y))),
+  };
+}
+
+function buildDiagnosticsSpatialRows(options: PythonDiagnosticsWorkbookOptions): XlsxRow[] {
+  const configByWell = new Map(options.plateMap.map((well) => [well.wellId, well]));
+  const unknownMeasurements = options.displayMeasurements.filter((measurement) => configByWell.get(measurement.wellId)?.role === 'U');
+  const emptyMeasurements = options.displayMeasurements.filter((measurement) => configByWell.get(measurement.wellId)?.role === 'EMPTY');
+
+  return [
+    buildSpatialDiagnosticRow('unknown', unknownMeasurements),
+    buildSpatialDiagnosticRow('empty', emptyMeasurements),
+  ];
+}
+
+const CIELAB_DIAGNOSTIC_DESCRIPTORS = [
+  { channel: 'L', getValue: (point: CielabDiagnosticPoint) => point.l },
+  { channel: 'a', getValue: (point: CielabDiagnosticPoint) => point.a },
+  { channel: 'b', getValue: (point: CielabDiagnosticPoint) => point.b },
+  { channel: 'DeltaL', getValue: (point: CielabDiagnosticPoint) => point.deltaL },
+  { channel: 'Deltaa', getValue: (point: CielabDiagnosticPoint) => point.deltaA },
+  { channel: 'Deltab', getValue: (point: CielabDiagnosticPoint) => point.deltaB },
+  { channel: 'DeltaE_ab', getValue: (point: CielabDiagnosticPoint) => point.deltaE },
+  { channel: 'DeltaE_ab_chroma', getValue: (point: CielabDiagnosticPoint) => point.deltaEChroma },
+] as const;
+
+function cielabValueAsNumber(value: number | ''): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
+}
+
+function diagnosticCielabPointsForRole(
+  points: CielabDiagnosticPoint[],
+  role: string,
+  sampleId?: string,
+  dilutionFactor?: number,
+): CielabDiagnosticPoint[] {
+  return points.filter((point) => {
+    if (point.type !== role || typeof point.conc !== 'number') {
+      return false;
+    }
+
+    if (sampleId !== undefined && point.id.trim() !== sampleId.trim()) {
+      return false;
+    }
+
+    if (dilutionFactor !== undefined && Math.abs(point.df - dilutionFactor) > 1e-12) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+function buildDiagnosticsCielabFittingRows(options: PythonDiagnosticsWorkbookOptions, points: CielabDiagnosticPoint[]): XlsxRow[] {
+  const rows: XlsxRow[] = [];
+  const calibrationPoints = diagnosticCielabPointsForRole(points, 'C');
+  const standardGroups = new Map<string, { sampleId: string; dilutionFactor: number; points: CielabDiagnosticPoint[] }>();
+
+  points.forEach((point) => {
+    if (point.type !== 'A' || typeof point.conc !== 'number' || point.id.trim() === '') {
+      return;
+    }
+
+    const key = `${point.id}\u0000${point.df}`;
+    const group = standardGroups.get(key);
+
+    if (group) {
+      group.points.push(point);
+    } else {
+      standardGroups.set(key, { sampleId: point.id, dilutionFactor: point.df, points: [point] });
+    }
+  });
+
+  CIELAB_DIAGNOSTIC_DESCRIPTORS.forEach((descriptor) => {
+    const xCal = calibrationPoints.map((point) => point.conc as number);
+    const yCal = calibrationPoints.map((point) => cielabValueAsNumber(descriptor.getValue(point)));
+    const calFit = fitLinearRegression(xCal, yCal);
+    const calPointRows = xCal.map((x, index) => ({ x, y: yCal[index] })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+    const groupedCalibration = new Map<number, number[]>();
+
+    calPointRows.forEach((point) => {
+      const values = groupedCalibration.get(point.x) ?? [];
+      values.push(point.y);
+      groupedCalibration.set(point.x, values);
+    });
+
+    const sigmaCal = medianFinite([...groupedCalibration.values()].map(sampleStandardDeviation).filter(Number.isFinite));
+    const lod = Number.isFinite(sigmaCal) && sigmaCal > 0 && Number.isFinite(calFit.slope) && Math.abs(calFit.slope) > 1e-15
+      ? (3 * sigmaCal) / Math.abs(calFit.slope)
+      : Number.NaN;
+    const loq = Number.isFinite(sigmaCal) && sigmaCal > 0 && Number.isFinite(calFit.slope) && Math.abs(calFit.slope) > 1e-15
+      ? (10 * sigmaCal) / Math.abs(calFit.slope)
+      : Number.NaN;
+
+    if (calFit.n > 0) {
+      rows.push({
+        Channel: descriptor.channel,
+        FitType: 'Calibration',
+        ID: '',
+        DF: '',
+        n_points: calFit.n,
+        m: finiteOrBlank(calFit.slope),
+        q: finiteOrBlank(calFit.intercept),
+        R2: finiteOrBlank(calFit.r2),
+        RMSE: finiteRmse(calPointRows, calFit.slope, calFit.intercept),
+        LOD: finiteOrBlank(lod),
+        LOQ: finiteOrBlank(loq),
+        C0: '',
+        C0_sd: '',
+        sigma_cal: finiteOrBlank(sigmaCal),
+        sigma_source: Number.isFinite(sigmaCal) ? 'median_calibration_sd' : 'unavailable',
+        SNR: Number.isFinite(sigmaCal) && sigmaCal > 0 && Number.isFinite(calFit.slope) ? Math.abs(calFit.slope) / sigmaCal : '',
+        beta_k: '',
+        bias_index_k: '',
+      });
+    }
+
+    standardGroups.forEach((group) => {
+      const xStd = group.points.map((point) => point.conc as number);
+      const yStd = group.points.map((point) => cielabValueAsNumber(descriptor.getValue(point)));
+      const stdFit = fitLinearRegression(xStd, yStd);
+      const stdPointRows = xStd.map((x, index) => ({ x, y: yStd[index] })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+      const beta = Number.isFinite(calFit.slope) && Math.abs(calFit.slope) > 1e-15 && Number.isFinite(stdFit.slope)
+        ? stdFit.slope / calFit.slope
+        : Number.NaN;
+      const c0 = Number.isFinite(stdFit.intercept) && Number.isFinite(stdFit.slope) && Math.abs(stdFit.slope) > 1e-15
+        ? group.dilutionFactor * (stdFit.intercept / stdFit.slope)
+        : Number.NaN;
+
+      rows.push({
+        Channel: descriptor.channel,
+        FitType: 'StdAdd',
+        ID: group.sampleId,
+        DF: group.dilutionFactor,
+        n_points: stdFit.n,
+        m: finiteOrBlank(stdFit.slope),
+        q: finiteOrBlank(stdFit.intercept),
+        R2: finiteOrBlank(stdFit.r2),
+        RMSE: finiteRmse(stdPointRows, stdFit.slope, stdFit.intercept),
+        LOD: '',
+        LOQ: '',
+        C0: finiteOrBlank(c0),
+        C0_sd: '',
+        sigma_cal: '',
+        sigma_source: '',
+        SNR: '',
+        beta_k: finiteOrBlank(beta),
+        bias_index_k: Number.isFinite(beta) ? Math.abs(beta - 1) : '',
+      });
+    });
+  });
+
+  return rows;
+}
+
+function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
+  return [
+    { Term: 'BG_STAT_MASK', Meaning: 'Binary diagnostic mask of accepted inter-well background pixels', Formula: 'white = used as BG sample; black = rejected', Unit: 'image', 'Where used': 'BG_STAT_MASK.png', Notes: 'Used to audit the background-sampling step.' },
+    { Term: 'BG_Cell_Row/BG_Cell_Col', Meaning: 'Inter-well background-cell row/column index', Formula: '0-based grid index of the inter-well cell, not a well row/column', Unit: 'index', 'Where used': '02_BG_SAMPLES', Notes: 'Populated when physical inter-well cell diagnostics are available.' },
+    { Term: 'Associated_Wells', Meaning: 'Four wells surrounding an inter-well BG sample cell', Formula: 'well(r,c)-well(r,c+1)-well(r+1,c)-well(r+1,c+1)', Unit: 'well labels', 'Where used': '02_BG_SAMPLES', Notes: '' },
+    { Term: 'Row/Col/Well', Meaning: 'Human-readable well position', Formula: 'Row is A-based; Col is 1-based; Well = Row+Col', Unit: 'well label', 'Where used': '03_BG_WELL_FIT, 04_WELL_ROBUST_STATS, 05_GEOMETRY_QC, 06_WELL_BOTTOM, 08_EMPTY_WELLS', Notes: '' },
+    { Term: 'x/y', Meaning: 'Image coordinates', Formula: 'pixel coordinate in analyzed image', Unit: 'pixel', 'Where used': '03_BG_WELL_FIT, 06_WELL_BOTTOM', Notes: 'Per-cell x/y for 02_BG_SAMPLES is blank because the webapp does not store per-cell centroids.' },
+    { Term: 'area', Meaning: 'Accepted mask area', Formula: 'number of accepted pixels in the BG sample mask', Unit: 'pixels', 'Where used': '02_BG_SAMPLES', Notes: 'Uses final accepted physical cell pixel counts when available.' },
+    { Term: 'BG_Red_raw/BG_Green_raw/BG_Blue_raw', Meaning: 'Predicted or sampled local raw background at a well', Formula: 'background model value at well center', Unit: 'raw image intensity', 'Where used': '03_BG_WELL_FIT', Notes: 'Exported in standard RGB order.' },
+    { Term: 'n_roi/n_core/n_used', Meaning: 'Pixel counts used during well ROI filtering', Formula: 'ROI pixels, core pixels and retained pixels', Unit: 'pixels', 'Where used': '04_WELL_ROBUST_STATS', Notes: '' },
+    { Term: 'used_fraction/UsedFraction', Meaning: 'Fraction of ROI core pixels retained after filtering', Formula: 'n_used / n_core', Unit: 'dimensionless', 'Where used': '04_WELL_ROBUST_STATS, 08_EMPTY_WELLS', Notes: '' },
+    { Term: 'Red_median/Green_median/Blue_median', Meaning: 'Median well RGB intensities currently computed by the webapp', Formula: 'median over sampled ROI pixels after selected ROI statistics mode', Unit: 'raw image intensity', 'Where used': '04_WELL_ROBUST_STATS', Notes: 'Distribution percentiles and SD remain blank because the webapp does not retain them.' },
+    { Term: 'L/a/b', Meaning: 'CIELAB coordinates derived from extracted well RGB values', Formula: 'sRGB-like RGB to CIE L*a*b* conversion using D65 reference white', Unit: 'dimensionless', 'Where used': '04_WELL_ROBUST_STATS, 08_EMPTY_WELLS, 11_CIELAB_FITTING', Notes: 'Diagnostic descriptor, not the primary quantitative output.' },
+    { Term: 'DeltaL/Deltaa/Deltab/DeltaE_ab/DeltaE_ab_chroma', Meaning: 'CIELAB difference descriptors', Formula: 'Delta values relative to zero or lowest calibration reference; DeltaE_ab = sqrt(DeltaL^2 + Deltaa^2 + Deltab^2)', Unit: 'dimensionless', 'Where used': '11_CIELAB_FITTING, FIGURE_CIELAB_DELTAE.png', Notes: '' },
+    { Term: 'floor_source/local_pitch_px/px_per_mm/cyl_r_bg', Meaning: 'Geometry-source and local scale descriptors', Formula: 'reported source, local pitch, pixel/mm scale and background exclusion radius', Unit: 'mixed', 'Where used': '05_GEOMETRY_QC, 06_WELL_BOTTOM', Notes: 'px_per_mm assumes 9.0 mm 96-well pitch.' },
+    { Term: 'mouth_* / floor_*', Meaning: 'Mouth/floor circle center and radius descriptors', Formula: 'projected circle parameters from loaded geometry and current ROI settings', Unit: 'pixels', 'Where used': '06_WELL_BOTTOM', Notes: 'Mouth/floor scores are blank because the webapp does not compute Python detector scores.' },
+    { Term: 'shift_px/shift_frac_of_mouth_r/floor_to_mouth_r_ratio/floor_to_mouth_area_ratio', Meaning: 'Mouth-to-floor alignment descriptors', Formula: 'shift distance and relative floor/mouth radius or area ratios', Unit: 'pixels or dimensionless', 'Where used': '05_GEOMETRY_QC, 06_WELL_BOTTOM', Notes: '' },
+    { Term: 'D_warning/D_critical', Meaning: 'Floor-geometry warning and critical flags', Formula: 'Python threshold flags', Unit: '0/1', 'Where used': '05_GEOMETRY_QC', Notes: 'Blank because the webapp does not compute Python floor-geometry warning thresholds.' },
+    { Term: 'MeanW_*/MeanBG_*/PAbs_*', Meaning: 'Linearized well intensity, background intensity and RGB pseudo-absorbance', Formula: 'PAbs = log10(MeanBG / MeanW)', Unit: 'dimensionless', 'Where used': '08_EMPTY_WELLS, 10_METHOD_COMPARISON', Notes: '' },
+    { Term: 'Dataset/Status/Applicability/Reason', Meaning: 'Applicability status for optional spatial diagnostics', Formula: 'applied or not_applied with reason text', Unit: 'text', 'Where used': '09_SPATIAL_DIAGNOSTICS', Notes: 'Spatial diagnostics use PAbs_Red as the currently available webapp trend signal.' },
+    { Term: 'n/intercept/slope_col/slope_row/R2/corr_col/corr_row', Meaning: 'Spatial-trend descriptors', Formula: 'linear trend of PAbs_Red versus row/column position', Unit: 'mixed', 'Where used': '09_SPATIAL_DIAGNOSTICS', Notes: 'Diagnostic only; does not alter quantitative results.' },
+    { Term: 'Method/Family/ComparableGroup/CommonFactorsN/RankMode', Meaning: 'Method-comparison identifiers and comparable-score grouping', Formula: 'text labels and number of factors defining score comparability', Unit: 'mixed', 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: 'Scores are directly comparable only within the same ComparableGroup.' },
+    { Term: 'Score/ScoreFormula', Meaning: 'Common method-ranking score and formula descriptor', Formula: 'SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ) when LOQ is available', Unit: `1/${unitLabel}`, 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: 'Expected/reference values, SNR and clipping are not part of Score.' },
+    { Term: 'R2_cal/R2_std_mean/m_cal/m_std_mean/SlopeAgreement', Meaning: 'Fit-quality and slope-agreement descriptors for method comparison', Formula: 'SlopeAgreement = min(abs(m_cal), abs(m_std_mean)) / max(abs(m_cal), abs(m_std_mean))', Unit: 'mixed', 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: '' },
+    { Term: 'C0_mean/C0_median/C0_sd_median', Meaning: 'Summary of available original-concentration estimates', Formula: 'mean/median of C0 estimates and median of associated C0_sd values', Unit: unitLabel, 'Where used': '10_METHOD_COMPARISON', Notes: 'C0_sd_median is blank because webapp uncertainty parity is not implemented.' },
+    { Term: 'Channel/FitType/ID/DF/n_points/m/q/R2/RMSE', Meaning: 'Diagnostic fitting identifiers and linear-fit descriptors', Formula: 'y = m x + q; R2 = 1 - SSE/SST; RMSE = sqrt(mean(residual^2))', Unit: 'mixed', 'Where used': '11_CIELAB_FITTING', Notes: 'Current webapp least-squares diagnostic fit; Python IRLS parity remains future work.' },
+    { Term: 'LOD/LOQ', Meaning: 'Detection and quantification limits', Formula: 'LOD = 3 sigma_cal / abs(m); LOQ = 10 sigma_cal / abs(m)', Unit: unitLabel, 'Where used': '10_METHOD_COMPARISON, 11_CIELAB_FITTING', Notes: '' },
+    { Term: 'sigma_cal/sigma_source/SNR', Meaning: 'Calibration noise estimate, source and slope-to-noise ratio', Formula: 'SNR = abs(m) / sigma_cal', Unit: 'mixed', 'Where used': '10_METHOD_COMPARISON, 11_CIELAB_FITTING', Notes: 'SNR is diagnostic and is not part of the common Score.' },
+    { Term: 'beta_k/bias_index_k', Meaning: 'Per-fit slope ratio and relative slope-bias index', Formula: 'beta_k = m_std / m_cal; bias_index_k = abs(beta_k - 1)', Unit: 'dimensionless', 'Where used': '11_CIELAB_FITTING', Notes: '' },
+    { Term: 'Blank cells', Meaning: 'Unavailable Python diagnostic quantities', Formula: 'left blank when the webapp does not currently compute the Python field', Unit: 'mixed', 'Where used': 'all sheets', Notes: 'No placeholder or fake values are generated.' },
+    { Term: 'Code implementation', Meaning: 'Main computational libraries and code provenance', Formula: 'browser TypeScript using built-in Canvas, XML and ZIP helpers', Unit: 'software provenance', 'Where used': 'DIAGNOSTICS.xlsx and diagnostic PNG files', Notes: 'Workbook uses the existing browser-side XLSX writer; no new dependency was added.' },
+  ];
+}
+
+async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWorkbookOptions): Promise<Blob> {
+  const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap);
+  const methodComparisonRows = buildReportMethodComparisonRows(
+    options.rankings,
+    options.calibrationFits,
+    options.standardAdditionFits,
+    options.unknownResults,
+    options.expectedRefs,
+  );
+  const methodComparisonPreferred = [
+    'Method',
+    'Family',
+    'ComparableGroup',
+    'CommonFactorsN',
+    'Score',
+    'ScoreFormula',
+    'RankMode',
+    'R2_cal',
+    'R2_std_mean',
+    'm_cal',
+    'm_std_mean',
+    'SlopeAgreement',
+    'beta_mean',
+    'bias_index_mean',
+    'C0_median',
+    'C0_sd_median',
+    'Estimate_value',
+    'Estimate_sd',
+    'Estimate_source',
+    'LOD',
+    'LOQ',
+    'SNR',
+    'n_stdadd',
+    'n_unknown',
+    'C0_mean',
+  ];
+
+  return createXlsxWorkbookBlob([
+    { name: '01_CONTENTS', rows: tableRows(['Sheet', 'Purpose'], buildDiagnosticsContentsRows()) },
+    {
+      name: '02_BG_SAMPLES',
+      rows: tableRows(
+        ['BG_Cell_Row', 'BG_Cell_Col', 'Associated_Wells', 'x', 'y', 'area', 'Red_median_raw', 'Green_median_raw', 'Blue_median_raw'],
+        buildDiagnosticsBackgroundSampleRows(options),
+      ),
+    },
+    {
+      name: '03_BG_WELL_FIT',
+      rows: tableRows(
+        ['Row', 'Col', 'Well', 'x', 'y', 'BG_Red_raw', 'BG_Green_raw', 'BG_Blue_raw'],
+        buildDiagnosticsBackgroundWellFitRows(options),
+      ),
+    },
+    {
+      name: '04_WELL_ROBUST_STATS',
+      rows: tableRows(
+        ['Row', 'Col', 'Well', 'n_roi', 'n_core', 'n_used', 'used_fraction', 'highlight_fraction_roi', 'highlight_fraction_core', 'Gray_mean', 'Gray_median', 'Gray_sd', 'Gray_p10', 'Gray_p25', 'Gray_p50', 'Gray_p75', 'Gray_p90', 'Gray_iqr', 'Purple_mean', 'Purple_median', 'Purple_sd', 'Purple_p10', 'Purple_p25', 'Purple_p50', 'Purple_p75', 'Purple_p90', 'Purple_iqr', 'L_mean', 'L_median', 'L_sd', 'L_p10', 'L_p25', 'L_p50', 'L_p75', 'L_p90', 'L_iqr', 'a_mean', 'a_median', 'a_sd', 'a_p10', 'a_p25', 'a_p50', 'a_p75', 'a_p90', 'a_iqr', 'b_mean', 'b_median', 'b_sd', 'b_p10', 'b_p25', 'b_p50', 'b_p75', 'b_p90', 'b_iqr', 'BrightExcludedFraction', 'BrightExcludedMeanGray', 'BrightExcessMeanGray', 'HighlightIndex', 'is_image_quality_warning', 'warning_reason', 'Red_mean', 'Green_mean', 'Blue_mean', 'Red_median', 'Green_median', 'Blue_median', 'Red_sd', 'Green_sd', 'Blue_sd', 'Red_p10', 'Green_p10', 'Blue_p10', 'Red_p25', 'Green_p25', 'Blue_p25', 'Red_p50', 'Green_p50', 'Blue_p50', 'Red_p75', 'Green_p75', 'Blue_p75', 'Red_p90', 'Green_p90', 'Blue_p90', 'Red_iqr', 'Green_iqr', 'Blue_iqr'],
+        buildDiagnosticsWellRobustStatsRows(options, cielabPoints),
+      ),
+    },
+    {
+      name: '05_GEOMETRY_QC',
+      rows: tableRows(
+        ['Row', 'Col', 'Well', 'floor_source', 'local_pitch_px', 'mouth_r', 'floor_r', 'shift_px', 'shift_frac_of_mouth_r', 'floor_to_mouth_r_ratio', 'floor_to_mouth_area_ratio', 'D_warning', 'D_critical'],
+        buildDiagnosticsGeometryQcRows(options),
+      ),
+    },
+    {
+      name: '06_WELL_BOTTOM',
+      rows: tableRows(
+        ['Row', 'Col', 'Well', 'cx', 'cy', 'local_pitch_px', 'px_per_mm', 'cyl_r_bg', 'mouth_r_geom', 'floor_r_geom', 'mouth_cx', 'mouth_cy', 'mouth_r', 'mouth_score', 'floor_cx', 'floor_cy', 'floor_r', 'floor_score', 'shift_px'],
+        buildDiagnosticsWellBottomRows(options),
+      ),
+    },
+    { name: '07_PLATE_GEOMETRY', rows: tableRows(['key', 'value'], buildDiagnosticsPlateGeometryRows(options)) },
+    {
+      name: '08_EMPTY_WELLS',
+      rows: tableRows(
+        ['Row', 'Col', 'Well', 'MeanW_Red', 'MeanBG_Red', 'PAbs_Red', 'MeanW_Green', 'MeanBG_Green', 'PAbs_Green', 'MeanW_Blue', 'MeanBG_Blue', 'PAbs_Blue', 'L', 'a', 'b', 'UsedFraction', 'BrightExcludedFraction', 'HighlightIndex'],
+        buildDiagnosticsEmptyWellRows(options, cielabPoints),
+      ),
+    },
+    {
+      name: '09_SPATIAL_DIAGNOSTICS',
+      rows: tableRows(
+        ['Dataset', 'Status', 'Applicability', 'Reason', 'n', 'intercept', 'slope_col', 'slope_row', 'R2', 'corr_col', 'corr_row'],
+        buildDiagnosticsSpatialRows(options),
+      ),
+    },
+    {
+      name: '10_METHOD_COMPARISON',
+      rows: tableRows(uniqueHeaders(methodComparisonPreferred, methodComparisonRows), methodComparisonRows),
+    },
+    {
+      name: '11_CIELAB_FITTING',
+      rows: tableRows(
+        ['Channel', 'FitType', 'ID', 'DF', 'n_points', 'm', 'q', 'R2', 'RMSE', 'LOD', 'LOQ', 'C0', 'C0_sd', 'sigma_cal', 'sigma_source', 'SNR', 'beta_k', 'bias_index_k'],
+        buildDiagnosticsCielabFittingRows(options, cielabPoints),
+      ),
+    },
+    {
+      name: '12_LEGENDS',
+      rows: tableRows(['Term', 'Meaning', 'Formula', 'Unit', 'Where used', 'Notes'], buildDiagnosticsLegendRows(options.unitLabel)),
     },
   ]);
 }
@@ -5038,6 +5788,7 @@ function App() {
         expectedRefs,
       );
       const bestChannel = rankings[0]?.channel ?? 'R';
+      let backgroundVisualDiagnostics: BackgroundVisualDiagnostics | null = null;
 
       if (image && measurements.length > 0 && wells.length === 96) {
         const imageData = createAnalysisImageData(image, wells);
@@ -5099,6 +5850,7 @@ function App() {
             diagnosticBackgroundModel,
             floorGeometryAvailable ? floorCircles ?? undefined : undefined,
           );
+          backgroundVisualDiagnostics = diagnostics;
           const backgroundMaskCanvas = buildBackgroundMaskDiagnosticCanvas(imageData, wells, diagnostics, geometry);
 
           addZipBlob(
@@ -5131,6 +5883,36 @@ function App() {
           geometrySource: currentMethodMetadata.geometrySource ?? 'unknown',
           floorGeometryAvailable,
           correctionApplied: lowSignalCorrectionEffective,
+        }),
+      );
+      addZipBlob(
+        files,
+        `${pythonRawDataDetailsPrefix}_DIAGNOSTICS.xlsx`,
+        await createPythonDiagnosticsWorkbookBlob({
+          imageBase: pythonResultsBase,
+          imageName,
+          unitLabel: plateMapUnit,
+          selectedChannel: bestChannel,
+          generatedAt: new Date().toISOString(),
+          measurements,
+          displayMeasurements,
+          plateMap,
+          calibrationFits,
+          standardAdditionFits: standardAdditionFitsWithSlopeContext,
+          unknownResults,
+          expectedRefs,
+          rankings,
+          methodMetadata: currentMethodMetadata,
+          geometryName,
+          geometrySource: currentMethodMetadata.geometrySource ?? 'unknown',
+          floorGeometryAvailable,
+          correctionApplied: lowSignalCorrectionEffective,
+          wells,
+          geometry,
+          backgroundDiagnostics: backgroundVisualDiagnostics,
+          radiusFactor,
+          floorRoiRadiusFactor,
+          floorCircles: floorGeometryAvailable ? floorCircles : null,
         }),
       );
       if (measurements.length > 0) {
