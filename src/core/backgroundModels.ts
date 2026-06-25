@@ -99,6 +99,9 @@ export interface BackgroundCellDiagnostic {
   pixelsAfterWellDiskExclusion: number;
   pixelsAfterLuminanceChromaFiltering: number;
   finalAcceptedPixels: number;
+  sampledFinalAcceptedPixels?: number;
+  fullResolutionPixelsAfterWellDiskExclusion?: number;
+  fullResolutionFinalAcceptedPixels?: number;
   acceptedCentroidX?: number;
   acceptedCentroidY?: number;
   redMedianRaw?: number;
@@ -786,8 +789,9 @@ function createPhysicalInterwellCandidates(
         zeroReason: '',
       };
       const homography = computeHomographyFromUnitSquare(quad);
+      const inverseHomography = computeHomographyToUnitSquare(quad);
 
-      if (!homography) {
+      if (!homography || !inverseHomography) {
         cellDiagnostic.zeroReason = 'homography failed';
         cellDiagnostics.push(cellDiagnostic);
         continue;
@@ -807,6 +811,15 @@ function createPhysicalInterwellCandidates(
       const canonicalSize = 220;
       const averageCellScale = Math.max(1, 0.5 * (sxPx + syPx));
       const canonicalStep = Math.max(2, Math.round((sampleStride * canonicalSize) / averageCellScale));
+      const cornerWells = [topLeft, topRight, bottomRight, bottomLeft];
+      const cornerExclusions = cornerWells.map((well) => {
+        const index = wells.indexOf(well);
+
+        return {
+          well,
+          radius: index >= 0 ? exclusionRadii[index] : PHYSICAL_EXCLUSION_RADIUS_FACTOR * PHYSICAL_MOUTH_RADIUS_FACTOR_OF_PITCH * medianPitch,
+        };
+      });
 
       for (let canonicalY = 0; canonicalY < canonicalSize; canonicalY += canonicalStep) {
         for (let canonicalX = 0; canonicalX < canonicalSize; canonicalX += canonicalStep) {
@@ -895,10 +908,92 @@ function createPhysicalInterwellCandidates(
         }
       }
 
+      const fullResolutionModelPixels: CandidatePixel[] = [];
+      const fullX0 = Math.max(0, Math.floor(Math.min(...quad.map((point) => point.x))));
+      const fullX1 = Math.min(width - 1, Math.ceil(Math.max(...quad.map((point) => point.x))));
+      const fullY0 = Math.max(0, Math.floor(Math.min(...quad.map((point) => point.y))));
+      const fullY1 = Math.min(height - 1, Math.ceil(Math.max(...quad.map((point) => point.y))));
+
+      for (let y = fullY0; y <= fullY1; y += 1) {
+        for (let x = fullX0; x <= fullX1; x += 1) {
+          const px = x + 0.5;
+          const py = y + 0.5;
+
+          if (!isPointInPolygon(px, py, quad)) {
+            continue;
+          }
+
+          const canonical = applyHomography(inverseHomography, px, py);
+
+          if (!canonical) {
+            continue;
+          }
+
+          if (!canonicalModelAllowsBackground(
+            canonical.u,
+            canonical.v,
+            rForbiddenX,
+            rForbiddenY,
+            bridgeHalfW,
+            bridgeHalfH,
+          )) {
+            continue;
+          }
+
+          let tooCloseToWell = false;
+
+          for (const exclusion of cornerExclusions) {
+            const dx = px - exclusion.well.x;
+            const dy = py - exclusion.well.y;
+
+            if (dx * dx + dy * dy <= exclusion.radius * exclusion.radius) {
+              tooCloseToWell = true;
+              break;
+            }
+          }
+
+          if (tooCloseToWell) {
+            continue;
+          }
+
+          const offset = (y * width + x) * 4;
+          const rgb = {
+            r: data[offset],
+            g: data[offset + 1],
+            b: data[offset + 2],
+          };
+
+          fullResolutionModelPixels.push({
+            x: px,
+            y: py,
+            rgb,
+            luminance: luminance(rgb),
+            cellRow: row,
+            cellCol: col,
+            canonicalU: canonical.u,
+            canonicalV: canonical.v,
+          });
+        }
+      }
+
       cellDiagnostic.pixelsAfterWellDiskExclusion = modelPixels.length;
       rawPixels.push(...modelPixels);
       const refinedPixels = refinePhysicalCellCandidates(modelPixels);
-      cellDiagnostic.finalAcceptedPixels = refinedPixels.length;
+      const fullResolutionAcceptedPixels = robustFilterPhysicalCell(refinePhysicalCellCandidates(fullResolutionModelPixels));
+      const fullResolutionStatsPixels = fullResolutionAcceptedPixels.length >= PHYSICAL_MIN_CELL_PIXELS
+        ? fullResolutionAcceptedPixels
+        : refinedPixels;
+      cellDiagnostic.sampledFinalAcceptedPixels = refinedPixels.length;
+      cellDiagnostic.fullResolutionPixelsAfterWellDiskExclusion = fullResolutionModelPixels.length;
+      cellDiagnostic.fullResolutionFinalAcceptedPixels = fullResolutionStatsPixels.length;
+      cellDiagnostic.finalAcceptedPixels = fullResolutionStatsPixels.length;
+      if (fullResolutionStatsPixels.length > 0) {
+        cellDiagnostic.acceptedCentroidX = mean(fullResolutionStatsPixels.map((pixel) => pixel.x));
+        cellDiagnostic.acceptedCentroidY = mean(fullResolutionStatsPixels.map((pixel) => pixel.y));
+        cellDiagnostic.redMedianRaw = median(fullResolutionStatsPixels.map((pixel) => pixel.rgb.r));
+        cellDiagnostic.greenMedianRaw = median(fullResolutionStatsPixels.map((pixel) => pixel.rgb.g));
+        cellDiagnostic.blueMedianRaw = median(fullResolutionStatsPixels.map((pixel) => pixel.rgb.b));
+      }
       cellDiagnostic.zeroReason = describeCellZeroReason(cellDiagnostic);
       cellDiagnostics.push(cellDiagnostic);
       pixels.push(...refinedPixels);
@@ -1100,12 +1195,13 @@ function updateCellDiagnosticsWithSamples(
 
     const nextDiagnostic = {
       ...diagnostic,
-      finalAcceptedPixels: sample.area,
-      acceptedCentroidX: sample.x,
-      acceptedCentroidY: sample.y,
-      redMedianRaw: sample.r,
-      greenMedianRaw: sample.g,
-      blueMedianRaw: sample.b,
+      sampledFinalAcceptedPixels: sample.area,
+      finalAcceptedPixels: diagnostic.fullResolutionFinalAcceptedPixels ?? diagnostic.finalAcceptedPixels ?? sample.area,
+      acceptedCentroidX: diagnostic.acceptedCentroidX ?? sample.x,
+      acceptedCentroidY: diagnostic.acceptedCentroidY ?? sample.y,
+      redMedianRaw: diagnostic.redMedianRaw ?? sample.r,
+      greenMedianRaw: diagnostic.greenMedianRaw ?? sample.g,
+      blueMedianRaw: diagnostic.blueMedianRaw ?? sample.b,
     };
 
     return {
@@ -1333,10 +1429,12 @@ function updateCellDiagnosticsAfterFiltering(
 
   return (diagnostics ?? []).map((diagnostic) => {
     const key = cellKey(diagnostic.cellRow, diagnostic.cellColumn);
+    const sampledFinalAcceptedPixels = finalCounts.get(key) ?? 0;
     const nextDiagnostic = {
       ...diagnostic,
       pixelsAfterLuminanceChromaFiltering: luminanceChromaCounts.get(key) ?? 0,
-      finalAcceptedPixels: finalCounts.get(key) ?? 0,
+      sampledFinalAcceptedPixels,
+      finalAcceptedPixels: diagnostic.fullResolutionFinalAcceptedPixels ?? diagnostic.finalAcceptedPixels ?? sampledFinalAcceptedPixels,
     };
 
     return {

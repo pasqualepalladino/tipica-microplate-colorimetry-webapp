@@ -65,6 +65,18 @@ NUMERIC_CHECKS = {
     ("DIAGNOSTICS", "11_CIELAB_FITTING"): ["n_points", "m", "q", "R2", "C0", "C0_sd", "LOD", "LOQ"],
 }
 
+WEB_VALIDATION_EXTENSION_COLUMNS = {
+    ("DIAGNOSTICS", "02_BG_SAMPLES"): [
+        "Web_Sampled_Final_Accepted_Pixels",
+        "Web_FullRes_After_Well_Exclusion",
+        "Web_FullRes_Final_Accepted_Pixels",
+        "Web_Projected_Cell_Area_Px",
+        "Web_Raw_Canonical_Mask_Samples",
+        "Web_Sampled_After_Well_Exclusion",
+        "Web_Sampled_After_Luminance_Chroma_Filtering",
+    ],
+}
+
 
 @dataclass
 class Workbook:
@@ -317,8 +329,8 @@ def append_cause_classification(report: list[str]) -> None:
     report.extend([
         "",
         "## Cause Classification",
-        "- BG sample x/y/RGB medians blank in web: **C, missing retained diagnostic quantity**. The web ZIP has per-cell counts but not the accepted pixel coordinates/RGB samples needed to reproduce Python medians.",
-        "- BG sample area mismatch, including first row 32 vs 2036 when present: **A/B/C unresolved**. Could be different manual geometry/background pixels, different sampling math, or missing instrumentation; requires a shared geometry/background-mask test.",
+        "- BG sample x/y/RGB medians blank in web: **resolved in current web exports if populated**. Remaining differences should be interpreted numerically, not as missing diagnostics.",
+        "- BG sample area mismatch: compare Python `area` to web `area`, then compare web `Web_Sampled_Final_Accepted_Pixels`. If the sampled count is far smaller than both area values, the previous mismatch was an **area meaning mismatch**; residual web-area differences are **A/B/C**, usually geometry or mask-construction differences.",
         "- `floor_source` JSON vs `manual_D_projection`: **A/D unresolved**. Likely different geometry provenance or reporting semantics; requires shared-geometry import/export comparison.",
         "- `mouth_r`, `floor_r`, `cyl_r_bg` differences: **A/B unresolved**. Treat as geometry/input-pixel mismatch unless a shared-geometry test proves web interpretation differs.",
         "- `C0_sd` blank in web ZIP: **D or stale artifact**. Recent code addressed this, but this report compares `web_after_36U.zip`; regenerate the web ZIP before deciding if mismatch remains.",
@@ -333,7 +345,7 @@ def append_next_blocks(report: list[str]) -> None:
     report.extend([
         "",
         "## Next-block Recommendations",
-        "- **Block B:** retain BG sample accepted pixel centroids/RGB medians in web analysis.",
+        "- **Block B:** run a shared-geometry/background-mask test using identical manual geometry and the new web full-resolution area/sampled-count diagnostics.",
         "- **Block C:** implement shared geometry import/export or a geometry equivalence test.",
         "- **Block D:** add a process-parity test from a shared extracted intermediate table.",
         "- **Block E:** perform graphical/TXT parity cleanup after data structures are correct.",
@@ -406,10 +418,18 @@ def compare(python_zip: Path, web_zip: Path) -> str:
                 web_rows = web_wb.sheets.get(sheet, [])
                 py_header = py_rows[0] if py_rows else []
                 web_header = web_rows[0] if web_rows else []
-                report.append(f"- `{sheet}`: shape python={sheet_shape(py_rows)}, web={sheet_shape(web_rows)}, header_match={py_header == web_header}")
+                extension_columns = WEB_VALIDATION_EXTENSION_COLUMNS.get((kind, sheet), [])
+                web_without_extensions = [header for header in web_header if header not in extension_columns]
+                intentional_extension = bool(extension_columns) and py_header == web_without_extensions
+                header_match = py_header == web_header
+                header_status = "MATCH" if header_match else ("WEB_VALIDATION_EXTENSION" if intentional_extension else "DIFFER")
+                report.append(f"- `{sheet}`: shape python={sheet_shape(py_rows)}, web={sheet_shape(web_rows)}, header_status={header_status}")
                 if py_header != web_header:
                     report.append(f"  - python_header={py_header}")
                     report.append(f"  - web_header={web_header}")
+                    if intentional_extension:
+                        present_extensions = [header for header in extension_columns if header in web_header]
+                        report.append(f"  - intentional_web_validation_columns={present_extensions}")
                 checks = NUMERIC_CHECKS.get((kind, sheet))
                 if checks:
                     for line in numeric_stats(py_rows, web_rows, checks):
@@ -487,6 +507,30 @@ def compare(python_zip: Path, web_zip: Path) -> str:
             report.append(f"- sample {index + 1}, cell {cell_id}, associated={row_value(py_row, 'Associated_Wells')}")
             for label, field in [("x centroid", "x"), ("y centroid", "y"), ("area", "area"), ("Red_median_raw", "Red_median_raw"), ("Green_median_raw", "Green_median_raw"), ("Blue_median_raw", "Blue_median_raw")]:
                 report.append(f"  - {label}: python=`{py_row.get(field, '')}`, web=`{web_row.get(field, '')}`")
+            for label, field in [
+                ("web sampled final accepted points", "Web_Sampled_Final_Accepted_Pixels"),
+                ("web full-res after well exclusion", "Web_FullRes_After_Well_Exclusion"),
+                ("web full-res final accepted pixels", "Web_FullRes_Final_Accepted_Pixels"),
+                ("web projected cell area px", "Web_Projected_Cell_Area_Px"),
+            ]:
+                if field in web_row:
+                    report.append(f"  - {label}: web=`{web_row.get(field, '')}`")
+            rgb_diffs = [
+                abs(as_float(py_row.get(field, "")) - as_float(web_row.get(field, "")))
+                for field in ["Red_median_raw", "Green_median_raw", "Blue_median_raw"]
+                if math.isfinite(as_float(py_row.get(field, ""))) and math.isfinite(as_float(web_row.get(field, "")))
+            ]
+            area_py = as_float(py_row.get("area", ""))
+            area_web = as_float(web_row.get("area", ""))
+            sampled_web = as_float(web_row.get("Web_Sampled_Final_Accepted_Pixels", ""))
+            if rgb_diffs and math.isfinite(area_py) and math.isfinite(area_web):
+                report.append(
+                    "  - classification: "
+                    f"rgb_mean_abs_diff={statistics.fmean(rgb_diffs):.4g}; "
+                    f"area_abs_diff={abs(area_py - area_web):.4g}; "
+                    f"area_ratio_web_over_python={(area_web / area_py) if abs(area_py) > 1e-12 else math.nan:.4g}; "
+                    f"sampled_count_ratio_web_over_python={(sampled_web / area_py) if math.isfinite(sampled_web) and abs(area_py) > 1e-12 else math.nan:.4g}"
+                )
             report.append(f"  - web blank fields: {blank_fields}")
         report.extend(["### BG sample numeric summary"])
         report.extend(numeric_delta_summary(py_bg, web_bg, [
