@@ -242,6 +242,104 @@ def compare_text(py_text: str, web_text: str) -> list[str]:
     return lines
 
 
+def rows_as_dicts(rows: list[list[str]]) -> list[dict[str, str]]:
+    if not rows:
+        return []
+    headers = rows[0]
+    out: list[dict[str, str]] = []
+    for row in rows[1:]:
+        out.append({header: row[index] if index < len(row) else "" for index, header in enumerate(headers)})
+    return out
+
+
+def row_value(row: dict[str, str], *keys: str) -> str:
+    for key in keys:
+        if key in row:
+            return row.get(key, "")
+    return ""
+
+
+def numeric_delta_summary(py_rows: list[dict[str, str]], web_rows: list[dict[str, str]], fields: list[tuple[str, str]]) -> list[str]:
+    lines: list[str] = []
+    row_count = min(len(py_rows), len(web_rows))
+    for label, field in fields:
+        diffs: list[float] = []
+        py_finite = 0
+        web_finite = 0
+        py_blank = 0
+        web_blank = 0
+        for index in range(row_count):
+            py_raw = py_rows[index].get(field, "")
+            web_raw = web_rows[index].get(field, "")
+            py_blank += int(str(py_raw).strip() == "")
+            web_blank += int(str(web_raw).strip() == "")
+            py_val = as_float(py_raw)
+            web_val = as_float(web_raw)
+            py_finite += int(math.isfinite(py_val))
+            web_finite += int(math.isfinite(web_val))
+            if math.isfinite(py_val) and math.isfinite(web_val):
+                diffs.append(abs(py_val - web_val))
+        if diffs:
+            lines.append(f"- {label}: paired={len(diffs)}, mean_abs={statistics.fmean(diffs):.8g}, max_abs={max(diffs):.8g}, python_finite={py_finite}, web_finite={web_finite}, web_blank={web_blank}")
+        else:
+            lines.append(f"- {label}: no paired finite values, python_finite={py_finite}, web_finite={web_finite}, python_blank={py_blank}, web_blank={web_blank}")
+    return lines
+
+
+def first_row_comparison(py_rows: list[dict[str, str]], web_rows: list[dict[str, str]], fields: list[tuple[str, str]]) -> list[str]:
+    if not py_rows or not web_rows:
+        return ["- first data row unavailable"]
+    py_row = py_rows[0]
+    web_row = web_rows[0]
+    lines: list[str] = []
+    for label, field in fields:
+        py_value = py_row.get(field, "")
+        web_value = web_row.get(field, "")
+        suffix = " (web blank)" if str(web_value).strip() == "" else ""
+        lines.append(f"- {label}: python=`{py_value}`, web=`{web_value}`{suffix}")
+    return lines
+
+
+def method_order(rows: list[dict[str, str]]) -> list[str]:
+    return [row.get("Method", "") for row in rows if row.get("Method", "")]
+
+
+def text_presence_lines(py_canon: dict[str, str], web_canon: dict[str, str]) -> list[str]:
+    text_names = sorted((set(py_canon) | set(web_canon)))
+    lines = []
+    for name in text_names:
+        if name.lower().endswith(".txt"):
+            lines.append(f"- `{name}`: python={name in py_canon}, web={name in web_canon}")
+    return lines or ["- no TXT files found"]
+
+
+def append_cause_classification(report: list[str]) -> None:
+    report.extend([
+        "",
+        "## Cause Classification",
+        "- BG sample x/y/RGB medians blank in web: **C, missing retained diagnostic quantity**. The web ZIP has per-cell counts but not the accepted pixel coordinates/RGB samples needed to reproduce Python medians.",
+        "- BG sample area mismatch, including first row 32 vs 2036 when present: **A/B/C unresolved**. Could be different manual geometry/background pixels, different sampling math, or missing instrumentation; requires a shared geometry/background-mask test.",
+        "- `floor_source` JSON vs `manual_D_projection`: **A/D unresolved**. Likely different geometry provenance or reporting semantics; requires shared-geometry import/export comparison.",
+        "- `mouth_r`, `floor_r`, `cyl_r_bg` differences: **A/B unresolved**. Treat as geometry/input-pixel mismatch unless a shared-geometry test proves web interpretation differs.",
+        "- `C0_sd` blank in web ZIP: **D or stale artifact**. Recent code addressed this, but this report compares `web_after_36U.zip`; regenerate the web ZIP before deciding if mismatch remains.",
+        "- Method-comparison `BaseScore`/ranking/name differences: **D/B depending on fresh export**. Header/name/reporting differences are D; residual score differences after a fresh export may indicate B or input-data differences.",
+        "- CIELAB fitting extra or differently named rows in web ZIP: **D** for naming/reporting; residual numerical differences after row-name parity may be **A/B**.",
+        "- `BG_STAT_MASK` overlay vs Python binary mask: **E/F** unless the web output intentionally remains documented as an overlay.",
+        "- TXT caption differences: **F**, with some intentional beta transparency where web semantics are not yet Python-identical.",
+    ])
+
+
+def append_next_blocks(report: list[str]) -> None:
+    report.extend([
+        "",
+        "## Next-block Recommendations",
+        "- **Block B:** retain BG sample accepted pixel centroids/RGB medians in web analysis.",
+        "- **Block C:** implement shared geometry import/export or a geometry equivalence test.",
+        "- **Block D:** add a process-parity test from a shared extracted intermediate table.",
+        "- **Block E:** perform graphical/TXT parity cleanup after data structures are correct.",
+    ])
+
+
 def compare(python_zip: Path, web_zip: Path) -> str:
     report: list[str] = [
         "# TIPICA Python/Web Output Comparison",
@@ -256,23 +354,29 @@ def compare(python_zip: Path, web_zip: Path) -> str:
         py_canon = {canonical_zip_name(name): name for name in py_names}
         web_canon = {canonical_zip_name(name): name for name in web_names}
         report.extend([
-            "## File List",
+            "## File/package Parity",
             f"Python files: {len(py_names)}",
             f"Web files: {len(web_names)}",
             f"Missing in web: {sorted(set(py_canon) - set(web_canon))}",
             f"Extra in web: {sorted(set(web_canon) - set(py_canon))}",
+            f"File list status: {'MATCH' if set(py_canon) == set(web_canon) else 'DIFFER'}",
             "",
-            "## PNG Dimensions",
+            "### PNG dimensions",
         ])
+        png_dimension_mismatches = 0
         for canon in sorted(set(py_canon) & set(web_canon)):
             if not canon.lower().endswith(".png"):
                 continue
             py_size = read_png_size(py_zf.read(py_canon[canon]))
             web_size = read_png_size(web_zf.read(web_canon[canon]))
+            png_dimension_mismatches += int(py_size != web_size)
             report.append(f"- `{canon}`: python={py_size}, web={web_size}, match={py_size == web_size}")
+        report.append(f"PNG dimensions status: {'MATCH' if png_dimension_mismatches == 0 else 'DIFFER'}")
+        report.extend(["", "### TXT presence", *text_presence_lines(py_canon, web_canon)])
 
         workbooks: dict[tuple[str, str], Workbook] = {}
-        report.extend(["", "## XLSX Workbooks"])
+        sheet_order_mismatches = 0
+        report.extend(["", "### Workbook sheet order"])
         for canon in sorted(set(py_canon) & set(web_canon)):
             if not canon.lower().endswith(".xlsx"):
                 continue
@@ -283,10 +387,20 @@ def compare(python_zip: Path, web_zip: Path) -> str:
             web_wb = read_workbook(web_zf, web_canon[canon])
             workbooks[("python", kind)] = py_wb
             workbooks[("web", kind)] = web_wb
-            report.append(f"### {kind}")
+            sheet_order_mismatches += int(py_wb.order != web_wb.order)
+            report.append(f"#### {kind}")
             report.append(f"sheet_order_match={py_wb.order == web_wb.order}")
             report.append(f"python_order={py_wb.order}")
             report.append(f"web_order={web_wb.order}")
+        report.append(f"Workbook sheet-order status: {'MATCH' if sheet_order_mismatches == 0 else 'DIFFER'}")
+
+        report.extend(["", "## Workbook Shape/Header/Numeric Overview"])
+        for kind in ["DIAGNOSTICS", "REPORT"]:
+            py_wb = workbooks.get(("python", kind))
+            web_wb = workbooks.get(("web", kind))
+            if not py_wb or not web_wb:
+                continue
+            report.append(f"### {kind}")
             for sheet in KEY_SHEETS[kind]:
                 py_rows = py_wb.sheets.get(sheet, [])
                 web_rows = web_wb.sheets.get(sheet, [])
@@ -301,6 +415,132 @@ def compare(python_zip: Path, web_zip: Path) -> str:
                     for line in numeric_stats(py_rows, web_rows, checks):
                         report.append(f"  - {line}")
 
+        py_diag = workbooks.get(("python", "DIAGNOSTICS"), Workbook("", {}, []))
+        web_diag = workbooks.get(("web", "DIAGNOSTICS"), Workbook("", {}, []))
+        py_report = workbooks.get(("python", "REPORT"), Workbook("", {}, []))
+        web_report = workbooks.get(("web", "REPORT"), Workbook("", {}, []))
+
+        report.extend(["", "## Geometry Comparison"])
+        py_qc = rows_as_dicts(py_diag.sheets.get("05_GEOMETRY_QC", []))
+        web_qc = rows_as_dicts(web_diag.sheets.get("05_GEOMETRY_QC", []))
+        py_bottom = rows_as_dicts(py_diag.sheets.get("06_WELL_BOTTOM", []))
+        web_bottom = rows_as_dicts(web_diag.sheets.get("06_WELL_BOTTOM", []))
+        report.extend(["### 05_GEOMETRY_QC first row"])
+        report.extend(first_row_comparison(py_qc, web_qc, [
+            ("well", "Well"),
+            ("floor_source", "floor_source"),
+            ("pitch_px", "local_pitch_px"),
+            ("mouth_r", "mouth_r"),
+            ("floor_r", "floor_r"),
+            ("mouth_to_floor_ratio", "shift_frac_of_mouth_r"),
+            ("floor_to_mouth_ratio", "floor_to_mouth_r_ratio"),
+        ]))
+        report.extend(["### 05_GEOMETRY_QC numeric summary"])
+        report.extend(numeric_delta_summary(py_qc, web_qc, [
+            ("pitch_px", "local_pitch_px"),
+            ("mouth_r", "mouth_r"),
+            ("floor_r", "floor_r"),
+            ("shift_px", "shift_px"),
+            ("mouth_to_floor_ratio", "shift_frac_of_mouth_r"),
+            ("floor_to_mouth_ratio", "floor_to_mouth_r_ratio"),
+        ]))
+        report.extend(["### 06_WELL_BOTTOM first row"])
+        report.extend(first_row_comparison(py_bottom, web_bottom, [
+            ("well", "Well"),
+            ("pitch_px", "local_pitch_px"),
+            ("cyl_r_bg", "cyl_r_bg"),
+            ("mouth_r_geom", "mouth_r_geom"),
+            ("floor_r_geom", "floor_r_geom"),
+            ("mouth_cx", "mouth_cx"),
+            ("mouth_cy", "mouth_cy"),
+            ("floor_cx", "floor_cx"),
+            ("floor_cy", "floor_cy"),
+            ("floor_r", "floor_r"),
+            ("shift_px", "shift_px"),
+        ]))
+        report.extend(["### 06_WELL_BOTTOM numeric summary"])
+        report.extend(numeric_delta_summary(py_bottom, web_bottom, [
+            ("pitch_px", "local_pitch_px"),
+            ("cyl_r_bg", "cyl_r_bg"),
+            ("mouth_r_geom", "mouth_r_geom"),
+            ("floor_r_geom", "floor_r_geom"),
+            ("mouth_r", "mouth_r"),
+            ("floor_r", "floor_r"),
+            ("shift_px", "shift_px"),
+        ]))
+        if py_bottom and web_bottom:
+            py_shift_x = as_float(py_bottom[0].get("floor_cx", "")) - as_float(py_bottom[0].get("mouth_cx", ""))
+            py_shift_y = as_float(py_bottom[0].get("floor_cy", "")) - as_float(py_bottom[0].get("mouth_cy", ""))
+            web_shift_x = as_float(web_bottom[0].get("floor_cx", "")) - as_float(web_bottom[0].get("mouth_cx", ""))
+            web_shift_y = as_float(web_bottom[0].get("floor_cy", "")) - as_float(web_bottom[0].get("mouth_cy", ""))
+            report.append(f"- first-row floor_shift_x: python=`{py_shift_x}`, web=`{web_shift_x}`")
+            report.append(f"- first-row floor_shift_y: python=`{py_shift_y}`, web=`{web_shift_y}`")
+
+        report.extend(["", "## BG Sample Comparison"])
+        py_bg = rows_as_dicts(py_diag.sheets.get("02_BG_SAMPLES", []))
+        web_bg = rows_as_dicts(web_diag.sheets.get("02_BG_SAMPLES", []))
+        for index in range(min(5, len(py_bg), len(web_bg))):
+            py_row = py_bg[index]
+            web_row = web_bg[index]
+            cell_id = f"{row_value(py_row, 'BG_Cell_Row')}:{row_value(py_row, 'BG_Cell_Col')}"
+            blank_fields = [field for field in ["x", "y", "Red_median_raw", "Green_median_raw", "Blue_median_raw"] if str(web_row.get(field, "")).strip() == ""]
+            report.append(f"- sample {index + 1}, cell {cell_id}, associated={row_value(py_row, 'Associated_Wells')}")
+            for label, field in [("x centroid", "x"), ("y centroid", "y"), ("area", "area"), ("Red_median_raw", "Red_median_raw"), ("Green_median_raw", "Green_median_raw"), ("Blue_median_raw", "Blue_median_raw")]:
+                report.append(f"  - {label}: python=`{py_row.get(field, '')}`, web=`{web_row.get(field, '')}`")
+            report.append(f"  - web blank fields: {blank_fields}")
+        report.extend(["### BG sample numeric summary"])
+        report.extend(numeric_delta_summary(py_bg, web_bg, [
+            ("x centroid", "x"),
+            ("y centroid", "y"),
+            ("area", "area"),
+            ("Red_median_raw", "Red_median_raw"),
+            ("Green_median_raw", "Green_median_raw"),
+            ("Blue_median_raw", "Blue_median_raw"),
+        ]))
+
+        report.extend(["", "## Extraction/Numeric Comparison"])
+        py_raw = rows_as_dicts(py_report.sheets.get("04_RAW", []))
+        web_raw = rows_as_dicts(web_report.sheets.get("04_RAW", []))
+        py_fit = rows_as_dicts(py_report.sheets.get("06_FITTING", []))
+        web_fit = rows_as_dicts(web_report.sheets.get("06_FITTING", []))
+        py_cmp = rows_as_dicts(py_report.sheets.get("07_METHOD_COMPARISON", []))
+        web_cmp = rows_as_dicts(web_report.sheets.get("07_METHOD_COMPARISON", []))
+        py_cielab = rows_as_dicts(py_diag.sheets.get("11_CIELAB_FITTING", []))
+        web_cielab = rows_as_dicts(web_diag.sheets.get("11_CIELAB_FITTING", []))
+        report.extend(["### REPORT / 04_RAW PAbs"])
+        report.extend(numeric_delta_summary(py_raw, web_raw, [
+            ("PAbs_Red", "PAbs_Red"),
+            ("PAbs_Green", "PAbs_Green"),
+            ("PAbs_Blue", "PAbs_Blue"),
+        ]))
+        report.extend(["### REPORT / 06_FITTING"])
+        report.extend(numeric_delta_summary(py_fit, web_fit, [
+            ("n_points", "n_points"),
+            ("slope", "m"),
+            ("intercept", "q"),
+            ("R2", "R2"),
+            ("C0", "C0"),
+            ("C0_sd", "C0_sd"),
+        ]))
+        report.extend(["### REPORT / 07_METHOD_COMPARISON"])
+        report.append(f"- python method order: {method_order(py_cmp)}")
+        report.append(f"- web method order: {method_order(web_cmp)}")
+        report.extend(numeric_delta_summary(py_cmp, web_cmp, [
+            ("Score", "Score"),
+            ("BaseScore", "BaseScore"),
+        ]))
+        report.extend(["### DIAGNOSTICS / 11_CIELAB_FITTING first rows"])
+        for index in range(min(5, len(py_cielab), len(web_cielab))):
+            report.append(f"- row {index + 1}: python Channel=`{py_cielab[index].get('Channel', '')}`, FitType=`{py_cielab[index].get('FitType', '')}`; web Channel=`{web_cielab[index].get('Channel', '')}`, FitType=`{web_cielab[index].get('FitType', '')}`")
+        report.extend(numeric_delta_summary(py_cielab, web_cielab, [
+            ("n_points", "n_points"),
+            ("slope", "m"),
+            ("intercept", "q"),
+            ("R2", "R2"),
+            ("C0", "C0"),
+            ("C0_sd", "C0_sd"),
+        ]))
+
         report.extend(["", "## Text Files"])
         for canon in sorted(set(py_canon) & set(web_canon)):
             if not canon.lower().endswith(".txt"):
@@ -311,13 +551,8 @@ def compare(python_zip: Path, web_zip: Path) -> str:
             for line in compare_text(py_text, web_text):
                 report.append(f"- {line}")
 
-        report.extend(["", "## Selected Row Snapshots"])
-        for kind, sheet in [("DIAGNOSTICS", "02_BG_SAMPLES"), ("DIAGNOSTICS", "05_GEOMETRY_QC"), ("DIAGNOSTICS", "06_WELL_BOTTOM"), ("REPORT", "07_METHOD_COMPARISON"), ("DIAGNOSTICS", "11_CIELAB_FITTING")]:
-            py_rows = workbooks.get(("python", kind), Workbook("", {}, [])).sheets.get(sheet, [])
-            web_rows = workbooks.get(("web", kind), Workbook("", {}, [])).sheets.get(sheet, [])
-            report.append(f"### {kind} / {sheet}")
-            report.append(f"python_first_data={py_rows[1] if len(py_rows) > 1 else []}")
-            report.append(f"web_first_data={web_rows[1] if len(web_rows) > 1 else []}")
+        append_cause_classification(report)
+        append_next_blocks(report)
 
     return "\n".join(report) + "\n"
 
