@@ -316,6 +316,181 @@ def method_order(rows: list[dict[str, str]]) -> list[str]:
     return [row.get("Method", "") for row in rows if row.get("Method", "")]
 
 
+def key_rows(rows: list[dict[str, str]], fields: list[str]) -> dict[str, dict[str, str]]:
+    out: dict[str, dict[str, str]] = {}
+    for index, row in enumerate(rows):
+        parts = [str(row.get(field, "")).strip() for field in fields]
+        key = "|".join(parts)
+        if not key.strip("|"):
+            key = f"row:{index + 1}"
+        out[key] = row
+    return out
+
+
+def keyed_numeric_summary(
+    py_rows: list[dict[str, str]],
+    web_rows: list[dict[str, str]],
+    key_fields: list[str],
+    fields: list[tuple[str, str]],
+) -> list[str]:
+    py_by_key = key_rows(py_rows, key_fields)
+    web_by_key = key_rows(web_rows, key_fields)
+    common_keys = sorted(set(py_by_key) & set(web_by_key))
+    lines = [
+        f"- keys: python={len(py_by_key)}, web={len(web_by_key)}, common={len(common_keys)}, missing_in_web={len(set(py_by_key) - set(web_by_key))}, extra_in_web={len(set(web_by_key) - set(py_by_key))}",
+    ]
+    for label, field in fields:
+        diffs: list[float] = []
+        py_finite = 0
+        web_finite = 0
+        for key in common_keys:
+            py_val = as_float(py_by_key[key].get(field, ""))
+            web_val = as_float(web_by_key[key].get(field, ""))
+            py_finite += int(math.isfinite(py_val))
+            web_finite += int(math.isfinite(web_val))
+            if math.isfinite(py_val) and math.isfinite(web_val):
+                diffs.append(abs(py_val - web_val))
+        if diffs:
+            lines.append(f"- {label}: paired={len(diffs)}, mean_abs={statistics.fmean(diffs):.8g}, max_abs={max(diffs):.8g}, python_finite={py_finite}, web_finite={web_finite}")
+        else:
+            lines.append(f"- {label}: no paired finite values, python_finite={py_finite}, web_finite={web_finite}")
+    return lines
+
+
+def pabs_formula_residuals(rows: list[dict[str, str]]) -> list[str]:
+    lines: list[str] = []
+    for label in ["Red", "Green", "Blue"]:
+        residuals: list[float] = []
+        finite_inputs = 0
+        for row in rows:
+            well = as_float(row.get(f"MeanW_{label}", ""))
+            bg = as_float(row.get(f"MeanBG_{label}", ""))
+            pabs = as_float(row.get(f"PAbs_{label}", ""))
+            if math.isfinite(well) and math.isfinite(bg) and math.isfinite(pabs) and well > 0 and bg > 0:
+                finite_inputs += 1
+                residuals.append(abs(math.log10(bg / well) - pabs))
+        if residuals:
+            max_residual = max(residuals)
+            status = "PASS" if max_residual <= 1e-9 else "WARN"
+            lines.append(f"- PAbs_{label}: status={status}, formula_rows={finite_inputs}, mean_abs_residual={statistics.fmean(residuals):.8g}, max_abs_residual={max_residual:.8g}")
+        else:
+            lines.append(f"- PAbs_{label}: no finite formula-check rows")
+    return lines
+
+
+def method_header_order_status(py_rows: list[list[str]], web_rows: list[list[str]]) -> str:
+    py_header = py_rows[0] if py_rows else []
+    web_header = web_rows[0] if web_rows else []
+    if py_header == web_header:
+        return "MATCH"
+    if set(py_header) == set(web_header):
+        return "SAME_COLUMNS_DIFFERENT_ORDER"
+    return "DIFFERENT_COLUMNS"
+
+
+def append_process_parity_section(
+    report: list[str],
+    py_report: Workbook,
+    web_report: Workbook,
+    py_diag: Workbook,
+    web_diag: Workbook,
+) -> None:
+    py_raw = rows_as_dicts(py_report.sheets.get("04_RAW", []))
+    web_raw = rows_as_dicts(web_report.sheets.get("04_RAW", []))
+    py_rep = rows_as_dicts(py_report.sheets.get("05_REPLICATES_MEAN", []))
+    web_rep = rows_as_dicts(web_report.sheets.get("05_REPLICATES_MEAN", []))
+    py_fit = rows_as_dicts(py_report.sheets.get("06_FITTING", []))
+    web_fit = rows_as_dicts(web_report.sheets.get("06_FITTING", []))
+    py_cmp_rows = py_report.sheets.get("07_METHOD_COMPARISON", [])
+    web_cmp_rows = web_report.sheets.get("07_METHOD_COMPARISON", [])
+    py_cmp = rows_as_dicts(py_cmp_rows)
+    web_cmp = rows_as_dicts(web_cmp_rows)
+    py_stats = rows_as_dicts(py_diag.sheets.get("04_WELL_ROBUST_STATS", []))
+    web_stats = rows_as_dicts(web_diag.sheets.get("04_WELL_ROBUST_STATS", []))
+
+    report.extend(["", "## Process-Parity Checks"])
+    report.extend(["### 1. RAW extraction parity"])
+    report.append("- REPORT/04_RAW MeanW values are the linearized well intensities used for PAbs, not raw 8-bit medians.")
+    report.extend(keyed_numeric_summary(py_raw, web_raw, ["Well"], [
+        ("MeanW_Red", "MeanW_Red"),
+        ("MeanW_Green", "MeanW_Green"),
+        ("MeanW_Blue", "MeanW_Blue"),
+        ("MeanBG_Red", "MeanBG_Red"),
+        ("MeanBG_Green", "MeanBG_Green"),
+        ("MeanBG_Blue", "MeanBG_Blue"),
+    ]))
+    report.append("- DIAGNOSTICS/04_WELL_ROBUST_STATS raw medians and ROI counts:")
+    report.extend(keyed_numeric_summary(py_stats, web_stats, ["Well"], [
+        ("Red_median", "Red_median"),
+        ("Green_median", "Green_median"),
+        ("Blue_median", "Blue_median"),
+        ("n_used", "n_used"),
+        ("used_fraction", "used_fraction"),
+    ]))
+    report.append("- Classification: nonzero MeanW/MeanBG or ROI-count differences point to geometry/ROI/BG input mismatch before PAbs math.")
+
+    report.extend(["### 2. PAbs formula parity"])
+    report.append("- Python workbook internal formula residuals:")
+    report.extend(pabs_formula_residuals(py_raw))
+    report.append("- Web workbook internal formula residuals:")
+    report.extend(pabs_formula_residuals(web_raw))
+    report.append("- Classification: PASS means the workbook fields satisfy PAbs = log10(MeanBG / MeanW). WARN means PAbs was computed from a different or corrected internal value than the exported MeanW/MeanBG pair, or the workbook field mapping needs audit.")
+
+    report.extend(["### 3. CIELAB / Delta descriptor parity"])
+    report.extend(keyed_numeric_summary(py_raw, web_raw, ["Well"], [
+        ("L", "L"),
+        ("a", "a"),
+        ("b", "b"),
+        ("DeltaL", "DeltaL"),
+        ("Deltaa", "Deltaa"),
+        ("Deltab", "Deltab"),
+        ("DeltaE_ab", "DeltaE_ab"),
+        ("DeltaE_ab_chroma", "DeltaE_ab_chroma"),
+    ]))
+    report.append("- Classification: if L/a/b differ in line with raw RGB differences, this is upstream extraction/input; if L/a/b are close but Delta fields differ, inspect reference selection/naming.")
+
+    report.extend(["### 4. Replicate/grouping parity"])
+    report.extend(keyed_numeric_summary(py_rep, web_rep, ["ID", "DF", "Type", "Conc"], [
+        ("NReplicates", "NReplicates"),
+        ("PAbs_Red_median", "PAbs_Red_median"),
+        ("PAbs_Red_sd", "PAbs_Red_sd"),
+        ("PAbs_Green_median", "PAbs_Green_median"),
+        ("PAbs_Green_sd", "PAbs_Green_sd"),
+        ("PAbs_Blue_median", "PAbs_Blue_median"),
+        ("PAbs_Blue_sd", "PAbs_Blue_sd"),
+        ("DeltaE_ab_median", "DeltaE_ab_median"),
+        ("DeltaE_ab_sd", "DeltaE_ab_sd"),
+    ]))
+    report.append("- Classification: matching keys/counts with differing medians/SDs means grouping agrees and upstream extracted values differ.")
+
+    report.extend(["### 5. Fitting-input / fit-row parity"])
+    report.extend(keyed_numeric_summary(py_fit, web_fit, ["Channel", "FitType", "ID", "DF"], [
+        ("n_points", "n_points"),
+        ("slope", "m"),
+        ("intercept", "q"),
+        ("R2", "R2"),
+        ("C0", "C0"),
+        ("C0_sd", "C0_sd"),
+        ("LOD", "LOD"),
+        ("LOQ", "LOQ"),
+    ]))
+    report.append("- Classification: matching n_points with differing replicate means points to upstream numeric inputs; matching replicate means with differing fit rows would point to regression/uncertainty math.")
+
+    report.extend(["### 6. Method comparison parity"])
+    report.append(f"- REPORT/07_METHOD_COMPARISON header order: {method_header_order_status(py_cmp_rows, web_cmp_rows)}")
+    report.append(f"- python method order: {method_order(py_cmp)}")
+    report.append(f"- web method order: {method_order(web_cmp)}")
+    report.extend(keyed_numeric_summary(py_cmp, web_cmp, ["Method"], [
+        ("Score", "Score"),
+        ("BaseScore", "BaseScore"),
+        ("R2_cal", "R2_cal"),
+        ("R2_std_mean", "R2_std_mean"),
+        ("C0_median", "C0_median"),
+        ("Estimate_value", "Estimate_value"),
+    ]))
+    report.append("- Classification: header-order-only differences are reporting; method order/name/score differences are downstream of fitting inputs and ranking/naming semantics.")
+
+
 def text_presence_lines(py_canon: dict[str, str], web_canon: dict[str, str]) -> list[str]:
     text_names = sorted((set(py_canon) | set(web_canon)))
     lines = []
@@ -347,7 +522,7 @@ def append_next_blocks(report: list[str]) -> None:
         "## Next-block Recommendations",
         "- **Block B:** run a shared-geometry/background-mask test using identical manual geometry and the new web full-resolution area/sampled-count diagnostics.",
         "- **Block C:** implement shared geometry import/export or a geometry equivalence test.",
-        "- **Block D:** add a process-parity test from a shared extracted intermediate table.",
+        "- **Block D:** use the process-parity section to decide whether remaining fitting differences are upstream-input differences or regression/uncertainty differences.",
         "- **Block E:** perform graphical/TXT parity cleanup after data structures are correct.",
     ])
 
@@ -541,6 +716,8 @@ def compare(python_zip: Path, web_zip: Path) -> str:
             ("Green_median_raw", "Green_median_raw"),
             ("Blue_median_raw", "Blue_median_raw"),
         ]))
+
+        append_process_parity_section(report, py_report, web_report, py_diag, web_diag)
 
         report.extend(["", "## Extraction/Numeric Comparison"])
         py_raw = rows_as_dicts(py_report.sheets.get("04_RAW", []))

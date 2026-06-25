@@ -2131,7 +2131,6 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     'Estimate_value',
     'Estimate_sd',
     'Estimate_source',
-    'BaseScore',
   ];
 
   return createXlsxWorkbookBlob([
