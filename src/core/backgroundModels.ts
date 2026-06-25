@@ -99,6 +99,11 @@ export interface BackgroundCellDiagnostic {
   pixelsAfterWellDiskExclusion: number;
   pixelsAfterLuminanceChromaFiltering: number;
   finalAcceptedPixels: number;
+  acceptedCentroidX?: number;
+  acceptedCentroidY?: number;
+  redMedianRaw?: number;
+  greenMedianRaw?: number;
+  blueMedianRaw?: number;
   zeroReason: string;
 }
 
@@ -177,6 +182,8 @@ export function backgroundCellDiagnosticsToCsv(diagnostics: BackgroundCellDiagno
 }
 
 interface PhysicalCellSample {
+  cellRow: number;
+  cellColumn: number;
   x: number;
   y: number;
   r: number;
@@ -1025,6 +1032,8 @@ function robustFilterPhysicalCell(pixels: CandidatePixel[]): CandidatePixel[] {
 function buildPhysicalCellSamples(pixels: CandidatePixel[]): PhysicalCellSample[] {
   if (pixels.some((pixel) => pixel.cellRow === undefined || pixel.cellCol === undefined)) {
     return pixels.map((pixel) => ({
+      cellRow: pixel.cellRow ?? -1,
+      cellColumn: pixel.cellCol ?? -1,
       x: pixel.x,
       y: pixel.y,
       r: pixel.rgb.r,
@@ -1061,6 +1070,8 @@ function buildPhysicalCellSamples(pixels: CandidatePixel[]): PhysicalCellSample[
     }
 
     samples.push({
+      cellRow: group[0].cellRow as number,
+      cellColumn: group[0].cellCol as number,
       x: mean(selected.map((pixel) => pixel.x)),
       y: mean(selected.map((pixel) => pixel.y)),
       r: median(selected.map((pixel) => pixel.rgb.r)),
@@ -1071,6 +1082,37 @@ function buildPhysicalCellSamples(pixels: CandidatePixel[]): PhysicalCellSample[
   });
 
   return samples;
+}
+
+function updateCellDiagnosticsWithSamples(
+  diagnostics: BackgroundCellDiagnostic[] | undefined,
+  samples: PhysicalCellSample[],
+): BackgroundCellDiagnostic[] {
+  const sampleByCell = new Map(samples.map((sample) => [cellKey(sample.cellRow, sample.cellColumn), sample]));
+
+  return (diagnostics ?? []).map((diagnostic) => {
+    const key = cellKey(diagnostic.cellRow, diagnostic.cellColumn);
+    const sample = sampleByCell.get(key);
+
+    if (!sample) {
+      return diagnostic;
+    }
+
+    const nextDiagnostic = {
+      ...diagnostic,
+      finalAcceptedPixels: sample.area,
+      acceptedCentroidX: sample.x,
+      acceptedCentroidY: sample.y,
+      redMedianRaw: sample.r,
+      greenMedianRaw: sample.g,
+      blueMedianRaw: sample.b,
+    };
+
+    return {
+      ...nextDiagnostic,
+      zeroReason: describeCellZeroReason(nextDiagnostic),
+    };
+  });
 }
 
 function poly2Design(xn: number, yn: number): number[] {
@@ -1594,10 +1636,11 @@ export function estimatePhysicalInterwellPolynomialBackgrounds(
   }
 
   const samples = buildPhysicalCellSamples(filtered);
+  const cellDiagnosticsWithSamples = updateCellDiagnosticsWithSamples(cellDiagnosticsAfterFiltering, samples);
   const diagnosticsWithSamples = {
     ...diagnosticsWithAccepted,
     acceptedSamples: samples.length,
-    cellDiagnostics: updateCellDiagnosticsAfterFiltering(diagnostics.cellDiagnostics, filtered),
+    cellDiagnostics: cellDiagnosticsWithSamples,
   };
 
   if (samples.length < PHYSICAL_MIN_POLY_SAMPLES) {
@@ -1674,11 +1717,12 @@ export function buildBackgroundVisualDiagnostics(
     const filteredResult = filterPhysicalCandidatePixels(collection.pixels);
     const samples = buildPhysicalCellSamples(filteredResult.pixels);
     const cellDiagnosticsAfterFiltering = updateCellDiagnosticsAfterFiltering(diagnostics.cellDiagnostics, filteredResult.pixels);
+    const cellDiagnosticsWithSamples = updateCellDiagnosticsWithSamples(cellDiagnosticsAfterFiltering, samples);
     const diagnosticsWithSamples = {
       ...diagnostics,
       acceptedPixels: filteredResult.pixels.length,
       acceptedSamples: samples.length,
-      cellDiagnostics: cellDiagnosticsAfterFiltering,
+      cellDiagnostics: cellDiagnosticsWithSamples,
     };
     const modelR = samples.length >= PHYSICAL_MIN_POLY_SAMPLES ? fitPoly2Robust(samples, 'r') : null;
     const modelG = samples.length >= PHYSICAL_MIN_POLY_SAMPLES ? fitPoly2Robust(samples, 'g') : null;

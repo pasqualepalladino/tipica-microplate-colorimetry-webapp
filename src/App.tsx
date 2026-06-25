@@ -2255,12 +2255,12 @@ function buildDiagnosticsBackgroundSampleRows(options: PythonDiagnosticsWorkbook
     BG_Cell_Row: cell.cellRow,
     BG_Cell_Col: cell.cellColumn,
     Associated_Wells: associatedWellsForBackgroundCell(cell.cellRow, cell.cellColumn),
-    x: '',
-    y: '',
+    x: finiteOrBlank(cell.acceptedCentroidX),
+    y: finiteOrBlank(cell.acceptedCentroidY),
     area: cell.finalAcceptedPixels,
-    Red_median_raw: '',
-    Green_median_raw: '',
-    Blue_median_raw: '',
+    Red_median_raw: finiteOrBlank(cell.redMedianRaw),
+    Green_median_raw: finiteOrBlank(cell.greenMedianRaw),
+    Blue_median_raw: finiteOrBlank(cell.blueMedianRaw),
   }));
 }
 
@@ -2814,7 +2814,7 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: 'BG_Cell_Row/BG_Cell_Col', Meaning: 'Inter-well background-cell row/column index', Formula: '0-based grid index of the inter-well cell, not a well row/column', Unit: 'index', 'Where used': '02_BG_SAMPLES', Notes: 'Populated when physical inter-well cell diagnostics are available.' },
     { Term: 'Associated_Wells', Meaning: 'Four wells surrounding an inter-well BG sample cell', Formula: 'well(r,c)-well(r,c+1)-well(r+1,c)-well(r+1,c+1)', Unit: 'well labels', 'Where used': '02_BG_SAMPLES', Notes: '' },
     { Term: 'Row/Col/Well', Meaning: 'Human-readable well position', Formula: 'Row is A-based; Col is 1-based; Well = Row+Col', Unit: 'well label', 'Where used': '03_BG_WELL_FIT, 04_WELL_ROBUST_STATS, 05_GEOMETRY_QC, 06_WELL_BOTTOM, 08_EMPTY_WELLS', Notes: '' },
-    { Term: 'x/y', Meaning: 'Image coordinates', Formula: 'pixel coordinate in analyzed image', Unit: 'pixel', 'Where used': '03_BG_WELL_FIT, 06_WELL_BOTTOM', Notes: 'Per-cell x/y for 02_BG_SAMPLES is blank because the webapp does not store per-cell centroids.' },
+    { Term: 'x/y', Meaning: 'Image coordinates', Formula: 'pixel coordinate in analyzed image', Unit: 'pixel', 'Where used': '02_BG_SAMPLES, 03_BG_WELL_FIT, 06_WELL_BOTTOM', Notes: 'For 02_BG_SAMPLES, x/y are the centroid of accepted background pixels when physical inter-well diagnostics are available.' },
     { Term: 'area', Meaning: 'Accepted mask area', Formula: 'number of accepted pixels in the BG sample mask', Unit: 'pixels', 'Where used': '02_BG_SAMPLES', Notes: 'Uses final accepted physical cell pixel counts when available.' },
     { Term: 'BG_Red_raw/BG_Green_raw/BG_Blue_raw', Meaning: 'Predicted or sampled local raw background at a well', Formula: 'background model value at well center', Unit: 'raw image intensity', 'Where used': '03_BG_WELL_FIT', Notes: 'Exported in standard RGB order.' },
     { Term: 'n_roi/n_core/n_used', Meaning: 'Pixel counts used during well ROI filtering', Formula: 'ROI pixels, core pixels and retained pixels', Unit: 'pixels', 'Where used': '04_WELL_ROBUST_STATS', Notes: '' },
