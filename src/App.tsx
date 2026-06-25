@@ -1190,7 +1190,7 @@ This caption applies to the primary RGB outputs in the RESULTS folder for ${imag
 Analytical signal
 The primary RGB signal is pseudo-absorbance, reported as PAbs_Red, PAbs_Green and PAbs_Blue:
     PAbs = log10(I_BG / I_well) = -log10(I_well / I_BG)
-where I_well is the median intensity from the well ROI and I_BG is the local inter-well background predicted for that well. This is an image-derived pseudo-absorbance and is not assumed to be a spectrophotometric absorbance.
+where I_well is the linearized median intensity from the well ROI and I_BG is the linearized local inter-well background predicted for that well. This is an image-derived pseudo-absorbance and is not assumed to be a spectrophotometric absorbance.
 
 Fitting and quantification
 Calibration and standard-addition fits use the current TIPICA webapp fitting results. Python desktop uses robust residual-based IRLS linear regression; web parity of the fitting implementation is tracked separately and no formulas are changed by this export. For standard addition, the original-sample concentration is C0 = DF x q/m, where y = m x + q and x is the added concentration.
@@ -1198,7 +1198,7 @@ Calibration and standard-addition fits use the current TIPICA webapp fitting res
 Ranking score
 For methods with both calibration and standard addition, the Python desktop global score is:
     GlobalScore = slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ)
-with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|). This web export computes LOQ for PNG channel selection from the median calibration replicate SD when that SD is available, matching the Python RESULTS ranking rule. If LOQ is unavailable, the Python-compatible fallback uses the fit-only common factors. Robust IRLS fitting parity, full REPORT.xlsx parity and RAW_DATA_DETAILS parity are not complete yet. Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
+with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|). This web export computes LOQ for PNG channel selection from the median calibration replicate SD when that SD is available, matching the Python RESULTS ranking rule. If LOQ is unavailable, the Python-compatible fallback uses the fit-only common factors. Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
 
 Reference values and recovery
 External reference values, when provided, are used only for external comparison (Delta and recovery). They are not used to choose the ranked RGB method.
@@ -1222,7 +1222,7 @@ File scope
 This caption applies to diagnostic outputs in RAW_DATA_DETAILS for ${imageBase}: BG_STAT_MASK.png, FIGURE_CIELAB_DELTAE.png, METHOD_COMPARISON.png and DIAGNOSTICS.xlsx.
 
 BG_STAT_MASK.png
-White pixels are accepted inter-well background samples used by the physical background model. Black pixels are rejected or unavailable pixels. The mask supports auditability of background sampling and does not change calculations.
+Current web export shows the accepted inter-well background sampling mask overlaid on the analyzed image. It supports auditability of background sampling and does not change calculations; the exact Python binary-mask rendering is not yet reproduced.
 
 FIGURE_CIELAB_DELTAE.png
 Diagnostic CIELAB and DeltaE plots derived from extracted well RGB values. DeltaE uses the zero-calibration wells as the reference when available; otherwise it uses the lowest calibration concentration available. These descriptors support method review and do not replace the primary RGB/PAbs results.
@@ -1410,6 +1410,20 @@ function medianOrBlank(values: number[]): number | '' {
   return Number.isFinite(value) ? value : '';
 }
 
+function robustSdOrBlank(values: number[]): number | '' {
+  const finite = values.filter(Number.isFinite);
+
+  if (finite.length < 2) {
+    return '';
+  }
+
+  const center = medianFinite(finite);
+  const mad = medianFinite(finite.map((value) => Math.abs(value - center)));
+  const robustSd = 1.4826 * mad;
+
+  return Number.isFinite(robustSd) ? robustSd : '';
+}
+
 function finiteRmse(points: { x: number; y: number }[], slope: number, intercept: number): number | '' {
   if (!Number.isFinite(slope) || !Number.isFinite(intercept)) {
     return '';
@@ -1424,6 +1438,25 @@ function finiteRmse(points: { x: number; y: number }[], slope: number, intercept
   }
 
   return Math.sqrt(residuals.reduce((sum, residual) => sum + residual ** 2, 0) / residuals.length);
+}
+
+function groupedMedianRows(points: { x: number; y: number }[]): { x: number; y: number }[] {
+  const groups = new Map<number, number[]>();
+
+  points.forEach((point) => {
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      return;
+    }
+
+    const values = groups.get(point.x) ?? [];
+    values.push(point.y);
+    groups.set(point.x, values);
+  });
+
+  return [...groups.entries()]
+    .map(([x, values]) => ({ x, y: medianFinite(values) }))
+    .filter((point) => Number.isFinite(point.y))
+    .sort((a, b) => a.x - b.x);
 }
 
 function expectedRefKey(label: string, index: number): string {
@@ -1445,10 +1478,14 @@ function buildReportRawRows(
 ): XlsxRow[] {
   const configByWell = new Map(plateMap.map((well) => [well.wellId, well]));
   const displayByWell = new Map(displayMeasurements.map((measurement) => [measurement.wellId, measurement]));
+  const { points: cielabPoints, referenceSource } = buildCielabDiagnosticPoints(displayMeasurements, plateMap);
+  const cielabByWell = new Map(cielabPoints.map((point) => [point.wellId, point]));
 
-  return measurements.map((measurement) => {
+  return measurements.filter((measurement) => configByWell.get(measurement.wellId)?.role !== 'EMPTY').map((measurement) => {
     const config = configByWell.get(measurement.wellId);
     const display = displayByWell.get(measurement.wellId) ?? measurement;
+    const parsed = parseWellPosition(measurement.wellId);
+    const cielab = cielabByWell.get(measurement.wellId);
     const wellLinear = linearizeRgb(measurement.rgbWell);
     const backgroundLinear = linearizeRgb(measurement.rgbBackground);
     const signalTRed = backgroundLinear.r > 0 ? wellLinear.r / backgroundLinear.r : Number.NaN;
@@ -1456,8 +1493,8 @@ function buildReportRawRows(
     const signalTBlue = backgroundLinear.b > 0 ? wellLinear.b / backgroundLinear.b : Number.NaN;
 
     return {
-      Row: String.fromCharCode(65 + measurement.row),
-      Col: measurement.col + 1,
+      Row: parsed ? rowLabel(parsed.row) : rowLabel(measurement.row),
+      Col: parsed ? parsed.col + 1 : measurement.col + 1,
       Well: measurement.wellId,
       ID: config?.sampleId ?? '',
       Type: config?.role ?? '',
@@ -1475,6 +1512,15 @@ function buildReportRawRows(
       PAbs_Red: display.pabs.r,
       PAbs_Green: display.pabs.g,
       PAbs_Blue: display.pabs.b,
+      L: finiteOrBlank(cielab?.l),
+      a: finiteOrBlank(cielab?.a),
+      b: finiteOrBlank(cielab?.b),
+      DeltaL: finiteOrBlank(typeof cielab?.deltaL === 'number' ? cielab.deltaL : Number.NaN),
+      Deltaa: finiteOrBlank(typeof cielab?.deltaA === 'number' ? cielab.deltaA : Number.NaN),
+      Deltab: finiteOrBlank(typeof cielab?.deltaB === 'number' ? cielab.deltaB : Number.NaN),
+      DeltaE_ab: finiteOrBlank(typeof cielab?.deltaE === 'number' ? cielab.deltaE : Number.NaN),
+      DeltaE_ab_chroma: finiteOrBlank(typeof cielab?.deltaEChroma === 'number' ? cielab.deltaEChroma : Number.NaN),
+      CIELAB_ref_source: referenceSource,
       ImageWarning: measurement.warnings.length > 0 || Boolean(measurement.roiStatisticsWarning || measurement.geometryAlignmentWarning) ? 1 : 0,
     };
   });
@@ -1485,6 +1531,8 @@ function buildReportReplicateRows(
   plateMap: WellConfig[],
 ): XlsxRow[] {
   const configByWell = new Map(plateMap.map((well) => [well.wellId, well]));
+  const { points: cielabPoints, referenceSource } = buildCielabDiagnosticPoints(displayMeasurements, plateMap);
+  const cielabByWell = new Map(cielabPoints.map((point) => [point.wellId, point]));
   const groups = new Map<string, { config: WellConfig; measurements: WellMeasurement[] }>();
 
   displayMeasurements.forEach((measurement) => {
@@ -1519,6 +1567,17 @@ function buildReportReplicateRows(
       const pabsRed = groupMeasurements.map((measurement) => measurement.pabs.r);
       const pabsGreen = groupMeasurements.map((measurement) => measurement.pabs.g);
       const pabsBlue = groupMeasurements.map((measurement) => measurement.pabs.b);
+      const groupCielab = groupMeasurements.map((measurement) => cielabByWell.get(measurement.wellId)).filter((point): point is CielabDiagnosticPoint => Boolean(point));
+      const labValues = {
+        l: groupCielab.map((point) => point.l),
+        a: groupCielab.map((point) => point.a),
+        b: groupCielab.map((point) => point.b),
+        deltaL: groupCielab.map((point) => cielabValueAsNumber(point.deltaL)),
+        deltaA: groupCielab.map((point) => cielabValueAsNumber(point.deltaA)),
+        deltaB: groupCielab.map((point) => cielabValueAsNumber(point.deltaB)),
+        deltaE: groupCielab.map((point) => cielabValueAsNumber(point.deltaE)),
+        deltaEChroma: groupCielab.map((point) => cielabValueAsNumber(point.deltaEChroma)),
+      };
       const warningCount = groupMeasurements.filter((measurement) => measurement.warnings.length > 0 || measurement.roiStatisticsWarning).length;
       const criticalCount = groupMeasurements.filter((measurement) => (
         [...measurement.warnings, measurement.roiStatisticsWarning ?? '', measurement.geometryAlignmentWarning ?? '']
@@ -1531,11 +1590,28 @@ function buildReportReplicateRows(
         Type: config.role,
         Conc: config.concentration ?? '',
         PAbs_Red_median: medianOrBlank(pabsRed),
-        PAbs_Red_sd: sampleSdOrBlank(pabsRed),
+        PAbs_Red_sd: robustSdOrBlank(pabsRed),
         PAbs_Green_median: medianOrBlank(pabsGreen),
-        PAbs_Green_sd: sampleSdOrBlank(pabsGreen),
+        PAbs_Green_sd: robustSdOrBlank(pabsGreen),
         PAbs_Blue_median: medianOrBlank(pabsBlue),
-        PAbs_Blue_sd: sampleSdOrBlank(pabsBlue),
+        PAbs_Blue_sd: robustSdOrBlank(pabsBlue),
+        L_median: medianOrBlank(labValues.l),
+        L_sd: robustSdOrBlank(labValues.l),
+        a_median: medianOrBlank(labValues.a),
+        a_sd: robustSdOrBlank(labValues.a),
+        b_median: medianOrBlank(labValues.b),
+        b_sd: robustSdOrBlank(labValues.b),
+        DeltaL_median: medianOrBlank(labValues.deltaL),
+        DeltaL_sd: robustSdOrBlank(labValues.deltaL),
+        Deltaa_median: medianOrBlank(labValues.deltaA),
+        Deltaa_sd: robustSdOrBlank(labValues.deltaA),
+        Deltab_median: medianOrBlank(labValues.deltaB),
+        Deltab_sd: robustSdOrBlank(labValues.deltaB),
+        DeltaE_ab_median: medianOrBlank(labValues.deltaE),
+        DeltaE_ab_sd: robustSdOrBlank(labValues.deltaE),
+        DeltaE_ab_chroma_median: medianOrBlank(labValues.deltaEChroma),
+        DeltaE_ab_chroma_sd: robustSdOrBlank(labValues.deltaEChroma),
+        CIELAB_ref_source: referenceSource,
         NReplicates: groupMeasurements.length,
         QCFlagged: warningCount > 0 ? 1 : 0,
         QCCritical: criticalCount > 0 ? 1 : 0,
@@ -1556,7 +1632,7 @@ function buildReportFitRows(
 
   calibrationFits.forEach((fit) => {
     const points = collectCalibrationPointsForChannel(fit.channel, displayMeasurements, plateMap);
-    const pointRows = points.map((point) => ({ x: point.x, y: point.y }));
+    const pointRows = groupedMedianRows(points.map((point) => ({ x: point.x, y: point.y })));
     const ranking = rankingByChannel.get(fit.channel);
     const sigmaCal = ranking?.sigmaCal ?? Number.NaN;
 
@@ -1649,46 +1725,138 @@ function buildReportFitRows(
   return rows;
 }
 
-function buildReportMethodComparisonRows(
-  rankings: PythonResultsChannelRank[],
-  calibrationFits: CalibrationFit[],
-  standardAdditionFits: StandardAdditionFit[],
-  unknownResults: UnknownConcentrationResult[],
-  expectedRefs: ExpectedRef[],
-): XlsxRow[] {
-  return rankings.map((ranking, index) => {
-    const cal = calibrationFits.find((fit) => fit.channel === ranking.channel);
-    const stdFits = standardAdditionFits.filter((fit) => fit.channel === ranking.channel);
-    const unknownChannelResults = unknownResults.filter((result) => result.channel === ranking.channel);
-    const mStdValues = stdFits.map((fit) => fit.slope).filter(Number.isFinite);
-    const c0Values = stdFits.map((fit) => fit.concentrationInOriginalSample).filter(Number.isFinite);
-    const unknownC0Values = unknownChannelResults.map((result) => result.concentrationInOriginalSample).filter(Number.isFinite);
+function numericRowValue(row: XlsxRow | undefined, key: string): number {
+  const value = row?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
+}
+
+function stringRowValue(row: XlsxRow | undefined, key: string): string {
+  const value = row?.[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function methodFamily(method: string): string {
+  if (method.startsWith('PAbs_')) {
+    return 'RGB';
+  }
+
+  if (method.startsWith('Delta')) {
+    return 'DeltaCIELAB';
+  }
+
+  return 'CIELAB';
+}
+
+function slopeAgreement(mCal: number, mStd: number): number {
+  const absCal = Math.abs(mCal);
+  const absStd = Math.abs(mStd);
+
+  if (!Number.isFinite(absCal) || !Number.isFinite(absStd) || absCal <= 1e-15 || absStd <= 1e-15) {
+    return Number.NaN;
+  }
+
+  return Math.min(absCal, absStd) / Math.max(absCal, absStd);
+}
+
+function methodScore(r2Cal: number, r2Std: number, agreement: number, loq: number): { score: number; formula: string; comparableGroup: string; commonFactorsN: number; rankMode: string } {
+  const hasCal = Number.isFinite(r2Cal);
+  const hasStd = Number.isFinite(r2Std);
+  const hasSlope = Number.isFinite(agreement);
+  const hasLoq = Number.isFinite(loq) && Math.abs(loq) > 1e-15;
+
+  if (hasCal && hasStd && hasSlope && hasLoq) {
+    return {
+      score: agreement ** 2 * Math.sqrt(Math.max(0, r2Cal) * Math.max(0, r2Std)) * (1 / Math.abs(loq)),
+      formula: 'SlopeAgreement^2 * sqrt(R2_cal * R2_std_mean) * (1/LOQ)',
+      comparableGroup: 'calibration_plus_stdadd',
+      commonFactorsN: 3,
+      rankMode: 'calibration_plus_stdadd',
+    };
+  }
+
+  if (hasCal && hasStd && hasSlope) {
+    return {
+      score: agreement ** 2 * Math.sqrt(Math.max(0, r2Cal) * Math.max(0, r2Std)),
+      formula: 'SlopeAgreement^2 * sqrt(R2_cal * R2_std_mean)',
+      comparableGroup: 'calibration_plus_stdadd_no_loq',
+      commonFactorsN: 2,
+      rankMode: 'calibration_plus_stdadd',
+    };
+  }
+
+  if (hasCal && hasLoq) {
+    return {
+      score: Math.max(0, r2Cal) * (1 / Math.abs(loq)),
+      formula: 'R2_cal * (1/LOQ)',
+      comparableGroup: 'calibration_only',
+      commonFactorsN: 1,
+      rankMode: 'calibration_only',
+    };
+  }
+
+  if (hasCal) {
+    return {
+      score: Math.max(0, r2Cal),
+      formula: 'R2_cal',
+      comparableGroup: 'calibration_only_no_loq',
+      commonFactorsN: 1,
+      rankMode: 'calibration_only',
+    };
+  }
+
+  return {
+    score: Number.NaN,
+    formula: '',
+    comparableGroup: hasStd ? 'stdadd_only' : 'not_comparable',
+    commonFactorsN: hasStd ? 1 : 0,
+    rankMode: hasStd ? 'stdadd_only' : 'not_comparable',
+  };
+}
+
+function buildMethodComparisonRowsFromFitRows(fitRows: XlsxRow[], expectedRefs: ExpectedRef[], includeSelectionColumns: boolean): XlsxRow[] {
+  const methods = [...new Set(fitRows.map((row) => stringRowValue(row, 'Channel')).filter(Boolean))];
+  const rows = methods.map((method) => {
+    const channelRows = fitRows.filter((row) => stringRowValue(row, 'Channel') === method);
+    const cal = channelRows.find((row) => row.FitType === 'Calibration');
+    const stdRows = channelRows.filter((row) => row.FitType === 'StdAdd');
+    const unknownRows = channelRows.filter((row) => row.FitType === 'UnknownFromCal');
+    const mCal = numericRowValue(cal, 'm');
+    const mStdValues = stdRows.map((row) => numericRowValue(row, 'm')).filter(Number.isFinite);
+    const mStdMean = medianFinite(mStdValues);
+    const r2Cal = numericRowValue(cal, 'R2');
+    const r2Std = medianFinite(stdRows.map((row) => numericRowValue(row, 'R2')).filter(Number.isFinite));
+    const c0Values = stdRows.map((row) => numericRowValue(row, 'C0')).filter(Number.isFinite);
+    const c0SdValues = stdRows.map((row) => numericRowValue(row, 'C0_sd')).filter(Number.isFinite);
+    const unknownC0Values = unknownRows.map((row) => numericRowValue(row, 'C0')).filter(Number.isFinite);
+    const betaValues = stdRows.map((row) => numericRowValue(row, 'beta_k')).filter(Number.isFinite);
+    const biasValues = stdRows.map((row) => numericRowValue(row, 'bias_index_k')).filter(Number.isFinite);
+    const agreement = slopeAgreement(mCal, mStdMean);
+    const loq = numericRowValue(cal, 'LOQ');
+    const scoreInfo = methodScore(r2Cal, r2Std, agreement, loq);
     const estimateValue = unknownC0Values.length > 0 ? medianFinite(unknownC0Values) : medianFinite(c0Values);
     const baseRow: XlsxRow = {
-      Selected: index === 0 ? 1 : 0,
-      Rank: index + 1,
-      Method: reportChannelName(ranking.channel),
-      Family: 'PAbs',
-      ComparableGroup: Number.isFinite(ranking.r2Cal) && Number.isFinite(ranking.r2Std) ? 'calibration_plus_stdadd' : Number.isFinite(ranking.r2Cal) ? 'calibration_only' : 'stdadd_only',
-      CommonFactorsN: Number.isFinite(ranking.r2Cal) && Number.isFinite(ranking.r2Std) ? 3 : 1,
-      Score: ranking.score,
-      ScoreFormula: ranking.scoreFormula,
-      RankMode: Number.isFinite(ranking.r2Cal) && Number.isFinite(ranking.r2Std) ? 'calibration_plus_stdadd' : Number.isFinite(ranking.r2Cal) ? 'calibration_only' : 'stdadd_only',
-      R2_cal: ranking.r2Cal,
-      R2_std_mean: ranking.r2Std,
-      m_cal: cal?.slope ?? '',
-      m_std_mean: meanOrBlank(mStdValues),
-      SlopeAgreement: ranking.slopeAgreement,
-      beta_mean: cal && Number.isFinite(cal.slope) && Math.abs(cal.slope) > 1e-15 ? meanOrBlank(mStdValues.map((slope) => slope / cal.slope)) : '',
-      bias_index_mean: cal && Number.isFinite(cal.slope) && Math.abs(cal.slope) > 1e-15 ? meanOrBlank(mStdValues.map((slope) => Math.abs((slope / cal.slope) - 1))) : '',
-      SNR: cal && Number.isFinite(ranking.sigmaCal) && ranking.sigmaCal > 0 ? Math.abs(cal.slope) / ranking.sigmaCal : '',
-      LOD: ranking.lod,
-      LOQ: ranking.loq,
-      n_stdadd: stdFits.length,
-      n_unknown: unknownChannelResults.length,
+      Method: method,
+      Family: methodFamily(method),
+      ComparableGroup: scoreInfo.comparableGroup,
+      CommonFactorsN: scoreInfo.commonFactorsN,
+      Score: finiteOrBlank(scoreInfo.score),
+      ScoreFormula: scoreInfo.formula,
+      RankMode: scoreInfo.rankMode,
+      R2_cal: finiteOrBlank(r2Cal),
+      R2_std_mean: finiteOrBlank(r2Std),
+      m_cal: finiteOrBlank(mCal),
+      m_std_mean: finiteOrBlank(mStdMean),
+      SlopeAgreement: finiteOrBlank(agreement),
+      beta_mean: meanOrBlank(betaValues),
+      bias_index_mean: meanOrBlank(biasValues),
+      SNR: cal?.SNR ?? '',
+      LOD: cal?.LOD ?? '',
+      LOQ: cal?.LOQ ?? '',
+      n_stdadd: stdRows.length,
+      n_unknown: unknownRows.length,
       C0_mean: meanOrBlank(c0Values),
       C0_median: medianOrBlank(c0Values),
-      C0_sd_median: '',
+      C0_sd_median: medianOrBlank(c0SdValues),
       Estimate_value: Number.isFinite(estimateValue) ? estimateValue : '',
       Estimate_sd: '',
       Estimate_source: unknownC0Values.length > 0 ? 'unknown_from_calibration' : c0Values.length > 0 ? 'standard_addition' : '',
@@ -1697,13 +1865,13 @@ function buildReportMethodComparisonRows(
     expectedRefs.forEach((ref, refIndex) => {
       const label = ref.label || ref.refId || `Reference ${refIndex + 1}`;
       const key = expectedRefKey(label, refIndex + 1);
-      const matchedStd = stdFits
-        .filter((fit) => referenceMatchesSample(ref, fit.sampleId))
-        .map((fit) => fit.concentrationInOriginalSample)
+      const matchedStd = stdRows
+        .filter((row) => referenceMatchesSample(ref, stringRowValue(row, 'ID')))
+        .map((row) => numericRowValue(row, 'C0'))
         .filter(Number.isFinite);
-      const matchedUnknown = unknownChannelResults
-        .filter((result) => referenceMatchesSample(ref, result.sampleId))
-        .map((result) => result.concentrationInOriginalSample)
+      const matchedUnknown = unknownRows
+        .filter((row) => referenceMatchesSample(ref, stringRowValue(row, 'ID')))
+        .map((row) => numericRowValue(row, 'C0'))
         .filter(Number.isFinite);
       const estimateForRef = matchedUnknown.length > 0
         ? medianFinite(matchedUnknown)
@@ -1723,6 +1891,22 @@ function buildReportMethodComparisonRows(
 
     return baseRow;
   });
+
+  rows.sort((a, b) => (
+    Number(b.CommonFactorsN) - Number(a.CommonFactorsN) ||
+    (Number.isFinite(numericRowValue(b, 'Score')) ? numericRowValue(b, 'Score') : Number.NEGATIVE_INFINITY) -
+      (Number.isFinite(numericRowValue(a, 'Score')) ? numericRowValue(a, 'Score') : Number.NEGATIVE_INFINITY) ||
+    String(a.Method).localeCompare(String(b.Method))
+  ));
+
+  if (includeSelectionColumns) {
+    rows.forEach((row, index) => {
+      row.Selected = index === 0 ? 1 : 0;
+      row.Rank = index + 1;
+    });
+  }
+
+  return rows;
 }
 
 function buildReportOverviewRows(
@@ -1858,9 +2042,10 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     { Sheet: '07_METHOD_COMPARISON', Purpose: 'Method ranking using only common score factors; expected values are external checks only.' },
     { Sheet: '08_LEGENDS', Purpose: 'Definitions for fields reported in this workbook and primary RGB figure.' },
   ];
+  const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap);
   const rawRows = buildReportRawRows(options.measurements, options.displayMeasurements, options.plateMap);
   const replicateRows = buildReportReplicateRows(options.displayMeasurements, options.plateMap);
-  const fitRows = buildReportFitRows(
+  const rgbFitRows = buildReportFitRows(
     options.calibrationFits,
     options.standardAdditionFits,
     options.unknownResults,
@@ -1868,13 +2053,8 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     options.plateMap,
     options.rankings,
   );
-  const methodComparisonRows = buildReportMethodComparisonRows(
-    options.rankings,
-    options.calibrationFits,
-    options.standardAdditionFits,
-    options.unknownResults,
-    options.expectedRefs,
-  );
+  const fitRows = [...rgbFitRows, ...buildCielabFittingRows(cielabPoints)];
+  const methodComparisonRows = buildMethodComparisonRowsFromFitRows(fitRows, options.expectedRefs, true);
   const overviewRows = buildReportOverviewRows(
     options.imageBase,
     options.unitLabel,
@@ -1919,14 +2099,14 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     {
       name: '04_RAW',
       rows: tableRows(
-        ['Row', 'Col', 'Well', 'ID', 'Type', 'Conc', 'DF', 'MeanW_Red', 'MeanW_Green', 'MeanW_Blue', 'MeanBG_Red', 'MeanBG_Green', 'MeanBG_Blue', 'SignalT_Red', 'SignalT_Green', 'SignalT_Blue', 'PAbs_Red', 'PAbs_Green', 'PAbs_Blue', 'ImageWarning'],
+        ['Row', 'Col', 'Well', 'ID', 'Type', 'Conc', 'DF', 'MeanW_Red', 'MeanW_Green', 'MeanW_Blue', 'MeanBG_Red', 'MeanBG_Green', 'MeanBG_Blue', 'SignalT_Red', 'SignalT_Green', 'SignalT_Blue', 'PAbs_Red', 'PAbs_Green', 'PAbs_Blue', 'L', 'a', 'b', 'DeltaL', 'Deltaa', 'Deltab', 'DeltaE_ab', 'DeltaE_ab_chroma', 'CIELAB_ref_source', 'ImageWarning'],
         rawRows,
       ),
     },
     {
       name: '05_REPLICATES_MEAN',
       rows: tableRows(
-        ['ID', 'DF', 'Type', 'Conc', 'PAbs_Red_median', 'PAbs_Red_sd', 'PAbs_Green_median', 'PAbs_Green_sd', 'PAbs_Blue_median', 'PAbs_Blue_sd', 'NReplicates', 'QCFlagged', 'QCCritical'],
+        ['ID', 'DF', 'Type', 'Conc', 'PAbs_Red_median', 'PAbs_Red_sd', 'PAbs_Green_median', 'PAbs_Green_sd', 'PAbs_Blue_median', 'PAbs_Blue_sd', 'L_median', 'L_sd', 'a_median', 'a_sd', 'b_median', 'b_sd', 'DeltaL_median', 'DeltaL_sd', 'Deltaa_median', 'Deltaa_sd', 'Deltab_median', 'Deltab_sd', 'DeltaE_ab_median', 'DeltaE_ab_sd', 'DeltaE_ab_chroma_median', 'DeltaE_ab_chroma_sd', 'CIELAB_ref_source', 'NReplicates', 'QCFlagged', 'QCCritical'],
         replicateRows,
       ),
     },
@@ -2406,11 +2586,10 @@ function buildSpatialDiagnosticRow(dataset: string, measurements: WellMeasuremen
 function buildDiagnosticsSpatialRows(options: PythonDiagnosticsWorkbookOptions): XlsxRow[] {
   const configByWell = new Map(options.plateMap.map((well) => [well.wellId, well]));
   const unknownMeasurements = options.displayMeasurements.filter((measurement) => configByWell.get(measurement.wellId)?.role === 'U');
-  const emptyMeasurements = options.displayMeasurements.filter((measurement) => configByWell.get(measurement.wellId)?.role === 'EMPTY');
 
   return [
     buildSpatialDiagnosticRow('unknown', unknownMeasurements),
-    buildSpatialDiagnosticRow('empty', emptyMeasurements),
+    buildSpatialDiagnosticRow('empty', []),
   ];
 }
 
@@ -2421,8 +2600,8 @@ const CIELAB_DIAGNOSTIC_DESCRIPTORS = [
   { channel: 'DeltaL', getValue: (point: CielabDiagnosticPoint) => point.deltaL },
   { channel: 'Deltaa', getValue: (point: CielabDiagnosticPoint) => point.deltaA },
   { channel: 'Deltab', getValue: (point: CielabDiagnosticPoint) => point.deltaB },
-  { channel: 'DeltaE_ab', getValue: (point: CielabDiagnosticPoint) => point.deltaE },
-  { channel: 'DeltaE_ab_chroma', getValue: (point: CielabDiagnosticPoint) => point.deltaEChroma },
+  { channel: 'DeltaE', getValue: (point: CielabDiagnosticPoint) => point.deltaE },
+  { channel: 'DeltaE_chroma', getValue: (point: CielabDiagnosticPoint) => point.deltaEChroma },
 ] as const;
 
 function cielabValueAsNumber(value: number | ''): number {
@@ -2452,7 +2631,32 @@ function diagnosticCielabPointsForRole(
   });
 }
 
-function buildDiagnosticsCielabFittingRows(options: PythonDiagnosticsWorkbookOptions, points: CielabDiagnosticPoint[]): XlsxRow[] {
+function groupedMedianCielabFitRows(points: CielabDiagnosticPoint[], getValue: (point: CielabDiagnosticPoint) => number | ''): { x: number; y: number }[] {
+  const groups = new Map<number, number[]>();
+
+  points.forEach((point) => {
+    if (typeof point.conc !== 'number' || !Number.isFinite(point.conc)) {
+      return;
+    }
+
+    const value = cielabValueAsNumber(getValue(point));
+
+    if (!Number.isFinite(value)) {
+      return;
+    }
+
+    const values = groups.get(point.conc) ?? [];
+    values.push(value);
+    groups.set(point.conc, values);
+  });
+
+  return [...groups.entries()]
+    .map(([x, values]) => ({ x, y: medianFinite(values) }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+    .sort((a, b) => a.x - b.x);
+}
+
+function buildCielabFittingRows(points: CielabDiagnosticPoint[]): XlsxRow[] {
   const rows: XlsxRow[] = [];
   const calibrationPoints = diagnosticCielabPointsForRole(points, 'C');
   const standardGroups = new Map<string, { sampleId: string; dilutionFactor: number; points: CielabDiagnosticPoint[] }>();
@@ -2473,10 +2677,13 @@ function buildDiagnosticsCielabFittingRows(options: PythonDiagnosticsWorkbookOpt
   });
 
   CIELAB_DIAGNOSTIC_DESCRIPTORS.forEach((descriptor) => {
-    const xCal = calibrationPoints.map((point) => point.conc as number);
-    const yCal = calibrationPoints.map((point) => cielabValueAsNumber(descriptor.getValue(point)));
+    const groupedCalRows = groupedMedianCielabFitRows(calibrationPoints, descriptor.getValue);
+    const xCal = groupedCalRows.map((point) => point.x);
+    const yCal = groupedCalRows.map((point) => point.y);
     const calFit = fitLinearRegression(xCal, yCal);
-    const calPointRows = xCal.map((x, index) => ({ x, y: yCal[index] })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+    const calPointRows = calibrationPoints
+      .map((point) => ({ x: point.conc as number, y: cielabValueAsNumber(descriptor.getValue(point)) }))
+      .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
     const groupedCalibration = new Map<number, number[]>();
 
     calPointRows.forEach((point) => {
@@ -2503,7 +2710,7 @@ function buildDiagnosticsCielabFittingRows(options: PythonDiagnosticsWorkbookOpt
         m: finiteOrBlank(calFit.slope),
         q: finiteOrBlank(calFit.intercept),
         R2: finiteOrBlank(calFit.r2),
-        RMSE: finiteRmse(calPointRows, calFit.slope, calFit.intercept),
+        RMSE: finiteRmse(groupedCalRows, calFit.slope, calFit.intercept),
         LOD: finiteOrBlank(lod),
         LOQ: finiteOrBlank(loq),
         C0: '',
@@ -2517,10 +2724,10 @@ function buildDiagnosticsCielabFittingRows(options: PythonDiagnosticsWorkbookOpt
     }
 
     standardGroups.forEach((group) => {
-      const xStd = group.points.map((point) => point.conc as number);
-      const yStd = group.points.map((point) => cielabValueAsNumber(descriptor.getValue(point)));
+      const groupedStdRows = groupedMedianCielabFitRows(group.points, descriptor.getValue);
+      const xStd = groupedStdRows.map((point) => point.x);
+      const yStd = groupedStdRows.map((point) => point.y);
       const stdFit = fitLinearRegression(xStd, yStd);
-      const stdPointRows = xStd.map((x, index) => ({ x, y: yStd[index] })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
       const beta = Number.isFinite(calFit.slope) && Math.abs(calFit.slope) > 1e-15 && Number.isFinite(stdFit.slope)
         ? stdFit.slope / calFit.slope
         : Number.NaN;
@@ -2537,7 +2744,7 @@ function buildDiagnosticsCielabFittingRows(options: PythonDiagnosticsWorkbookOpt
         m: finiteOrBlank(stdFit.slope),
         q: finiteOrBlank(stdFit.intercept),
         R2: finiteOrBlank(stdFit.r2),
-        RMSE: finiteRmse(stdPointRows, stdFit.slope, stdFit.intercept),
+        RMSE: finiteRmse(groupedStdRows, stdFit.slope, stdFit.intercept),
         LOD: '',
         LOQ: '',
         C0: finiteOrBlank(c0),
@@ -2556,7 +2763,7 @@ function buildDiagnosticsCielabFittingRows(options: PythonDiagnosticsWorkbookOpt
 
 function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
   return [
-    { Term: 'BG_STAT_MASK', Meaning: 'Binary diagnostic mask of accepted inter-well background pixels', Formula: 'white = used as BG sample; black = rejected', Unit: 'image', 'Where used': 'BG_STAT_MASK.png', Notes: 'Used to audit the background-sampling step.' },
+    { Term: 'BG_STAT_MASK', Meaning: 'Overlay diagnostic image of accepted inter-well background pixels', Formula: 'accepted BG mask composited over source image', Unit: 'image', 'Where used': 'BG_STAT_MASK.png', Notes: 'The exact Python binary-mask rendering is not yet reproduced.' },
     { Term: 'BG_Cell_Row/BG_Cell_Col', Meaning: 'Inter-well background-cell row/column index', Formula: '0-based grid index of the inter-well cell, not a well row/column', Unit: 'index', 'Where used': '02_BG_SAMPLES', Notes: 'Populated when physical inter-well cell diagnostics are available.' },
     { Term: 'Associated_Wells', Meaning: 'Four wells surrounding an inter-well BG sample cell', Formula: 'well(r,c)-well(r,c+1)-well(r+1,c)-well(r+1,c+1)', Unit: 'well labels', 'Where used': '02_BG_SAMPLES', Notes: '' },
     { Term: 'Row/Col/Well', Meaning: 'Human-readable well position', Formula: 'Row is A-based; Col is 1-based; Well = Row+Col', Unit: 'well label', 'Where used': '03_BG_WELL_FIT, 04_WELL_ROBUST_STATS, 05_GEOMETRY_QC, 06_WELL_BOTTOM, 08_EMPTY_WELLS', Notes: '' },
@@ -2573,7 +2780,7 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: 'shift_px/shift_frac_of_mouth_r/floor_to_mouth_r_ratio/floor_to_mouth_area_ratio', Meaning: 'Mouth-to-floor alignment descriptors', Formula: 'shift distance and relative floor/mouth radius or area ratios', Unit: 'pixels or dimensionless', 'Where used': '05_GEOMETRY_QC, 06_WELL_BOTTOM', Notes: '' },
     { Term: 'D_warning/D_critical', Meaning: 'Floor-geometry warning and critical flags', Formula: 'Python threshold flags', Unit: '0/1', 'Where used': '05_GEOMETRY_QC', Notes: 'Blank because the webapp does not compute Python floor-geometry warning thresholds.' },
     { Term: 'MeanW_*/MeanBG_*/PAbs_*', Meaning: 'Linearized well intensity, background intensity and RGB pseudo-absorbance', Formula: 'PAbs = log10(MeanBG / MeanW)', Unit: 'dimensionless', 'Where used': '08_EMPTY_WELLS, 10_METHOD_COMPARISON', Notes: '' },
-    { Term: 'Dataset/Status/Applicability/Reason', Meaning: 'Applicability status for optional spatial diagnostics', Formula: 'applied or not_applied with reason text', Unit: 'text', 'Where used': '09_SPATIAL_DIAGNOSTICS', Notes: 'Spatial diagnostics use PAbs_Red as the currently available webapp trend signal.' },
+    { Term: 'Dataset/Status/Applicability/Reason', Meaning: 'Applicability status for optional spatial diagnostics', Formula: 'applied or not_applied with reason text', Unit: 'text', 'Where used': '09_SPATIAL_DIAGNOSTICS', Notes: 'Unknown spatial diagnostics use PAbs_Red when unknown wells are available; empty spatial diagnostics require Python-style structural empty rows and remain not_applied in the webapp.' },
     { Term: 'n/intercept/slope_col/slope_row/R2/corr_col/corr_row', Meaning: 'Spatial-trend descriptors', Formula: 'linear trend of PAbs_Red versus row/column position', Unit: 'mixed', 'Where used': '09_SPATIAL_DIAGNOSTICS', Notes: 'Diagnostic only; does not alter quantitative results.' },
     { Term: 'Method/Family/ComparableGroup/CommonFactorsN/RankMode', Meaning: 'Method-comparison identifiers and comparable-score grouping', Formula: 'text labels and number of factors defining score comparability', Unit: 'mixed', 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: 'Scores are directly comparable only within the same ComparableGroup.' },
     { Term: 'Score/ScoreFormula', Meaning: 'Common method-ranking score and formula descriptor', Formula: 'SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ) when LOQ is available', Unit: `1/${unitLabel}`, 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: 'Expected/reference values, SNR and clipping are not part of Score.' },
@@ -2590,13 +2797,15 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
 
 async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWorkbookOptions): Promise<Blob> {
   const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap);
-  const methodComparisonRows = buildReportMethodComparisonRows(
-    options.rankings,
+  const rgbFitRows = buildReportFitRows(
     options.calibrationFits,
     options.standardAdditionFits,
     options.unknownResults,
-    options.expectedRefs,
+    options.displayMeasurements,
+    options.plateMap,
+    options.rankings,
   );
+  const methodComparisonRows = buildMethodComparisonRowsFromFitRows([...rgbFitRows, ...buildCielabFittingRows(cielabPoints)], options.expectedRefs, false);
   const methodComparisonPreferred = [
     'Method',
     'Family',
@@ -2685,7 +2894,7 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
       name: '11_CIELAB_FITTING',
       rows: tableRows(
         ['Channel', 'FitType', 'ID', 'DF', 'n_points', 'm', 'q', 'R2', 'RMSE', 'LOD', 'LOQ', 'C0', 'C0_sd', 'sigma_cal', 'sigma_source', 'SNR', 'beta_k', 'bias_index_k'],
-        buildDiagnosticsCielabFittingRows(options, cielabPoints),
+        buildCielabFittingRows(cielabPoints),
       ),
     },
     {
@@ -2771,8 +2980,8 @@ function buildCielabDiagnosticPoints(
   const reference = medianLab(referenceCandidates.map((well) => labByWell.get(well.wellId)).filter((value): value is LabValue => Boolean(value)));
   const referenceSource = reference
     ? zeroCalibration.length > 0
-      ? 'zero calibration wells'
-      : 'lowest calibration concentration wells'
+      ? 'plate_zero_calibration'
+      : 'lowest_calibration'
     : 'unavailable';
 
   const points = measurements.map((measurement) => {
@@ -4000,7 +4209,7 @@ function buildPythonStyleFigureRgbCanvas({
     'Notes',
     'PAbs = log10(I_BG / I_well).',
     'PNG channel ranking uses Python GlobalScore when LOQ is available.',
-    'Robust IRLS fitting parity, REPORT.xlsx parity and RAW_DATA_DETAILS parity remain later work.',
+    'Workbook tables include available Python-style report and diagnostic fields; unavailable fields are left blank.',
   ].join('\n');
 
   ctx.fillStyle = '#253033';
@@ -5780,13 +5989,18 @@ function App() {
         displayMeasurements,
         plateMap,
       );
-      const methodComparisonRows = buildReportMethodComparisonRows(
-        rankings,
-        calibrationFits,
-        standardAdditionFitsWithSlopeContext,
-        unknownResults,
-        expectedRefs,
-      );
+      const methodComparisonFitRows = [
+        ...buildReportFitRows(
+          calibrationFits,
+          standardAdditionFitsWithSlopeContext,
+          unknownResults,
+          displayMeasurements,
+          plateMap,
+          rankings,
+        ),
+        ...buildCielabFittingRows(buildCielabDiagnosticPoints(measurements, plateMap).points),
+      ];
+      const methodComparisonRows = buildMethodComparisonRowsFromFitRows(methodComparisonFitRows, expectedRefs, true);
       const bestChannel = rankings[0]?.channel ?? 'R';
       let backgroundVisualDiagnostics: BackgroundVisualDiagnostics | null = null;
 

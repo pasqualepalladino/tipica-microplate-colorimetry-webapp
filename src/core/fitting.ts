@@ -90,6 +90,15 @@ function groupedStandardAdditionPoints(points: StandardAdditionPoint[]): Array<{
   return [...groups.values()].sort((a, b) => a.x - b.x);
 }
 
+function groupedMedianFitPoints(points: StandardAdditionPoint[]): { x: number[]; y: number[] } {
+  const groups = groupedStandardAdditionPoints(points);
+
+  return {
+    x: groups.map((group) => group.x),
+    y: groups.map((group) => median(group.points.map((point) => point.y))),
+  };
+}
+
 function standardAdditionDiagnosticWarnings(
   points: StandardAdditionPoint[],
   fit: LinearRegressionFit,
@@ -109,7 +118,7 @@ function standardAdditionDiagnosticWarnings(
     warnings.push('No finite standard-addition points were available.');
   }
 
-  const meanSignals = groups.map((group) => mean(group.points.map((point) => point.y)));
+  const meanSignals = groups.map((group) => median(group.points.map((point) => point.y)));
 
   for (let index = 1; index < meanSignals.length; index += 1) {
     if (Number.isFinite(meanSignals[index - 1]) && Number.isFinite(meanSignals[index]) && meanSignals[index] < meanSignals[index - 1]) {
@@ -155,7 +164,7 @@ function standardAdditionDiagnostics(
     groupKey: `${sampleId}|DF=${dilutionFactor}`,
     wellsUsed: points.map((point) => point.wellId),
     addedConcentrationsUsed: groups.map((group) => group.x),
-    meanSignalValuesUsed: groups.map((group) => mean(group.points.map((point) => point.y))),
+    meanSignalValuesUsed: groups.map((group) => median(group.points.map((point) => point.y))),
     replicatesPerAddedConcentration: groups.map((group) => `${group.x}:${group.points.length}`),
     fitXMin: finiteX.length > 0 ? Math.min(...finiteX) : null,
     fitXMax: finiteX.length > 0 ? Math.max(...finiteX) : null,
@@ -349,8 +358,7 @@ export function fitCalibration(
   }
 
   return CHANNELS.map((channel) => {
-    const x: number[] = [];
-    const y: number[] = [];
+    const points: StandardAdditionPoint[] = [];
 
     for (const well of calibrationWells) {
       const measurement = measurementByWell.get(well.wellId);
@@ -359,10 +367,14 @@ export function fitCalibration(
         continue;
       }
 
-      x.push(well.concentration);
-      y.push(channelValue(measurement.pabs, channel));
+      points.push({
+        wellId: well.wellId,
+        x: well.concentration,
+        y: channelValue(measurement.pabs, channel),
+      });
     }
 
+    const { x, y } = groupedMedianFitPoints(points);
     const fit = fitLinearRegression(x, y);
 
     return {
@@ -410,8 +422,6 @@ export function fitStandardAddition(
   }
 
   return [...groups.values()].flatMap((group) => CHANNELS.map((channel) => {
-    const x: number[] = [];
-    const y: number[] = [];
     const points: StandardAdditionPoint[] = [];
     const signalSourceUsedForFit = fitSignalSourceLabel(channel, correctedChannels);
 
@@ -422,9 +432,7 @@ export function fitStandardAddition(
         continue;
       }
 
-      x.push(well.concentration);
       const signal = channelValue(measurement.pabs, channel);
-      y.push(signal);
       points.push({
         wellId: well.wellId,
         x: well.concentration,
@@ -432,6 +440,7 @@ export function fitStandardAddition(
       });
     }
 
+    const { x, y } = groupedMedianFitPoints(points);
     const fit = fitLinearRegression(x, y);
     const diagnostics = standardAdditionDiagnostics(group.sampleId, group.dilutionFactor, points, fit);
     const robustDiagnostics = robustStandardAdditionDiagnostics(group.dilutionFactor, points);
