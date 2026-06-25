@@ -1459,6 +1459,37 @@ function groupedMedianRows(points: { x: number; y: number }[]): { x: number; y: 
     .sort((a, b) => a.x - b.x);
 }
 
+function c0SdFromFitRows(points: { x: number; y: number }[], slope: number, intercept: number, dilutionFactor: number): number | '' {
+  const finite = points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+
+  if (finite.length <= 2 || !Number.isFinite(slope) || Math.abs(slope) <= 1e-15 || !Number.isFinite(intercept)) {
+    return '';
+  }
+
+  const n = finite.length;
+  const meanX = finite.reduce((sum, point) => sum + point.x, 0) / n;
+  const sxx = finite.reduce((sum, point) => sum + (point.x - meanX) ** 2, 0);
+
+  if (sxx <= 1e-15) {
+    return '';
+  }
+
+  const sse = finite.reduce((sum, point) => {
+    const residual = point.y - (slope * point.x + intercept);
+    return sum + residual ** 2;
+  }, 0);
+  const sigma2 = sse / Math.max(1, n - 2);
+  const covM = sigma2 / sxx;
+  const covQ = sigma2 * ((1 / n) + (meanX ** 2) / sxx);
+  const covMQ = -sigma2 * meanX / sxx;
+  const dDm = intercept / (slope * slope);
+  const dDq = -1 / slope;
+  const variance = Math.max(0, dDm ** 2 * covM + dDq ** 2 * covQ + 2 * dDm * dDq * covMQ);
+  const sd = Math.abs(dilutionFactor) * Math.sqrt(variance);
+
+  return Number.isFinite(sd) ? sd : '';
+}
+
 function expectedRefKey(label: string, index: number): string {
   const safe = label.trim().replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
   return safe || `Reference_${index}`;
@@ -1666,6 +1697,7 @@ function buildReportFitRows(
       x,
       y: fit.meanSignalValuesUsed?.[index] ?? Number.NaN,
     }));
+    const c0Sd = c0SdFromFitRows(points, fit.slope, fit.intercept, fit.dilutionFactor);
 
     rows.push({
       Channel: reportChannelName(fit.channel),
@@ -1683,7 +1715,7 @@ function buildReportFitRows(
       ID: fit.sampleId,
       DF: fit.dilutionFactor,
       C0: fit.concentrationInOriginalSample,
-      C0_sd: '',
+      C0_sd: c0Sd,
       beta_k: Number.isFinite(beta) ? beta : '',
       bias_index_k: Number.isFinite(beta) ? Math.abs(beta - 1) : '',
       S0_calibration: '',
@@ -1767,7 +1799,7 @@ function methodScore(r2Cal: number, r2Std: number, agreement: number, loq: numbe
   if (hasCal && hasStd && hasSlope && hasLoq) {
     return {
       score: agreement ** 2 * Math.sqrt(Math.max(0, r2Cal) * Math.max(0, r2Std)) * (1 / Math.abs(loq)),
-      formula: 'SlopeAgreement^2 * sqrt(R2_cal * R2_std_mean) * (1/LOQ)',
+      formula: 'slope_agreement^2 * sqrt(R2_cal * R2_std) * (1/LOQ)',
       comparableGroup: 'calibration_plus_stdadd',
       commonFactorsN: 3,
       rankMode: 'calibration_plus_stdadd',
@@ -1777,7 +1809,7 @@ function methodScore(r2Cal: number, r2Std: number, agreement: number, loq: numbe
   if (hasCal && hasStd && hasSlope) {
     return {
       score: agreement ** 2 * Math.sqrt(Math.max(0, r2Cal) * Math.max(0, r2Std)),
-      formula: 'SlopeAgreement^2 * sqrt(R2_cal * R2_std_mean)',
+      formula: 'slope_agreement^2 * sqrt(R2_cal * R2_std)',
       comparableGroup: 'calibration_plus_stdadd_no_loq',
       commonFactorsN: 2,
       rankMode: 'calibration_plus_stdadd',
@@ -1822,15 +1854,16 @@ function buildMethodComparisonRowsFromFitRows(fitRows: XlsxRow[], expectedRefs: 
     const unknownRows = channelRows.filter((row) => row.FitType === 'UnknownFromCal');
     const mCal = numericRowValue(cal, 'm');
     const mStdValues = stdRows.map((row) => numericRowValue(row, 'm')).filter(Number.isFinite);
-    const mStdMean = medianFinite(mStdValues);
+    const mStdMean = meanFinite(mStdValues);
     const r2Cal = numericRowValue(cal, 'R2');
-    const r2Std = medianFinite(stdRows.map((row) => numericRowValue(row, 'R2')).filter(Number.isFinite));
+    const r2Std = meanFinite(stdRows.map((row) => numericRowValue(row, 'R2')).filter(Number.isFinite));
     const c0Values = stdRows.map((row) => numericRowValue(row, 'C0')).filter(Number.isFinite);
     const c0SdValues = stdRows.map((row) => numericRowValue(row, 'C0_sd')).filter(Number.isFinite);
     const unknownC0Values = unknownRows.map((row) => numericRowValue(row, 'C0')).filter(Number.isFinite);
     const betaValues = stdRows.map((row) => numericRowValue(row, 'beta_k')).filter(Number.isFinite);
     const biasValues = stdRows.map((row) => numericRowValue(row, 'bias_index_k')).filter(Number.isFinite);
-    const agreement = slopeAgreement(mCal, mStdMean);
+    const agreementValues = mStdValues.map((mStd) => slopeAgreement(mCal, mStd)).filter(Number.isFinite);
+    const agreement = meanFinite(agreementValues);
     const loq = numericRowValue(cal, 'LOQ');
     const scoreInfo = methodScore(r2Cal, r2Std, agreement, loq);
     const estimateValue = unknownC0Values.length > 0 ? medianFinite(unknownC0Values) : medianFinite(c0Values);
@@ -1842,6 +1875,7 @@ function buildMethodComparisonRowsFromFitRows(fitRows: XlsxRow[], expectedRefs: 
       Score: finiteOrBlank(scoreInfo.score),
       ScoreFormula: scoreInfo.formula,
       RankMode: scoreInfo.rankMode,
+      BaseScore: finiteOrBlank(scoreInfo.score),
       R2_cal: finiteOrBlank(r2Cal),
       R2_std_mean: finiteOrBlank(r2Std),
       m_cal: finiteOrBlank(mCal),
@@ -1858,7 +1892,7 @@ function buildMethodComparisonRowsFromFitRows(fitRows: XlsxRow[], expectedRefs: 
       C0_median: medianOrBlank(c0Values),
       C0_sd_median: medianOrBlank(c0SdValues),
       Estimate_value: Number.isFinite(estimateValue) ? estimateValue : '',
-      Estimate_sd: '',
+      Estimate_sd: medianOrBlank(c0SdValues),
       Estimate_source: unknownC0Values.length > 0 ? 'unknown_from_calibration' : c0Values.length > 0 ? 'standard_addition' : '',
     };
 
@@ -1896,8 +1930,15 @@ function buildMethodComparisonRowsFromFitRows(fitRows: XlsxRow[], expectedRefs: 
     Number(b.CommonFactorsN) - Number(a.CommonFactorsN) ||
     (Number.isFinite(numericRowValue(b, 'Score')) ? numericRowValue(b, 'Score') : Number.NEGATIVE_INFINITY) -
       (Number.isFinite(numericRowValue(a, 'Score')) ? numericRowValue(a, 'Score') : Number.NEGATIVE_INFINITY) ||
+    String(a.Family).localeCompare(String(b.Family)) ||
     String(a.Method).localeCompare(String(b.Method))
   ));
+
+  if (!includeSelectionColumns) {
+    rows.forEach((row) => {
+      delete row.BaseScore;
+    });
+  }
 
   if (includeSelectionColumns) {
     rows.forEach((row, index) => {
@@ -2010,8 +2051,8 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: 'R2', Meaning: 'Coefficient of determination from current webapp fit', Formula: '1 - SSE/SST', Unit: 'dimensionless', 'Where used': '06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'fit rows present', Notes: '' },
     { Term: 'RMSE', Meaning: 'Root mean squared residual against the exported fit row', Formula: 'sqrt(mean(residual^2))', Unit: 'response unit', 'Where used': '06_FITTING', 'Shown when': 'fit rows present', Notes: 'Diagnostic workbook value derived from existing fit parameters.' },
     { Term: 'LOD/LOQ', Meaning: 'Detection and quantification limits used for RGB ranking', Formula: 'LOD = 3 x sigma_cal / |m|; LOQ = 10 x sigma_cal / |m|', Unit: unitLabel, 'Where used': '03_OVERVIEW, 06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'calibration present', Notes: 'sigma_cal follows the existing Python-style PNG ranking helper.' },
-    { Term: 'Score', Meaning: 'Common method-ranking score', Formula: 'slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ) when LOQ is available', Unit: `1/${unitLabel}`, 'Where used': '03_OVERVIEW, 07_METHOD_COMPARISON', 'Shown when': 'method comparison present', Notes: 'Expected/reference values and recovery are external checks only.' },
-    { Term: 'C0', Meaning: 'Estimated original-sample concentration', Formula: 'standard addition: DF x q/m; stored calibration unknown: DF x (y - q)/m', Unit: unitLabel, 'Where used': '06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'standard addition or unknown rows present', Notes: 'C0_sd is blank because the webapp does not yet compute Python workbook uncertainty.' },
+    { Term: 'Score/BaseScore', Meaning: 'Common method-ranking score', Formula: 'slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ) when LOQ is available', Unit: `1/${unitLabel}`, 'Where used': '03_OVERVIEW, 07_METHOD_COMPARISON', 'Shown when': 'method comparison present', Notes: 'Expected/reference values and recovery are external checks only.' },
+    { Term: 'C0/C0_sd', Meaning: 'Estimated original-sample concentration and fit-derived uncertainty', Formula: 'standard addition: C0 = DF x q/m; C0_sd is propagated from the linear-fit covariance when available', Unit: unitLabel, 'Where used': '06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'standard addition or unknown rows present', Notes: 'Uses the current web least-squares fit covariance; robust IRLS weighting parity remains separate.' },
     { Term: 'Replicate medians and SD', Meaning: 'Replicate-group summary by ID, DF, type and concentration', Formula: 'median(PAbs) and sample SD over finite replicate wells', Unit: 'dimensionless', 'Where used': '05_REPLICATES_MEAN', 'Shown when': 'replicate groups present', Notes: '' },
     { Term: 'ImageWarning/QCFlagged/QCCritical', Meaning: 'Available webapp warning indicators', Formula: '1 when warnings are present; critical when warning text contains critical', Unit: '0/1', 'Where used': '04_RAW, 05_REPLICATES_MEAN', 'Shown when': 'always', Notes: 'Python optical QC critical scoring is not fully implemented in the webapp report.' },
     { Term: 'Expected/reference values', Meaning: 'External reference metadata configured by the user', Formula: 'user/configurator input', Unit: unitLabel, 'Where used': '03_OVERVIEW, 07_METHOD_COMPARISON', 'Shown when': 'reference values configured', Notes: 'External references are not used in Score.' },
@@ -2090,6 +2131,7 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     'Estimate_value',
     'Estimate_sd',
     'Estimate_source',
+    'BaseScore',
   ];
 
   return createXlsxWorkbookBlob([
@@ -2593,16 +2635,20 @@ function buildDiagnosticsSpatialRows(options: PythonDiagnosticsWorkbookOptions):
   ];
 }
 
-const CIELAB_DIAGNOSTIC_DESCRIPTORS = [
+const CIELAB_REPORT_DESCRIPTORS = [
   { channel: 'L', getValue: (point: CielabDiagnosticPoint) => point.l },
   { channel: 'a', getValue: (point: CielabDiagnosticPoint) => point.a },
   { channel: 'b', getValue: (point: CielabDiagnosticPoint) => point.b },
   { channel: 'DeltaL', getValue: (point: CielabDiagnosticPoint) => point.deltaL },
   { channel: 'Deltaa', getValue: (point: CielabDiagnosticPoint) => point.deltaA },
   { channel: 'Deltab', getValue: (point: CielabDiagnosticPoint) => point.deltaB },
-  { channel: 'DeltaE', getValue: (point: CielabDiagnosticPoint) => point.deltaE },
-  { channel: 'DeltaE_chroma', getValue: (point: CielabDiagnosticPoint) => point.deltaEChroma },
+  { channel: 'DeltaE_ab', getValue: (point: CielabDiagnosticPoint) => point.deltaE },
+  { channel: 'DeltaE_ab_chroma', getValue: (point: CielabDiagnosticPoint) => point.deltaEChroma },
 ] as const;
+
+const CIELAB_DIAGNOSTIC_DESCRIPTORS = CIELAB_REPORT_DESCRIPTORS.filter((descriptor) => descriptor.channel.startsWith('Delta'));
+
+type CielabFittingDescriptor = (typeof CIELAB_REPORT_DESCRIPTORS)[number];
 
 function cielabValueAsNumber(value: number | ''): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
@@ -2656,7 +2702,7 @@ function groupedMedianCielabFitRows(points: CielabDiagnosticPoint[], getValue: (
     .sort((a, b) => a.x - b.x);
 }
 
-function buildCielabFittingRows(points: CielabDiagnosticPoint[]): XlsxRow[] {
+function buildCielabFittingRows(points: CielabDiagnosticPoint[], descriptors: readonly CielabFittingDescriptor[] = CIELAB_REPORT_DESCRIPTORS): XlsxRow[] {
   const rows: XlsxRow[] = [];
   const calibrationPoints = diagnosticCielabPointsForRole(points, 'C');
   const standardGroups = new Map<string, { sampleId: string; dilutionFactor: number; points: CielabDiagnosticPoint[] }>();
@@ -2676,7 +2722,7 @@ function buildCielabFittingRows(points: CielabDiagnosticPoint[]): XlsxRow[] {
     }
   });
 
-  CIELAB_DIAGNOSTIC_DESCRIPTORS.forEach((descriptor) => {
+  descriptors.forEach((descriptor) => {
     const groupedCalRows = groupedMedianCielabFitRows(calibrationPoints, descriptor.getValue);
     const xCal = groupedCalRows.map((point) => point.x);
     const yCal = groupedCalRows.map((point) => point.y);
@@ -2734,6 +2780,7 @@ function buildCielabFittingRows(points: CielabDiagnosticPoint[]): XlsxRow[] {
       const c0 = Number.isFinite(stdFit.intercept) && Number.isFinite(stdFit.slope) && Math.abs(stdFit.slope) > 1e-15
         ? group.dilutionFactor * (stdFit.intercept / stdFit.slope)
         : Number.NaN;
+      const c0Sd = c0SdFromFitRows(groupedStdRows, stdFit.slope, stdFit.intercept, group.dilutionFactor);
 
       rows.push({
         Channel: descriptor.channel,
@@ -2748,7 +2795,7 @@ function buildCielabFittingRows(points: CielabDiagnosticPoint[]): XlsxRow[] {
         LOD: '',
         LOQ: '',
         C0: finiteOrBlank(c0),
-        C0_sd: '',
+        C0_sd: c0Sd,
         sigma_cal: '',
         sigma_source: '',
         SNR: '',
@@ -2783,9 +2830,9 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: 'Dataset/Status/Applicability/Reason', Meaning: 'Applicability status for optional spatial diagnostics', Formula: 'applied or not_applied with reason text', Unit: 'text', 'Where used': '09_SPATIAL_DIAGNOSTICS', Notes: 'Unknown spatial diagnostics use PAbs_Red when unknown wells are available; empty spatial diagnostics require Python-style structural empty rows and remain not_applied in the webapp.' },
     { Term: 'n/intercept/slope_col/slope_row/R2/corr_col/corr_row', Meaning: 'Spatial-trend descriptors', Formula: 'linear trend of PAbs_Red versus row/column position', Unit: 'mixed', 'Where used': '09_SPATIAL_DIAGNOSTICS', Notes: 'Diagnostic only; does not alter quantitative results.' },
     { Term: 'Method/Family/ComparableGroup/CommonFactorsN/RankMode', Meaning: 'Method-comparison identifiers and comparable-score grouping', Formula: 'text labels and number of factors defining score comparability', Unit: 'mixed', 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: 'Scores are directly comparable only within the same ComparableGroup.' },
-    { Term: 'Score/ScoreFormula', Meaning: 'Common method-ranking score and formula descriptor', Formula: 'SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ) when LOQ is available', Unit: `1/${unitLabel}`, 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: 'Expected/reference values, SNR and clipping are not part of Score.' },
+    { Term: 'Score/ScoreFormula', Meaning: 'Common method-ranking score and formula descriptor', Formula: 'slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ) when LOQ is available', Unit: `1/${unitLabel}`, 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: 'Expected/reference values, SNR and clipping are not part of Score.' },
     { Term: 'R2_cal/R2_std_mean/m_cal/m_std_mean/SlopeAgreement', Meaning: 'Fit-quality and slope-agreement descriptors for method comparison', Formula: 'SlopeAgreement = min(abs(m_cal), abs(m_std_mean)) / max(abs(m_cal), abs(m_std_mean))', Unit: 'mixed', 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: '' },
-    { Term: 'C0_mean/C0_median/C0_sd_median', Meaning: 'Summary of available original-concentration estimates', Formula: 'mean/median of C0 estimates and median of associated C0_sd values', Unit: unitLabel, 'Where used': '10_METHOD_COMPARISON', Notes: 'C0_sd_median is blank because webapp uncertainty parity is not implemented.' },
+    { Term: 'C0_mean/C0_median/C0_sd_median', Meaning: 'Summary of available original-concentration estimates', Formula: 'mean/median of C0 estimates and median of associated C0_sd values', Unit: unitLabel, 'Where used': '10_METHOD_COMPARISON', Notes: 'C0_sd is populated when the current web fit covariance is available; robust IRLS covariance parity remains separate.' },
     { Term: 'Channel/FitType/ID/DF/n_points/m/q/R2/RMSE', Meaning: 'Diagnostic fitting identifiers and linear-fit descriptors', Formula: 'y = m x + q; R2 = 1 - SSE/SST; RMSE = sqrt(mean(residual^2))', Unit: 'mixed', 'Where used': '11_CIELAB_FITTING', Notes: 'Current webapp least-squares diagnostic fit; Python IRLS parity remains future work.' },
     { Term: 'LOD/LOQ', Meaning: 'Detection and quantification limits', Formula: 'LOD = 3 sigma_cal / abs(m); LOQ = 10 sigma_cal / abs(m)', Unit: unitLabel, 'Where used': '10_METHOD_COMPARISON, 11_CIELAB_FITTING', Notes: '' },
     { Term: 'sigma_cal/sigma_source/SNR', Meaning: 'Calibration noise estimate, source and slope-to-noise ratio', Formula: 'SNR = abs(m) / sigma_cal', Unit: 'mixed', 'Where used': '10_METHOD_COMPARISON, 11_CIELAB_FITTING', Notes: 'SNR is diagnostic and is not part of the common Score.' },
@@ -2894,7 +2941,7 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
       name: '11_CIELAB_FITTING',
       rows: tableRows(
         ['Channel', 'FitType', 'ID', 'DF', 'n_points', 'm', 'q', 'R2', 'RMSE', 'LOD', 'LOQ', 'C0', 'C0_sd', 'sigma_cal', 'sigma_source', 'SNR', 'beta_k', 'bias_index_k'],
-        buildCielabFittingRows(cielabPoints),
+        buildCielabFittingRows(cielabPoints, CIELAB_DIAGNOSTIC_DESCRIPTORS),
       ),
     },
     {
