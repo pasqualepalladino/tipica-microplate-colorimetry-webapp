@@ -5,3 +5,5 @@ dist
 *.local
 vite-dev.out.log
 vite-dev.err.log
+
+test_data/manual_comparison/
