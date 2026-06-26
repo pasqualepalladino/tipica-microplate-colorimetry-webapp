@@ -1839,6 +1839,84 @@ def shared_geometry_override_wells(geometry: dict[str, object]) -> str:
     return str(raw_value).strip()
 
 
+def append_shared_geometry_residual_source_audit(
+    report: list[str],
+    py_report: Workbook,
+    web_report: Workbook,
+    py_diag: Workbook,
+    web_diag: Workbook,
+) -> None:
+    py_stats = rows_as_dicts(py_diag.sheets.get("04_WELL_ROBUST_STATS", []))
+    web_stats = rows_as_dicts(web_diag.sheets.get("04_WELL_ROBUST_STATS", []))
+    py_bg = rows_as_dicts(py_diag.sheets.get("02_BG_SAMPLES", []))
+    web_bg = rows_as_dicts(web_diag.sheets.get("02_BG_SAMPLES", []))
+    py_raw = rows_as_dicts(py_report.sheets.get("04_RAW", []))
+    web_raw = rows_as_dicts(web_report.sheets.get("04_RAW", []))
+    py_cielab = rows_as_dicts(py_report.sheets.get("04_RAW", []))
+    web_cielab = rows_as_dicts(web_report.sheets.get("04_RAW", []))
+    py_fit = rows_as_dicts(py_report.sheets.get("06_FITTING", []))
+    web_fit = rows_as_dicts(web_report.sheets.get("06_FITTING", []))
+
+    report.extend(["", "## Shared-Geometry Residual Source Audit"])
+    report.append("- goal: separate which residual family remains after geometry override parity is already active, using the exported workbook rows instead of inventing new values.")
+
+    report.extend(["### ROI mask residuals under matched geometry"])
+    roi_n_used = field_diff_stats(py_stats, web_stats, ["Well"], "n_used")
+    roi_used_fraction = field_diff_stats(py_stats, web_stats, ["Well"], "used_fraction")
+    roi_rgb = [field_diff_stats(py_stats, web_stats, ["Well"], field) for field in ["Red_median", "Green_median", "Blue_median"]]
+    max_rgb = max((float(item["max_abs"]) for item in roi_rgb if math.isfinite(float(item["max_abs"]))), default=math.nan)
+    report.append(f"- ROI summary: n_used max_abs={stats_cell(roi_n_used['max_abs'])}, used_fraction max_abs={stats_cell(roi_used_fraction['max_abs'])}, RGB_median max_abs={stats_cell(max_rgb)}")
+    append_top_differences_table(report, "- worst ROI wells by `n_used` difference:", top_numeric_differences(py_stats, web_stats, ["Well"], "n_used", 5))
+    report.append("- interpretation: once shared geometry is matched, nonzero ROI counts and retained-fraction deltas still point to mask-selection or filtering differences rather than geometric placement itself.")
+
+    report.extend(["### BG mask/model residuals under matched geometry"])
+    bg_area = field_diff_stats(py_bg, web_bg, ["BG_Cell_Row", "BG_Cell_Col"], "area")
+    bg_rgb = [field_diff_stats(py_bg, web_bg, ["BG_Cell_Row", "BG_Cell_Col"], field) for field in ["Red_median_raw", "Green_median_raw", "Blue_median_raw"]]
+    max_bg_rgb = max((float(item["max_abs"]) for item in bg_rgb if math.isfinite(float(item["max_abs"]))), default=math.nan)
+    report.append(f"- BG summary: area max_abs={stats_cell(bg_area['max_abs'])}, RGB_median max_abs={stats_cell(max_bg_rgb)}")
+    append_top_differences_table(report, "- worst BG samples by area difference:", top_numeric_differences(py_bg, web_bg, ["BG_Cell_Row", "BG_Cell_Col"], "area", 5))
+    report.append("- interpretation: the remaining BG residuals are consistent with mask-area or sampled-pixel selection differences rather than a shared-geometry placement issue.")
+
+    report.extend(["### MeanW / MeanBG / PAbs causality bridge"])
+    for label in CHANNEL_LABELS:
+        meanw_stats = field_diff_stats(py_raw, web_raw, ["Well"], f"MeanW_{label}")
+        meanbg_stats = field_diff_stats(py_raw, web_raw, ["Well"], f"MeanBG_{label}")
+        pabs_stats = field_diff_stats(py_raw, web_raw, ["Well"], f"PAbs_{label}")
+        report.append(f"- {label}: MeanW max_abs={stats_cell(meanw_stats['max_abs'])}, MeanBG max_abs={stats_cell(meanbg_stats['max_abs'])}, PAbs max_abs={stats_cell(pabs_stats['max_abs'])}")
+    py_pabs_summaries = {label: pabs_formula_summary(py_raw, label) for label in CHANNEL_LABELS}
+    web_pabs_summaries = {label: pabs_formula_summary(web_raw, label) for label in CHANNEL_LABELS}
+    for label in CHANNEL_LABELS:
+        report.append(f"- PAbs_{label}: python_formula={py_pabs_summaries[label].status}, web_formula={web_pabs_summaries[label].status}, max_abs_residual={stats_cell(web_pabs_summaries[label].max_abs_residual)}")
+    report.append("- interpretation: when MeanW/MeanBG differ and PAbs residuals remain, the residual chain is upstream extraction -> PAbs reconstruction -> fit-input y, not a pure geometry parity issue.")
+
+    report.extend(["### PAbs correction traceability"])
+    correction_values = {"S0_applied": [], "ClipDelta": []}
+    for row in web_fit:
+        if row.get("Channel", "") in {pabs_method_name(label) for label in CHANNEL_LABELS}:
+            for field in correction_values:
+                value = as_float(row.get(field, ""))
+                if math.isfinite(value) and abs(value) > 1e-12:
+                    correction_values[field].append(value)
+    report.append(f"- low-signal correction evidence in web fit rows: S0_applied count={len(correction_values['S0_applied'])}, ClipDelta count={len(correction_values['ClipDelta'])}; examples={correction_values['S0_applied'][:3]} / {correction_values['ClipDelta'][:3]}")
+    report.append("- interpretation: exported raw MeanW/MeanBG are insufficient to prove corrected PAbs values end-to-end, so the remaining residual can be a correction-traceability gap as well as a raw-input mismatch.")
+
+    report.extend(["### CIELAB residual interpretation"])
+    for field in ["L", "a", "b", "DeltaE_ab", "DeltaE_ab_chroma"]:
+        stats = field_diff_stats(py_cielab, web_cielab, ["Well"], field)
+        report.append(f"- {field}: paired={stats['paired']}, mean_abs={stats_cell(stats['mean_abs'])}, max_abs={stats_cell(stats['max_abs'])}")
+    report.append("- interpretation: CIELAB residuals remain downstream of extraction and conversion semantics; current workbook data do not isolate whether the residual is RGB extraction, reference conversion, or naming/reporting.")
+
+    report.extend(["### Fit-input residual chain"])
+    fit_summary = shared_geometry_fit_input_summary(py_report, web_report)
+    report.append(f"- fit rows common={fit_summary['common_fit_rows']}, missing_in_web={fit_summary['missing_in_web']}, extra_in_web={fit_summary['extra_in_web']}, x_match_count={fit_summary['x_match_count']}, y_diff_max_abs={stats_cell(float(fit_summary['y_diff_max_abs']))}, y_diff_mean_abs={stats_cell(float(fit_summary['y_diff_mean_abs']))}")
+    report.append("- interpretation: fit-input y-values still differ even when row keys match, so the remaining ranking residual is plausibly downstream of upstream extracted values rather than a regression-formula mismatch.")
+
+    report.extend(["### Source-Code Residual Hypotheses"])
+    report.append("- Python source hypothesis: `_compute_well_robust_statistics`/`_extract_bg_samples` and `_build_raw_report_rows` establish the ROI/BG/PAbs pipeline, while the web path uses display/corrected values and low-signal correction metadata before fitting and ranking.")
+    report.append("- web source hypothesis: `buildReportRawRows` and `buildCielabDiagnosticPoints` can diverge from Python semantics in ROI filtering, BG sampling, PAbs correction traceability, and CIELAB reference selection even when geometry override is active.")
+    report.append("- practical next step: compare the exported intermediate rows for ROI pixels, BG samples, raw PAbs inputs, corrected PAbs intermediates, and fit-input y values side by side; the current report only exposes the residual symptoms, not the exact source rows.")
+
+
 def append_shared_geometry_override_residual_audit(
     report: list[str],
     py_report: Workbook,
@@ -1862,6 +1940,7 @@ def append_shared_geometry_override_residual_audit(
     if wells:
         report.append(f"- shared-geometry override wells: {wells}")
     report.append("- scope: compare residual extraction and downstream numeric fields after shared-geometry override geometry is active.")
+    append_shared_geometry_residual_source_audit(report, py_report, web_report, py_diag, web_diag)
 
     py_stats = rows_as_dicts(py_diag.sheets.get("04_WELL_ROBUST_STATS", []))
     web_stats = rows_as_dicts(web_diag.sheets.get("04_WELL_ROBUST_STATS", []))
