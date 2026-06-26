@@ -77,12 +77,33 @@ WEB_VALIDATION_EXTENSION_COLUMNS = {
     ],
 }
 
+CHANNEL_LABELS = ["Red", "Green", "Blue"]
+PABS_FORMULA_TOLERANCE = 1e-9
+
 
 @dataclass
 class Workbook:
     name: str
     sheets: dict[str, list[list[str]]]
     order: list[str]
+
+
+@dataclass
+class PAbsFormulaSummary:
+    label: str
+    status: str
+    source: str
+    meanw_field: str
+    meanbg_field: str
+    finite_inputs: int
+    mean_abs_residual: float
+    max_abs_residual: float
+    signed_mean_residual: float
+    residual_sd: float
+    residual_pattern: str
+    role_counts: dict[str, int]
+    warn_role_counts: dict[str, int]
+    worst_rows: list[dict[str, str]]
 
 
 def canonical_zip_name(name: str) -> str:
@@ -357,25 +378,227 @@ def keyed_numeric_summary(
     return lines
 
 
-def pabs_formula_residuals(rows: list[dict[str, str]]) -> list[str]:
-    lines: list[str] = []
-    for label in ["Red", "Green", "Blue"]:
-        residuals: list[float] = []
-        finite_inputs = 0
-        for row in rows:
-            well = as_float(row.get(f"MeanW_{label}", ""))
-            bg = as_float(row.get(f"MeanBG_{label}", ""))
-            pabs = as_float(row.get(f"PAbs_{label}", ""))
-            if math.isfinite(well) and math.isfinite(bg) and math.isfinite(pabs) and well > 0 and bg > 0:
-                finite_inputs += 1
-                residuals.append(abs(math.log10(bg / well) - pabs))
-        if residuals:
-            max_residual = max(residuals)
-            status = "PASS" if max_residual <= 1e-9 else "WARN"
-            lines.append(f"- PAbs_{label}: status={status}, formula_rows={finite_inputs}, mean_abs_residual={statistics.fmean(residuals):.8g}, max_abs_residual={max_residual:.8g}")
+def pabs_method_name(label: str) -> str:
+    return f"PAbs_{label}"
+
+
+def pabs_role(row: dict[str, str]) -> str:
+    value = str(row.get("Type", "")).strip().upper()
+    if value in {"CAL", "STD", "STANDARD", "CALIBRATION", "C"}:
+        return "calibration"
+    if value in {"A", "SA", "STDADD", "STANDARD_ADDITION", "ADDITION"}:
+        return "standard_addition"
+    if value in {"UNK", "UNKNOWN", "U"}:
+        return "unknown"
+    if value in {"BLK", "BLANK", "EMPTY", "E"}:
+        return "blank_empty"
+    return value.lower() if value else "unclassified"
+
+
+def increment_count(counts: dict[str, int], key: str) -> None:
+    counts[key] = counts.get(key, 0) + 1
+
+
+def role_counts_text(counts: dict[str, int]) -> str:
+    if not counts:
+        return "none"
+    return ", ".join(f"{key}={counts[key]}" for key in sorted(counts))
+
+
+def residual_pattern(residuals: list[float]) -> str:
+    if not residuals:
+        return "unavailable"
+    max_abs = max(abs(value) for value in residuals)
+    if max_abs <= PABS_FORMULA_TOLERANCE:
+        return "none/pass"
+    signed_mean = statistics.fmean(residuals)
+    sd = statistics.pstdev(residuals) if len(residuals) > 1 else 0.0
+    signs = {
+        1 if value > PABS_FORMULA_TOLERANCE else -1
+        for value in residuals
+        if abs(value) > PABS_FORMULA_TOLERANCE
+    }
+    if len(signs) <= 1 and sd <= max(1e-8, abs(signed_mean) * 0.10):
+        return "systematic"
+    return "well-dependent"
+
+
+def pabs_formula_summary(rows: list[dict[str, str]], label: str) -> PAbsFormulaSummary:
+    validation_meanw = f"Web_PAbs_Input_MeanW_{label}"
+    validation_meanbg = f"Web_PAbs_Input_MeanBG_{label}"
+    has_validation_inputs = any(validation_meanw in row or validation_meanbg in row for row in rows)
+    meanw_field = validation_meanw if has_validation_inputs else f"MeanW_{label}"
+    meanbg_field = validation_meanbg if has_validation_inputs else f"MeanBG_{label}"
+    source = "web validation input columns" if has_validation_inputs else "exported MeanW/MeanBG"
+    residuals: list[float] = []
+    role_counts: dict[str, int] = {}
+    warn_role_counts: dict[str, int] = {}
+    worst_rows: list[dict[str, str]] = []
+    finite_inputs = 0
+
+    for index, row in enumerate(rows):
+        well = as_float(row.get(meanw_field, ""))
+        bg = as_float(row.get(meanbg_field, ""))
+        pabs = as_float(row.get(f"PAbs_{label}", ""))
+        if not (math.isfinite(well) and math.isfinite(bg) and math.isfinite(pabs) and well > 0 and bg > 0):
+            continue
+        finite_inputs += 1
+        recomputed = math.log10(bg / well)
+        residual = pabs - recomputed
+        residuals.append(residual)
+        role = pabs_role(row)
+        increment_count(role_counts, role)
+        if abs(residual) > PABS_FORMULA_TOLERANCE:
+            increment_count(warn_role_counts, role)
+        worst_rows.append({
+            "row_index": str(index + 1),
+            "Well": row.get("Well", ""),
+            "ID": row.get("ID", ""),
+            "Type": row.get("Type", ""),
+            "Conc": row.get("Conc", ""),
+            "DF": row.get("DF", ""),
+            "MeanW": f"{well:.12g}",
+            "MeanBG": f"{bg:.12g}",
+            "PAbs": f"{pabs:.12g}",
+            "Recomputed": f"{recomputed:.12g}",
+            "Residual": f"{residual:.12g}",
+            "AbsResidual": f"{abs(residual):.12g}",
+        })
+
+    abs_residuals = [abs(value) for value in residuals]
+    max_abs = max(abs_residuals) if abs_residuals else math.nan
+    status = "PASS" if abs_residuals and max_abs <= PABS_FORMULA_TOLERANCE else ("WARN" if abs_residuals else "NO_DATA")
+    return PAbsFormulaSummary(
+        label=label,
+        status=status,
+        source=source,
+        meanw_field=meanw_field,
+        meanbg_field=meanbg_field,
+        finite_inputs=finite_inputs,
+        mean_abs_residual=statistics.fmean(abs_residuals) if abs_residuals else math.nan,
+        max_abs_residual=max_abs,
+        signed_mean_residual=statistics.fmean(residuals) if residuals else math.nan,
+        residual_sd=statistics.pstdev(residuals) if len(residuals) > 1 else (0.0 if residuals else math.nan),
+        residual_pattern=residual_pattern(residuals),
+        role_counts=role_counts,
+        warn_role_counts=warn_role_counts,
+        worst_rows=sorted(worst_rows, key=lambda item: as_float(item["AbsResidual"]), reverse=True)[:5],
+    )
+
+
+def append_pabs_formula_report(report: list[str], title: str, rows: list[dict[str, str]]) -> dict[str, PAbsFormulaSummary]:
+    report.append(title)
+    summaries: dict[str, PAbsFormulaSummary] = {}
+    for label in CHANNEL_LABELS:
+        summary = pabs_formula_summary(rows, label)
+        summaries[label] = summary
+        if summary.status == "NO_DATA":
+            report.append(f"- PAbs_{label}: no finite formula-check rows")
+            continue
+        report.append(
+            f"- PAbs_{label}: status={summary.status}, source={summary.source}, "
+            f"MeanW_field=`{summary.meanw_field}`, MeanBG_field=`{summary.meanbg_field}`, "
+            f"formula_rows={summary.finite_inputs}, mean_abs_residual={summary.mean_abs_residual:.8g}, "
+            f"max_abs_residual={summary.max_abs_residual:.8g}, signed_mean_residual={summary.signed_mean_residual:.8g}, "
+            f"residual_sd={summary.residual_sd:.8g}, pattern={summary.residual_pattern}, "
+            f"roles_checked=({role_counts_text(summary.role_counts)}), roles_warn=({role_counts_text(summary.warn_role_counts)})"
+        )
+        for row in summary.worst_rows[:3]:
+            report.append(
+                "  - worst: "
+                f"row={row['row_index']}, Well=`{row['Well']}`, ID=`{row['ID']}`, Type=`{row['Type']}`, "
+                f"Conc=`{row['Conc']}`, DF=`{row['DF']}`, exported_MeanW={row['MeanW']}, "
+                f"exported_MeanBG={row['MeanBG']}, exported_PAbs={row['PAbs']}, "
+                f"recomputed_log10_BG_over_W={row['Recomputed']}, residual_PAbs_minus_recomputed={row['Residual']}"
+            )
+    return summaries
+
+
+def nonzero_fit_values(rows: list[dict[str, str]], method: str, fields: list[str]) -> dict[str, list[float]]:
+    out = {field: [] for field in fields}
+    for row in rows:
+        if row.get("Channel", "") != method:
+            continue
+        for field in fields:
+            value = as_float(row.get(field, ""))
+            if math.isfinite(value) and abs(value) > PABS_FORMULA_TOLERANCE:
+                out[field].append(value)
+    return out
+
+
+def append_pabs_cause_lines(
+    report: list[str],
+    py_summaries: dict[str, PAbsFormulaSummary],
+    web_summaries: dict[str, PAbsFormulaSummary],
+    web_fit: list[dict[str, str]],
+) -> None:
+    report.append("- Cause classification detail:")
+    for label in CHANNEL_LABELS:
+        method = pabs_method_name(label)
+        py_status = py_summaries.get(label, PAbsFormulaSummary(label, "NO_DATA", "", "", "", 0, math.nan, math.nan, math.nan, math.nan, "", {}, {}, [])).status
+        web_summary = web_summaries.get(label)
+        correction_values = nonzero_fit_values(web_fit, method, ["S0_applied", "ClipDelta"])
+        correction_evidence = any(values for values in correction_values.values())
+        if not web_summary or web_summary.status == "NO_DATA":
+            report.append(f"  - {method}: no web formula evidence; class G.")
+        elif web_summary.status == "PASS":
+            report.append(f"  - {method}: workbook fields reconstruct PAbs directly; no formula mismatch detected.")
+        elif py_status == "PASS" and correction_evidence:
+            report.append(
+                f"  - {method}: class B/D/E with C for missing per-row correction intermediate. "
+                "Python fields reconstruct directly, but web fit rows contain nonzero correction metadata "
+                f"(S0_applied={correction_values['S0_applied'][:3]}, ClipDelta={correction_values['ClipDelta'][:3]}). "
+                "The web PAbs field is a corrected/display signal while exported MeanW/MeanBG remain extraction inputs."
+            )
+        elif py_status == "PASS":
+            report.append(
+                f"  - {method}: class B/D/E. Python reconstructs directly but web does not; inspect whether PAbs is corrected "
+                "or whether validation input columns are missing before treating this as mathematical processing mismatch."
+            )
         else:
-            lines.append(f"- PAbs_{label}: no finite formula-check rows")
-    return lines
+            report.append(f"  - {method}: class G. Both sides need inspection before assigning cause.")
+
+
+def finite_count(rows: list[dict[str, str]], field: str) -> int:
+    return sum(1 for row in rows if math.isfinite(as_float(row.get(field, ""))))
+
+
+def append_score_impact_trace(
+    report: list[str],
+    web_rep: list[dict[str, str]],
+    web_fit: list[dict[str, str]],
+    web_cmp: list[dict[str, str]],
+    web_summaries: dict[str, PAbsFormulaSummary],
+) -> None:
+    report.extend(["### Score impact trace"])
+    method_rank = {row.get("Method", ""): index + 1 for index, row in enumerate(web_cmp)}
+    cmp_by_method = {row.get("Method", ""): row for row in web_cmp}
+    for label in CHANNEL_LABELS:
+        method = pabs_method_name(label)
+        summary = web_summaries.get(label)
+        rep_median_field = f"PAbs_{label}_median"
+        rep_sd_field = f"PAbs_{label}_sd"
+        fit_rows = [row for row in web_fit if row.get("Channel", "") == method]
+        cmp = cmp_by_method.get(method, {})
+        report.append(
+            f"- {method}: raw_formula_status={summary.status if summary else 'NO_DATA'}, "
+            f"warn_roles=({role_counts_text(summary.warn_role_counts) if summary else 'none'}), "
+            f"replicate_median_finite={finite_count(web_rep, rep_median_field)}, "
+            f"replicate_sd_finite={finite_count(web_rep, rep_sd_field)}, "
+            f"fit_rows={len(fit_rows)}, method_rank={method_rank.get(method, 'missing')}, "
+            f"Score=`{cmp.get('Score', '')}`, BaseScore=`{cmp.get('BaseScore', '')}`, "
+            f"C0_median=`{cmp.get('C0_median', '')}`"
+        )
+        for row in fit_rows[:3]:
+            report.append(
+                f"  - fit: FitType=`{row.get('FitType', '')}`, ID=`{row.get('ID', '')}`, DF=`{row.get('DF', '')}`, "
+                f"n_points=`{row.get('n_points', '')}`, m=`{row.get('m', '')}`, q=`{row.get('q', '')}`, "
+                f"R2=`{row.get('R2', '')}`, C0=`{row.get('C0', '')}`, C0_sd=`{row.get('C0_sd', '')}`"
+            )
+    report.append(
+        "- Interpretation: this trace identifies where corrected or mismatched PAbs values are consumed. "
+        "It does not prove score causality until a fresh web ZIP exposes or compares the exact per-row corrected PAbs intermediates."
+    )
 
 
 def method_header_order_status(py_rows: list[list[str]], web_rows: list[list[str]]) -> str:
@@ -430,11 +653,12 @@ def append_process_parity_section(
     report.append("- Classification: nonzero MeanW/MeanBG or ROI-count differences point to geometry/ROI/BG input mismatch before PAbs math.")
 
     report.extend(["### 2. PAbs formula parity"])
-    report.append("- Python workbook internal formula residuals:")
-    report.extend(pabs_formula_residuals(py_raw))
-    report.append("- Web workbook internal formula residuals:")
-    report.extend(pabs_formula_residuals(web_raw))
-    report.append("- Classification: PASS means the workbook fields satisfy PAbs = log10(MeanBG / MeanW). WARN means PAbs was computed from a different or corrected internal value than the exported MeanW/MeanBG pair, or the workbook field mapping needs audit.")
+    py_pabs_summaries = append_pabs_formula_report(report, "- Python workbook internal formula residuals:", py_raw)
+    web_pabs_summaries = append_pabs_formula_report(report, "- Web workbook internal formula residuals:", web_raw)
+    report.append("- Formula convention checked here: `PAbs = log10(MeanBG / MeanW)` using the named exported input columns.")
+    report.append("- Classification: PASS means the workbook fields reconstruct the exported PAbs directly. WARN means the exported PAbs is not reconstructible from those fields alone; if correction metadata is present, classify as corrected-output/intermediate-mapping until per-row corrected inputs are available.")
+    append_pabs_cause_lines(report, py_pabs_summaries, web_pabs_summaries, web_fit)
+    append_score_impact_trace(report, web_rep, web_fit, web_cmp, web_pabs_summaries)
 
     report.extend(["### 3. CIELAB / Delta descriptor parity"])
     report.extend(keyed_numeric_summary(py_raw, web_raw, ["Well"], [
@@ -509,6 +733,7 @@ def append_cause_classification(report: list[str]) -> None:
         "- `floor_source` JSON vs `manual_D_projection`: **A/D unresolved**. Likely different geometry provenance or reporting semantics; requires shared-geometry import/export comparison.",
         "- `mouth_r`, `floor_r`, `cyl_r_bg` differences: **A/B unresolved**. Treat as geometry/input-pixel mismatch unless a shared-geometry test proves web interpretation differs.",
         "- `C0_sd` blank in web ZIP: **D or stale artifact**. Recent code addressed this, but this report compares `web_after_36U.zip`; regenerate the web ZIP before deciding if mismatch remains.",
+        "- PAbs Red/Green formula WARN with Python PASS and web Blue PASS: **B/D/E with possible C** when web low-signal correction metadata is present. The likely cause is corrected/display PAbs compared against raw extraction `MeanW`/`MeanBG`; per-row corrected PAbs input/intermediate columns are needed before calling this a mathematical formula mismatch.",
         "- Method-comparison `BaseScore`/ranking/name differences: **D/B depending on fresh export**. Header/name/reporting differences are D; residual score differences after a fresh export may indicate B or input-data differences.",
         "- CIELAB fitting extra or differently named rows in web ZIP: **D** for naming/reporting; residual numerical differences after row-name parity may be **A/B**.",
         "- `BG_STAT_MASK` overlay vs Python binary mask: **E/F** unless the web output intentionally remains documented as an overlay.",
