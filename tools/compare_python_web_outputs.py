@@ -1772,13 +1772,241 @@ def append_shared_geometry_parity_section(
         "- interpretation: center placement is much closer than radius/background geometry. The radius and `cyl_r_bg` deltas are large enough to explain ROI `n_used` differences and can plausibly drive MeanW/MeanBG drift before PAbs/fitting/ranking.",
         "- source semantics inspected: Python `roi_geometry.py` projects manual floor circles and reports `manual_D_projection`; web diagnostics currently report JSON-derived floor geometry and derive mouth/floor/background radii through web geometry/background helpers.",
     ])
-    report.extend([
-        "",
-        "## Shared Geometry Next Step",
-        "- implement a developer-only shared-geometry import/override path, using `python_geometry_canonical.json` as the source, so the web extraction can be rerun with Python centers/radii/background exclusion geometry before changing any scoring, fitting, PAbs, C0, dilution, or marker logic.",
-        "- current limitation: the existing exported web project/geometry path cannot by itself force Python-equivalent per-well `mouth_r`, `floor_r`, `floor_r_geom`, and `cyl_r_bg` values, so a true shared-geometry run is not yet available without code support.",
-    ])
+    if not web_override_active:
+        report.extend([
+            "",
+            "## Shared Geometry Next Step",
+            "- implement a developer-only shared-geometry import/override path, using `python_geometry_canonical.json` as the source, so the web extraction can be rerun with Python centers/radii/background exclusion geometry before changing any scoring, fitting, PAbs, C0, dilution, or marker logic.",
+            "- current limitation: the existing exported web project/geometry path cannot by itself force Python-equivalent per-well `mouth_r`, `floor_r`, `floor_r_geom`, and `cyl_r_bg` values, so a true shared-geometry run is not yet available without code support.",
+        ])
     return stats
+
+
+def shared_geometry_override_active(geometry: dict[str, object]) -> bool:
+    plate_geometry = geometry.get("plate_geometry", {})
+    if not isinstance(plate_geometry, dict):
+        return False
+    raw_value = plate_geometry.get("shared_geometry_override_active", plate_geometry.get("SharedGeometryOverrideActive", plate_geometry.get("shared_geometry_override", "")))
+    if raw_value is None:
+        return False
+    return str(raw_value).strip().lower() in {"1", "1.0", "true", "yes", "y"}
+
+
+def shared_geometry_override_source(geometry: dict[str, object]) -> str:
+    plate_geometry = geometry.get("plate_geometry", {})
+    if not isinstance(plate_geometry, dict):
+        return ""
+    return str(plate_geometry.get("shared_geometry_override_source", plate_geometry.get("SharedGeometryOverrideSource", "")) or "").strip()
+
+
+def shared_geometry_fit_input_summary(py_report: Workbook, web_report: Workbook) -> dict[str, object]:
+    py_rep = rows_as_dicts(py_report.sheets.get("05_REPLICATES_MEAN", []))
+    web_rep = rows_as_dicts(web_report.sheets.get("05_REPLICATES_MEAN", []))
+    py_fit = rows_as_dicts(py_report.sheets.get("06_FITTING", []))
+    web_fit = rows_as_dicts(web_report.sheets.get("06_FITTING", []))
+    py_by_fit = {fit_key(row): row for row in py_fit}
+    web_by_fit = {fit_key(row): row for row in web_fit}
+    common = sorted(set(py_by_fit) & set(web_by_fit))
+    x_match_count = 0
+    y_diff_max: list[float] = []
+    for key in common:
+        py_points = replicate_fit_points(py_rep, py_by_fit[key])
+        web_points = replicate_fit_points(web_rep, web_by_fit[key])
+        if py_points and web_points and len(py_points) == len(web_points) and [x for x, _ in py_points] == [x for x, _ in web_points]:
+            x_match_count += 1
+        y_diffs = [abs(py_points[index][1] - web_points[index][1]) for index in range(min(len(py_points), len(web_points))) if py_points[index][0] == web_points[index][0]]
+        if y_diffs:
+            y_diff_max.append(max(y_diffs))
+    return {
+        "common_fit_rows": len(common),
+        "missing_in_web": len(set(py_by_fit) - set(web_by_fit)),
+        "extra_in_web": len(set(web_by_fit) - set(py_by_fit)),
+        "x_match_count": x_match_count,
+        "y_diff_max_abs": max(y_diff_max) if y_diff_max else math.nan,
+        "y_diff_mean_abs": statistics.fmean(y_diff_max) if y_diff_max else math.nan,
+    }
+
+
+def shared_geometry_override_wells(geometry: dict[str, object]) -> str:
+    plate_geometry = geometry.get("plate_geometry", {})
+    if not isinstance(plate_geometry, dict):
+        return ""
+    raw_value = plate_geometry.get("shared_geometry_override_wells", plate_geometry.get("SharedGeometryOverrideWells", ""))
+    if raw_value is None:
+        return ""
+    if isinstance(raw_value, (int, float)) and float(raw_value).is_integer():
+        return str(int(raw_value))
+    return str(raw_value).strip()
+
+
+def append_shared_geometry_override_residual_audit(
+    report: list[str],
+    py_report: Workbook,
+    web_report: Workbook,
+    py_diag: Workbook,
+    web_diag: Workbook,
+    py_geometry: dict[str, object],
+    web_geometry: dict[str, object],
+) -> None:
+    if not (shared_geometry_override_active(py_geometry) or shared_geometry_override_active(web_geometry)):
+        return
+
+    py_override = shared_geometry_override_active(py_geometry)
+    web_override = shared_geometry_override_active(web_geometry)
+    source = shared_geometry_override_source(web_geometry) or shared_geometry_override_source(py_geometry)
+    wells = shared_geometry_override_wells(web_geometry) or shared_geometry_override_wells(py_geometry)
+
+    report.extend(["", "## Shared-Geometry Override Residual Audit"])
+    report.append(f"- shared-geometry override active: python={py_override}, web={web_override}")
+    report.append(f"- shared-geometry override source: `{source}`")
+    if wells:
+        report.append(f"- shared-geometry override wells: {wells}")
+    report.append("- scope: compare residual extraction and downstream numeric fields after shared-geometry override geometry is active.")
+
+    py_stats = rows_as_dicts(py_diag.sheets.get("04_WELL_ROBUST_STATS", []))
+    web_stats = rows_as_dicts(web_diag.sheets.get("04_WELL_ROBUST_STATS", []))
+    py_bg = rows_as_dicts(py_diag.sheets.get("02_BG_SAMPLES", []))
+    web_bg = rows_as_dicts(web_diag.sheets.get("02_BG_SAMPLES", []))
+    py_raw = rows_as_dicts(py_report.sheets.get("04_RAW", []))
+    web_raw = rows_as_dicts(web_report.sheets.get("04_RAW", []))
+    py_cielab = rows_as_dicts(py_diag.sheets.get("11_CIELAB_FITTING", []))
+    web_cielab = rows_as_dicts(web_diag.sheets.get("11_CIELAB_FITTING", []))
+    py_cmp = rows_as_dicts(py_report.sheets.get("07_METHOD_COMPARISON", []))
+    web_cmp = rows_as_dicts(web_report.sheets.get("07_METHOD_COMPARISON", []))
+    web_fit = rows_as_dicts(web_report.sheets.get("06_FITTING", []))
+
+    py_roi_by_key = key_rows(py_stats, ["Well"])
+    web_roi_by_key = key_rows(web_stats, ["Well"])
+    common_roi = sorted(set(py_roi_by_key) & set(web_roi_by_key))
+    report.append(
+        f"- ROI stats keys: python={len(py_roi_by_key)}, web={len(web_roi_by_key)}, common={len(common_roi)}, "
+        f"missing_in_web={len(set(py_roi_by_key) - set(web_roi_by_key))}, extra_in_web={len(set(web_roi_by_key) - set(py_roi_by_key))}"
+    )
+    for label, field in [
+        ("ROI n_used", "n_used"),
+        ("ROI used_fraction", "used_fraction"),
+        ("ROI Red median", "Red_median"),
+        ("ROI Green median", "Green_median"),
+        ("ROI Blue median", "Blue_median"),
+    ]:
+        stats = field_diff_stats(py_stats, web_stats, ["Well"], field)
+        report.append(f"- {label}: paired={stats['paired']}, mean_abs={stats_cell(stats['mean_abs'])}, max_abs={stats_cell(stats['max_abs'])}")
+
+    py_bg_by_key = key_rows(py_bg, ["BG_Cell_Row", "BG_Cell_Col"])
+    web_bg_by_key = key_rows(web_bg, ["BG_Cell_Row", "BG_Cell_Col"])
+    common_bg = sorted(set(py_bg_by_key) & set(web_bg_by_key))
+    report.append(
+        f"- BG sample keys: python={len(py_bg_by_key)}, web={len(web_bg_by_key)}, common={len(common_bg)}, "
+        f"missing_in_web={len(set(py_bg_by_key) - set(web_bg_by_key))}, extra_in_web={len(set(web_bg_by_key) - set(py_bg_by_key))}"
+    )
+    for label, field in [
+        ("BG Red median raw", "Red_median_raw"),
+        ("BG Green median raw", "Green_median_raw"),
+        ("BG Blue median raw", "Blue_median_raw"),
+        ("BG area", "area"),
+    ]:
+        stats = field_diff_stats(py_bg, web_bg, ["BG_Cell_Row", "BG_Cell_Col"], field)
+        report.append(f"- {label}: paired={stats['paired']}, mean_abs={stats_cell(stats['mean_abs'])}, max_abs={stats_cell(stats['max_abs'])}")
+
+    report.append("- BG sample count diagnostics are especially useful when web `Web_Sampled_Final_Accepted_Pixels` is present, because it separates mask area from sampled model pixels.")
+    if any("Web_Sampled_Final_Accepted_Pixels" in row for row in web_bg):
+        report.append("- web BG sampled-pixel counters exist; compare these to Python `area` and web full-resolution area to distinguish mask-area mismatch from sample-selection mismatch.")
+
+    report.extend(["", "## Shared-Geometry Selection Result"])
+    for label in CHANNEL_LABELS:
+        meanw_stats = field_diff_stats(py_raw, web_raw, ["Well"], f"MeanW_{label}")
+        meanbg_stats = field_diff_stats(py_raw, web_raw, ["Well"], f"MeanBG_{label}")
+        pabs_stats = field_diff_stats(py_raw, web_raw, ["Well"], f"PAbs_{label}")
+        report.append(
+            f"- {label}: MeanW max_abs={stats_cell(meanw_stats['max_abs'])}, "
+            f"MeanBG max_abs={stats_cell(meanbg_stats['max_abs'])}, "
+            f"PAbs max_abs={stats_cell(pabs_stats['max_abs'])}"
+        )
+    py_pabs_summaries = {label: pabs_formula_summary(py_raw, label) for label in CHANNEL_LABELS}
+    web_pabs_summaries = {label: pabs_formula_summary(web_raw, label) for label in CHANNEL_LABELS}
+    for label in CHANNEL_LABELS:
+        py_status = py_pabs_summaries[label].status
+        web_status = web_pabs_summaries[label].status
+        report.append(
+            f"- PAbs_{label}: python_formula={py_status}, web_formula={web_status}, "
+            f"web_source={web_pabs_summaries[label].source}, "
+            f"max_abs_residual={stats_cell(web_pabs_summaries[label].max_abs_residual)}"
+        )
+
+    correction_values = {
+        "S0_applied": [],
+        "ClipDelta": [],
+    }
+    for row in web_fit:
+        if row.get("Channel", "") in {pabs_method_name(label) for label in CHANNEL_LABELS}:
+            for field in correction_values:
+                value = as_float(row.get(field, ""))
+                if math.isfinite(value) and abs(value) > 1e-12:
+                    correction_values[field].append(value)
+    report.append(
+        f"- low-signal correction evidence: S0_applied count={len(correction_values['S0_applied'])}, "
+        f"ClipDelta count={len(correction_values['ClipDelta'])}, "
+        f"examples S0={correction_values['S0_applied'][:3]}, ClipDelta={correction_values['ClipDelta'][:3]}"
+    )
+
+    report.extend(["", "## Residual Blocker After Shared Geometry"])
+    py_red_stats = field_diff_stats(py_stats, web_stats, ["Well"], "Red_median")
+    py_green_stats = field_diff_stats(py_stats, web_stats, ["Well"], "Green_median")
+    py_blue_stats = field_diff_stats(py_stats, web_stats, ["Well"], "Blue_median")
+    max_rgb_median = max(py_red_stats["max_abs"], py_green_stats["max_abs"], py_blue_stats["max_abs"])
+    n_used_stats = field_diff_stats(py_stats, web_stats, ["Well"], "n_used")
+    used_fraction_stats = field_diff_stats(py_stats, web_stats, ["Well"], "used_fraction")
+    report.append(f"- ROI residuals: n_used max_abs={stats_cell(n_used_stats['max_abs'])}, used_fraction max_abs={stats_cell(used_fraction_stats['max_abs'])}, RGB max_abs={stats_cell(max_rgb_median)}")
+
+    for label in ["L", "a", "b", "DeltaE_ab", "DeltaE_ab_chroma"]:
+        stats = field_diff_stats(py_cielab, web_cielab, ["Channel", "FitType", "ID", "DF"], label)
+        report.append(f"- CIELAB {label}: paired={stats['paired']}, mean_abs={stats_cell(stats['mean_abs'])}, max_abs={stats_cell(stats['max_abs'])}")
+
+    selected_py = next((row.get("Method", "") for row in py_cmp if str(row.get("Selected", "")).strip().lower() in {"1", "1.0", "true", "yes"}), "")
+    selected_web = next((row.get("Method", "") for row in web_cmp if str(row.get("Selected", "")).strip().lower() in {"1", "1.0", "true", "yes"}), "")
+    report.append(f"- selected method: Python=`{selected_py}`, Web=`{selected_web}`, canonical_match={canonical_method_name(selected_py) == canonical_method_name(selected_web)}")
+
+    if all(math.isfinite(float(stats["max_abs"])) and float(stats["max_abs"]) == 0 for stats in [
+        field_diff_stats(py_stats, web_stats, ["Well"], "n_used"),
+        field_diff_stats(py_stats, web_stats, ["Well"], "used_fraction"),
+        field_diff_stats(py_raw, web_raw, ["Well"], "MeanW_Red"),
+        field_diff_stats(py_raw, web_raw, ["Well"], "MeanW_Green"),
+        field_diff_stats(py_raw, web_raw, ["Well"], "MeanW_Blue"),
+    ]):
+        report.append("- first residual blocker after shared geometry: multiparameter downstream fit-input or PAbs/CieLab residual parity, not geometry/radii.")
+    else:
+        report.append("- first residual blocker after shared geometry: upstream ROI/BG/fitting input parity (mask selection, filtering, or PAbs correction traceability).")
+
+    fit_summary = shared_geometry_fit_input_summary(py_report, web_report)
+    report.append(
+        f"- fit input rows common={fit_summary['common_fit_rows']}, "
+        f"missing_in_web={fit_summary['missing_in_web']}, extra_in_web={fit_summary['extra_in_web']}, "
+        f"x_match_count={fit_summary['x_match_count']}, "
+        f"y_diff_max_abs={stats_cell(float(fit_summary['y_diff_max_abs']))}, "
+        f"y_diff_mean_abs={stats_cell(float(fit_summary['y_diff_mean_abs']))}"
+    )
+
+    py_cmp_by_method = method_rows_by_canonical_key(py_cmp)
+    web_cmp_by_method = method_rows_by_canonical_key(web_cmp)
+    common_methods = sorted(set(py_cmp_by_method) & set(web_cmp_by_method))
+    missing_methods = sorted(set(py_cmp_by_method) - set(web_cmp_by_method))
+    extra_methods = sorted(set(web_cmp_by_method) - set(py_cmp_by_method))
+    alias_pairs = [
+        (py_cmp_by_method[key].get("Method", ""), web_cmp_by_method[key].get("Method", ""))
+        for key in common_methods
+        if has_method_alias_difference(py_cmp_by_method[key], web_cmp_by_method[key])
+    ]
+    score_diff_rows: list[tuple[str, list[str]]] = []
+    for key in common_methods:
+        py_row = py_cmp_by_method[key]
+        web_row = web_cmp_by_method[key]
+        score_fields = numeric_field_diffs(py_row, web_row, ["Score", "BaseScore"], tolerance=1e-8)
+        if score_fields:
+            score_diff_rows.append((key, score_fields))
+    report.append(f"- score/base score mismatches: count={len(score_diff_rows)}")
+    for key, fields in score_diff_rows[:5]:
+        report.append(f"  - `{key}` score fields differ: {fields}")
+    report.append("- interpretation: under active shared-geometry override, remaining ROI/BG/MeanW/MeanBG/PAbs/CIELAB/fit-input residuals indicate whether the override application was complete or whether downstream correction/selection semantics still differ.")
 
 
 def append_geometry_provenance_audit(report: list[str], py_diag: Workbook, web_diag: Workbook) -> dict[str, float]:
@@ -2820,6 +3048,7 @@ def compare(
         web_geometry = canonical_geometry_from_diagnostics("web", web_zip, web_diag)
         shared_geometry_files = write_shared_geometry_diagnostics(py_geometry, web_geometry, shared_geometry_dir)
         append_shared_geometry_parity_section(report, py_geometry, web_geometry, shared_geometry_files)
+        append_shared_geometry_override_residual_audit(report, py_report, web_report, py_diag, web_diag, py_geometry, web_geometry)
 
         report.extend(["", "## BG Sample Comparison"])
         py_bg = rows_as_dicts(py_diag.sheets.get("02_BG_SAMPLES", []))
