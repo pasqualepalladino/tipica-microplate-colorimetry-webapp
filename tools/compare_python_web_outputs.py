@@ -853,6 +853,7 @@ def append_full_artifact_audit_conclusion(
         f"- selected_method_web={web_selected}",
         f"- selected_method_differs={py_selected != web_selected}",
         f"- first_pngs_for_human_inspection={visual_priority}",
+        "- visual_policy_note: PNG visual differences should be judged by scientific visual parity, not pixel identity alone. A PNG can be acceptable if it conveys all scientific information correctly and does not omit, hallucinate, or mislabel information; BG_STAT_MASK may remain visually different if the web version intentionally and clearly shows selected pixels more readably.",
         "- first_scientific_blocker: resolve workbook numeric/input parity before treating plot and caption differences as final artifact mismatches.",
     ])
 
@@ -1336,6 +1337,469 @@ def keyed_numeric_summary(
         else:
             lines.append(f"- {label}: no paired finite values, python_finite={py_finite}, web_finite={web_finite}")
     return lines
+
+
+def paired_by_keys(
+    py_rows: list[dict[str, str]],
+    web_rows: list[dict[str, str]],
+    key_fields: list[str],
+) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]], list[str]]:
+    py_by_key = key_rows(py_rows, key_fields)
+    web_by_key = key_rows(web_rows, key_fields)
+    return py_by_key, web_by_key, sorted(set(py_by_key) & set(web_by_key))
+
+
+def field_diff_stats(
+    py_rows: list[dict[str, str]],
+    web_rows: list[dict[str, str]],
+    key_fields: list[str],
+    field: str,
+) -> dict[str, float | int]:
+    py_by_key, web_by_key, common = paired_by_keys(py_rows, web_rows, key_fields)
+    diffs: list[float] = []
+    signed: list[float] = []
+    for key in common:
+        py_val = as_float(py_by_key[key].get(field, ""))
+        web_val = as_float(web_by_key[key].get(field, ""))
+        if math.isfinite(py_val) and math.isfinite(web_val):
+            delta = web_val - py_val
+            signed.append(delta)
+            diffs.append(abs(delta))
+    return {
+        "paired": len(diffs),
+        "mean_abs": statistics.fmean(diffs) if diffs else math.nan,
+        "median_abs": statistics.median(diffs) if diffs else math.nan,
+        "max_abs": max(diffs) if diffs else math.nan,
+        "signed_mean": statistics.fmean(signed) if signed else math.nan,
+    }
+
+
+def stats_cell(value: float | int) -> str:
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and math.isfinite(value):
+        return f"{value:.8g}"
+    return "NA"
+
+
+def first_common_values(
+    py_rows: list[dict[str, str]],
+    web_rows: list[dict[str, str]],
+    key_fields: list[str],
+    field: str,
+) -> tuple[str, str]:
+    py_by_key, web_by_key, common = paired_by_keys(py_rows, web_rows, key_fields)
+    if not common:
+        return "", ""
+    key = common[0]
+    return py_by_key[key].get(field, ""), web_by_key[key].get(field, "")
+
+
+def top_numeric_differences(
+    py_rows: list[dict[str, str]],
+    web_rows: list[dict[str, str]],
+    key_fields: list[str],
+    field: str,
+    limit: int = 10,
+) -> list[tuple[str, float, str, str]]:
+    py_by_key, web_by_key, common = paired_by_keys(py_rows, web_rows, key_fields)
+    rows: list[tuple[str, float, str, str]] = []
+    for key in common:
+        py_raw = py_by_key[key].get(field, "")
+        web_raw = web_by_key[key].get(field, "")
+        py_val = as_float(py_raw)
+        web_val = as_float(web_raw)
+        if math.isfinite(py_val) and math.isfinite(web_val):
+            rows.append((key, abs(web_val - py_val), py_raw, web_raw))
+    return sorted(rows, key=lambda item: item[1], reverse=True)[:limit]
+
+
+def append_top_differences_table(
+    report: list[str],
+    title: str,
+    rows: list[tuple[str, float, str, str]],
+) -> None:
+    report.append(title)
+    if not rows:
+        report.append("- no paired finite differences available")
+        return
+    report.append("| key | abs_diff | Python | Web |")
+    report.append("|---|---:|---:|---:|")
+    for key, diff, py_value, web_value in rows:
+        report.append(f"| `{key}` | {diff:.8g} | `{py_value}` | `{web_value}` |")
+
+
+def geometry_likely_consequence(field: str) -> str:
+    if field in {"floor_source"}:
+        return "geometry provenance differs before ROI/BG masks are built"
+    if field in {"mouth_r", "floor_r", "cyl_r_bg", "mouth_r_geom", "floor_r_geom"}:
+        return "sufficient to change ROI size, ROI pixel count, and inter-well BG exclusion"
+    if field in {"mouth_cx", "mouth_cy", "floor_cx", "floor_cy", "shift_px"}:
+        return "can shift selected ROI/BG pixels even if medians remain close"
+    if field in {"local_pitch_px", "pitch_px"}:
+        return "changes derived radius and background-cell projection"
+    return "diagnostic/provenance field"
+
+
+def append_geometry_provenance_audit(report: list[str], py_diag: Workbook, web_diag: Workbook) -> dict[str, float]:
+    py_qc = rows_as_dicts(py_diag.sheets.get("05_GEOMETRY_QC", []))
+    web_qc = rows_as_dicts(web_diag.sheets.get("05_GEOMETRY_QC", []))
+    py_bottom = rows_as_dicts(py_diag.sheets.get("06_WELL_BOTTOM", []))
+    web_bottom = rows_as_dicts(web_diag.sheets.get("06_WELL_BOTTOM", []))
+    py_plate = rows_as_dicts(py_diag.sheets.get("07_PLATE_GEOMETRY", []))
+    web_plate = rows_as_dicts(web_diag.sheets.get("07_PLATE_GEOMETRY", []))
+    report.extend(["### 1. Geometry"])
+    report.append("- keys compared: `Well` for 05_GEOMETRY_QC and 06_WELL_BOTTOM; reported key/value rows for 07_PLATE_GEOMETRY when present.")
+    report.append("- source audit: Python `reference_python/roi_geometry.py` computes `floor_source='manual_D_projection'` when manual D floor circles are provided, with mouth/floor masks from mouth-floor intersection; web current ZIP reports JSON-derived geometry provenance.")
+    report.append("| field | mean_abs | max_abs | first-row Python | first-row Web | likely consequence |")
+    report.append("|---|---:|---:|---|---|---|")
+    fields = [
+        ("floor_source", "floor_source", py_qc, web_qc),
+        ("pitch_px", "local_pitch_px", py_qc, web_qc),
+        ("mouth_r", "mouth_r", py_qc, web_qc),
+        ("floor_r", "floor_r", py_qc, web_qc),
+        ("shift_px", "shift_px", py_qc, web_qc),
+        ("mouth_to_floor_ratio", "shift_frac_of_mouth_r", py_qc, web_qc),
+        ("floor_to_mouth_ratio", "floor_to_mouth_r_ratio", py_qc, web_qc),
+        ("local_pitch_px", "local_pitch_px", py_bottom, web_bottom),
+        ("cyl_r_bg", "cyl_r_bg", py_bottom, web_bottom),
+        ("mouth_cx", "mouth_cx", py_bottom, web_bottom),
+        ("mouth_cy", "mouth_cy", py_bottom, web_bottom),
+        ("floor_cx", "floor_cx", py_bottom, web_bottom),
+        ("floor_cy", "floor_cy", py_bottom, web_bottom),
+        ("mouth_r_geom", "mouth_r_geom", py_bottom, web_bottom),
+        ("floor_r_geom", "floor_r_geom", py_bottom, web_bottom),
+    ]
+    metrics: dict[str, float] = {}
+    for label, field, py_rows, web_rows in fields:
+        py_first, web_first = first_common_values(py_rows, web_rows, ["Well"], field)
+        if field == "floor_source":
+            mean_abs = math.nan
+            max_abs = math.nan
+        else:
+            stats = field_diff_stats(py_rows, web_rows, ["Well"], field)
+            mean_abs = float(stats["mean_abs"])
+            max_abs = float(stats["max_abs"])
+            metrics[label] = max_abs
+        report.append(
+            f"| {label} | {stats_cell(mean_abs)} | {stats_cell(max_abs)} | `{py_first}` | `{web_first}` | {geometry_likely_consequence(field)} |"
+        )
+    if py_plate or web_plate:
+        report.append("- 07_PLATE_GEOMETRY global parameters:")
+        report.extend(keyed_numeric_summary(py_plate, web_plate, ["key"], [("value", "value")]))
+    report.append("- Known issue highlight: Python first-row `floor_source` is expected to be `manual_D_projection`; web first-row `floor_source` in the current comparison ZIP is `JSON`/JSON-derived. Strong mouth/floor/background-radius differences are enough by themselves to explain ROI count differences and can plausibly explain MeanW/MeanBG drift.")
+    report.append("- stage classification: A geometry/provenance, with downstream B ROI pixel selection and C BG model consequences.")
+    return metrics
+
+
+def append_roi_robust_stat_audit(report: list[str], py_diag: Workbook, web_diag: Workbook) -> dict[str, float]:
+    py_stats = rows_as_dicts(py_diag.sheets.get("04_WELL_ROBUST_STATS", []))
+    web_stats = rows_as_dicts(web_diag.sheets.get("04_WELL_ROBUST_STATS", []))
+    report.extend(["### 2. Well ROI robust statistics"])
+    report.append("- keys compared: `Well`; fields compared include ROI counts, retained fraction, raw RGB medians/means, and clipping/highlight diagnostics when exported.")
+    py_by_key, web_by_key, common = paired_by_keys(py_stats, web_stats, ["Well"])
+    report.append(f"- matched/common/missing/extra: python={len(py_by_key)}, web={len(web_by_key)}, common={len(common)}, missing_in_web={len(set(py_by_key)-set(web_by_key))}, extra_in_web={len(set(web_by_key)-set(py_by_key))}")
+    for label, field in [
+        ("n_total/n_roi", "n_roi"),
+        ("n_core", "n_core"),
+        ("n_used", "n_used"),
+        ("used_fraction", "used_fraction"),
+        ("Red_median", "Red_median"),
+        ("Green_median", "Green_median"),
+        ("Blue_median", "Blue_median"),
+        ("Red_mean", "Red_mean"),
+        ("Green_mean", "Green_mean"),
+        ("Blue_mean", "Blue_mean"),
+    ]:
+        stats = field_diff_stats(py_stats, web_stats, ["Well"], field)
+        report.append(f"- {label}: paired={stats_cell(stats['paired'])}, mean_abs={stats_cell(stats['mean_abs'])}, max_abs={stats_cell(stats['max_abs'])}, signed_mean={stats_cell(stats['signed_mean'])}")
+    append_top_differences_table(report, "- first 10 worst wells by `n_used` difference:", top_numeric_differences(py_stats, web_stats, ["Well"], "n_used"))
+    rgb_worst: list[tuple[str, float, str, str]] = []
+    for field in ["Red_median", "Green_median", "Blue_median"]:
+        rgb_worst.extend([(f"{key} {field}", diff, py_v, web_v) for key, diff, py_v, web_v in top_numeric_differences(py_stats, web_stats, ["Well"], field, 10)])
+    append_top_differences_table(report, "- first 10 worst wells by raw RGB median difference:", sorted(rgb_worst, key=lambda item: item[1], reverse=True)[:10])
+    n_used_stats = field_diff_stats(py_stats, web_stats, ["Well"], "n_used")
+    rgb_stats = [field_diff_stats(py_stats, web_stats, ["Well"], field) for field in ["Red_median", "Green_median", "Blue_median"]]
+    max_rgb = max((float(item["max_abs"]) for item in rgb_stats if math.isfinite(float(item["max_abs"]))), default=math.nan)
+    max_n_used = float(n_used_stats["max_abs"])
+    if math.isfinite(max_rgb) and max_rgb <= 1 and math.isfinite(max_n_used) and max_n_used > 100:
+        classification = "B geometry/ROI selection difference with currently low median impact"
+    elif math.isfinite(max_rgb) and max_rgb > 1 and math.isfinite(max_n_used) and max_n_used > 0:
+        classification = "B geometry/ROI selection difference with numeric color impact"
+    elif math.isfinite(max_rgb) and max_rgb > 1:
+        classification = "D possible color extraction/raw conversion issue because medians differ without large n_used evidence"
+    else:
+        classification = "F/G low measured ROI color impact or missing diagnostics"
+    report.append(f"- stage classification: {classification}.")
+    return {"max_rgb_median_abs": max_rgb, "max_n_used_abs": max_n_used}
+
+
+def append_bg_pixel_stat_audit(report: list[str], py_diag: Workbook, web_diag: Workbook) -> dict[str, float]:
+    py_bg = rows_as_dicts(py_diag.sheets.get("02_BG_SAMPLES", []))
+    web_bg = rows_as_dicts(web_diag.sheets.get("02_BG_SAMPLES", []))
+    py_fit = rows_as_dicts(py_diag.sheets.get("03_BG_WELL_FIT", []))
+    web_fit = rows_as_dicts(web_diag.sheets.get("03_BG_WELL_FIT", []))
+    report.extend(["### 3. Background samples and background model"])
+    report.append("- keys compared: BG samples by `BG_Cell_Row + BG_Cell_Col`; well-level BG fit by `Well`.")
+    report.append("- source audit: Python `_extract_bg_samples` reports accepted-mask centroid, accepted pixel count, and raw B/G/R medians; web includes full-resolution and sampled validation counters to distinguish mask area from sampled model points.")
+    for label, field in [
+        ("BG sample x centroid", "x"),
+        ("BG sample y centroid", "y"),
+        ("BG full-res area", "area"),
+        ("BG sampled final accepted pixels", "Web_Sampled_Final_Accepted_Pixels"),
+        ("BG full-res final accepted pixels", "Web_FullRes_Final_Accepted_Pixels"),
+        ("BG Red median raw", "Red_median_raw"),
+        ("BG Green median raw", "Green_median_raw"),
+        ("BG Blue median raw", "Blue_median_raw"),
+    ]:
+        stats = field_diff_stats(py_bg, web_bg, ["BG_Cell_Row", "BG_Cell_Col"], field)
+        report.append(f"- {label}: paired={stats_cell(stats['paired'])}, mean_abs={stats_cell(stats['mean_abs'])}, max_abs={stats_cell(stats['max_abs'])}")
+    append_top_differences_table(report, "- first 10 worst BG samples by RGB median difference:", sorted([
+        (f"{key} {field}", diff, py_v, web_v)
+        for field in ["Red_median_raw", "Green_median_raw", "Blue_median_raw"]
+        for key, diff, py_v, web_v in top_numeric_differences(py_bg, web_bg, ["BG_Cell_Row", "BG_Cell_Col"], field, 10)
+    ], key=lambda item: item[1], reverse=True)[:10])
+    append_top_differences_table(report, "- first 10 worst BG samples by area difference:", top_numeric_differences(py_bg, web_bg, ["BG_Cell_Row", "BG_Cell_Col"], "area"))
+    report.append("- per-well fitted BG values:")
+    report.extend(keyed_numeric_summary(py_fit, web_fit, ["Well"], [
+        ("BG_Red_raw", "BG_Red_raw"),
+        ("BG_Green_raw", "BG_Green_raw"),
+        ("BG_Blue_raw", "BG_Blue_raw"),
+        ("x", "x"),
+        ("y", "y"),
+    ]))
+    bg_rgb_stats = [field_diff_stats(py_bg, web_bg, ["BG_Cell_Row", "BG_Cell_Col"], field) for field in ["Red_median_raw", "Green_median_raw", "Blue_median_raw"]]
+    max_bg_rgb = max((float(item["max_abs"]) for item in bg_rgb_stats if math.isfinite(float(item["max_abs"]))), default=math.nan)
+    report.append("- BG_STAT_MASK policy: visual pixel identity is low priority if selected-pixel diagnostics and per-well BG estimates are scientifically close; current audit treats it as a visual diagnostic difference unless captions/legends misstate semantics.")
+    report.append("- stage classification: C BG pixel/model selection, with A geometry provenance as an upstream contributor where cell areas/centroids differ.")
+    return {"max_bg_rgb_abs": max_bg_rgb}
+
+
+def approximate_pabs_contributions(py_row: dict[str, str], web_row: dict[str, str], label: str) -> tuple[float, float]:
+    py_w = as_float(py_row.get(f"MeanW_{label}", ""))
+    web_w = as_float(web_row.get(f"MeanW_{label}", ""))
+    py_bg = as_float(py_row.get(f"MeanBG_{label}", ""))
+    web_bg = as_float(web_row.get(f"MeanBG_{label}", ""))
+    well_term = abs((web_w - py_w) / (py_w * math.log(10))) if math.isfinite(py_w) and math.isfinite(web_w) and py_w > 0 else math.nan
+    bg_term = abs((web_bg - py_bg) / (py_bg * math.log(10))) if math.isfinite(py_bg) and math.isfinite(web_bg) and py_bg > 0 else math.nan
+    return well_term, bg_term
+
+
+def append_meanw_meanbg_bridge_audit(report: list[str], py_report: Workbook, web_report: Workbook) -> dict[str, float]:
+    py_raw = rows_as_dicts(py_report.sheets.get("04_RAW", []))
+    web_raw = rows_as_dicts(web_report.sheets.get("04_RAW", []))
+    py_by_key, web_by_key, common = paired_by_keys(py_raw, web_raw, ["Well"])
+    report.extend(["### 4. MeanW / MeanBG extraction"])
+    report.append("- keys compared: `Well`; fields compared: `MeanW_*`, `MeanBG_*`, `PAbs_*`.")
+    report.append(f"- matched/common/missing/extra: python={len(py_by_key)}, web={len(web_by_key)}, common={len(common)}, missing_in_web={len(set(py_by_key)-set(web_by_key))}, extra_in_web={len(set(web_by_key)-set(py_by_key))}")
+    pabs_max: dict[str, float] = {}
+    for label in CHANNEL_LABELS:
+        meanw_stats = field_diff_stats(py_raw, web_raw, ["Well"], f"MeanW_{label}")
+        meanbg_stats = field_diff_stats(py_raw, web_raw, ["Well"], f"MeanBG_{label}")
+        pabs_stats = field_diff_stats(py_raw, web_raw, ["Well"], f"PAbs_{label}")
+        pabs_max[label] = float(pabs_stats["max_abs"])
+        well_terms: list[float] = []
+        bg_terms: list[float] = []
+        for key in common:
+            well_term, bg_term = approximate_pabs_contributions(py_by_key[key], web_by_key[key], label)
+            if math.isfinite(well_term):
+                well_terms.append(well_term)
+            if math.isfinite(bg_term):
+                bg_terms.append(bg_term)
+        report.append(
+            f"- {label}: mean_abs MeanW={stats_cell(meanw_stats['mean_abs'])}, "
+            f"MeanBG={stats_cell(meanbg_stats['mean_abs'])}, PAbs={stats_cell(pabs_stats['mean_abs'])}; "
+            f"approx_contribution MeanW={stats_cell(statistics.fmean(well_terms) if well_terms else math.nan)}, "
+            f"MeanBG={stats_cell(statistics.fmean(bg_terms) if bg_terms else math.nan)}; "
+            f"dominant={'MeanW' if well_terms and bg_terms and statistics.fmean(well_terms) > statistics.fmean(bg_terms) else 'MeanBG or mixed'}"
+        )
+        top_rows = []
+        for key, diff, py_v, web_v in top_numeric_differences(py_raw, web_raw, ["Well"], f"PAbs_{label}", 10):
+            py_row = py_by_key[key]
+            web_row = web_by_key[key]
+            top_rows.append((
+                key,
+                diff,
+                f"PAbs={py_v}; W={py_row.get(f'MeanW_{label}', '')}; BG={py_row.get(f'MeanBG_{label}', '')}",
+                f"PAbs={web_v}; W={web_row.get(f'MeanW_{label}', '')}; BG={web_row.get(f'MeanBG_{label}', '')}",
+            ))
+        append_top_differences_table(report, f"- top 10 wells by absolute PAbs_{label} difference:", top_rows)
+    report.append("- stage classification: E corrected/intermediate mapping where PAbs does not reconstruct from exported MeanW/MeanBG; otherwise B/C extraction and BG differences dominate.")
+    return pabs_max
+
+
+def append_corrected_pabs_intermediate_audit(report: list[str], py_report: Workbook, web_report: Workbook) -> None:
+    py_raw = rows_as_dicts(py_report.sheets.get("04_RAW", []))
+    web_raw = rows_as_dicts(web_report.sheets.get("04_RAW", []))
+    web_fit = rows_as_dicts(web_report.sheets.get("06_FITTING", []))
+    py_summaries = {label: pabs_formula_summary(py_raw, label) for label in CHANNEL_LABELS}
+    web_summaries = {label: pabs_formula_summary(web_raw, label) for label in CHANNEL_LABELS}
+    report.extend(["### 5. PAbs reconstruction/correction trace"])
+    report.append("- source audit: web `buildReportRawRows` writes `MeanW/MeanBG` from raw `measurements`, but writes `PAbs_*` from `displayMeasurements`; `buildReportReplicateRows`, fitting rows, and method comparison are also built from display/corrected measurements. Web `lowSignalCorrection.ts` adds S0 and clip deltas to PAbs without changing raw MeanW/MeanBG.")
+    report.append("- Python source audit: `_build_raw_report_rows` computes `PAbs = log10(MeanBG / MeanW)` from the same exported MeanW/MeanBG fields; low-signal correction exists in Python source but is not indicated as an exported per-row replacement in these workbook fields.")
+    for label in CHANNEL_LABELS:
+        correction_values = nonzero_fit_values(web_fit, pabs_method_name(label), ["S0_applied", "ClipDelta"])
+        evidence = any(correction_values.values())
+        report.append(
+            f"- PAbs_{label}: python_formula={py_summaries[label].status}, web_formula={web_summaries[label].status}, "
+            f"web_source={web_summaries[label].source}, correction_metadata_present={evidence}, "
+            f"S0_examples={correction_values['S0_applied'][:3]}, ClipDelta_examples={correction_values['ClipDelta'][:3]}"
+        )
+    report.append("- interpretation: current web replicate/fitting/method ranking uses display/corrected PAbs when corrections are enabled; exported raw MeanW/MeanBG alone are insufficient to reconstruct corrected Red/Green PAbs. Future diagnostics should export per-row raw PAbs, corrected PAbs, S0, clip delta, and final fit-input y.")
+    report.append("- stage classification: E correction/intermediate mapping plus C missing retained diagnostic quantity for per-row corrected inputs.")
+
+
+def append_cielab_source_audit(report: list[str], py_report: Workbook, web_report: Workbook) -> None:
+    py_raw = rows_as_dicts(py_report.sheets.get("04_RAW", []))
+    web_raw = rows_as_dicts(web_report.sheets.get("04_RAW", []))
+    report.extend(["### 6. CIELAB conversion and Delta descriptors"])
+    report.append("- Python source audit: `_compute_well_robust_statistics` uses OpenCV `cv2.COLOR_BGR2LAB` over retained ROI pixels, then scales L and centers a/b; `_augment_raw_rows_with_deltae` selects blank, zero-calibration, lowest-calibration, or global-median reference depending on available rows.")
+    report.append("- Web source audit: `rgbToLab` implements explicit sRGB linearization, sRGB-to-XYZ with D65 reference white, and CIE Lab formula from extracted well RGB; `buildCielabDiagnosticPoints` uses zero calibration when available, otherwise lowest calibration.")
+    report.append("- naming audit: Python `DeltaE`/`DeltaE_chroma` and web `DeltaE_ab`/`DeltaE_ab_chroma` are treated as semantic aliases for comparison.")
+    for field in ["L", "a", "b", "DeltaL", "Deltaa", "Deltab", "DeltaE_ab", "DeltaE_ab_chroma"]:
+        stats = field_diff_stats(py_raw, web_raw, ["Well"], field)
+        report.append(f"- {field}: paired={stats_cell(stats['paired'])}, mean_abs={stats_cell(stats['mean_abs'])}, max_abs={stats_cell(stats['max_abs'])}")
+    rgb_meanw = [field_diff_stats(py_raw, web_raw, ["Well"], f"MeanW_{label}") for label in CHANNEL_LABELS]
+    lab_max = max(float(field_diff_stats(py_raw, web_raw, ["Well"], field)["max_abs"]) for field in ["L", "a", "b"])
+    rgb_has_diff = any(math.isfinite(float(item["max_abs"])) and float(item["max_abs"]) > 1e-6 for item in rgb_meanw)
+    report.append(f"- interpretation: RGB extraction differences are present={rgb_has_diff}; L/a/b max_abs={stats_cell(lab_max)}. CIELAB differences are therefore consistent with upstream RGB extraction and possible independent conversion/reference differences; a shared RGB-to-Lab unit test is the safest next discriminator.")
+    report.append("- stage classification: D color conversion/reference remains unresolved, downstream of A/B/C extracted RGB differences.")
+
+
+def replicate_y_field_for_channel(channel: str) -> str | None:
+    canonical = canonical_method_name(channel)
+    if canonical.startswith("PAbs_"):
+        return f"{canonical}_median"
+    if canonical in {"L", "a", "b", "DeltaL", "Deltaa", "Deltab"}:
+        return f"{canonical}_median"
+    if canonical in {"DeltaE_ab", "DeltaE_ab_chroma"}:
+        return f"{canonical}_median"
+    return None
+
+
+def fit_key(row: dict[str, str]) -> str:
+    return "|".join([
+        canonical_method_name(row.get("Channel", "")),
+        str(row.get("FitType", "")).strip().upper(),
+        str(row.get("ID", "")).strip(),
+        str(row.get("DF", "")).strip(),
+    ])
+
+
+def replicate_fit_points(rep_rows: list[dict[str, str]], fit_row: dict[str, str]) -> list[tuple[float, float]]:
+    field = replicate_y_field_for_channel(fit_row.get("Channel", ""))
+    if field is None:
+        return []
+    fit_type = str(fit_row.get("FitType", "")).strip().upper()
+    sample_id = str(fit_row.get("ID", "")).strip()
+    df = str(fit_row.get("DF", "")).strip()
+    points: list[tuple[float, float]] = []
+    for row in rep_rows:
+        typ = str(row.get("Type", "")).strip().upper()
+        if fit_type == "CALIBRATION":
+            if typ not in {"C", "CAL", "CALIBRATION", "STD", "STANDARD"}:
+                continue
+        elif fit_type in {"STDADD", "STANDARD_ADDITION"}:
+            if typ not in {"A", "SA", "STDADD", "STANDARD_ADDITION", "ADDITION"}:
+                continue
+            if sample_id and str(row.get("ID", "")).strip() != sample_id:
+                continue
+            if df and str(row.get("DF", "")).strip() != df:
+                continue
+        else:
+            continue
+        x = as_float(row.get("Conc", ""))
+        y = as_float(row.get(field, ""))
+        if math.isfinite(x) and math.isfinite(y):
+            points.append((x, y))
+    points.sort(key=lambda item: item[0])
+    return points
+
+
+def append_fit_input_trace_audit(report: list[str], py_report: Workbook, web_report: Workbook) -> None:
+    py_rep = rows_as_dicts(py_report.sheets.get("05_REPLICATES_MEAN", []))
+    web_rep = rows_as_dicts(web_report.sheets.get("05_REPLICATES_MEAN", []))
+    py_fit = rows_as_dicts(py_report.sheets.get("06_FITTING", []))
+    web_fit = rows_as_dicts(web_report.sheets.get("06_FITTING", []))
+    py_by_fit = {fit_key(row): row for row in py_fit}
+    web_by_fit = {fit_key(row): row for row in web_fit}
+    common = sorted(set(py_by_fit) & set(web_by_fit))
+    report.extend(["### 8. Fit inputs"])
+    report.append("- fit inputs reconstructed from REPORT/05_REPLICATES_MEAN where possible; point-level raw replicate values are not available in the workbooks.")
+    report.append("| fit key | n_points py/web | x_match | paired_y | median_abs_y | max_abs_y | explains fit-row differences |")
+    report.append("|---|---:|---|---:|---:|---:|---|")
+    for key in common:
+        py_row = py_by_fit[key]
+        web_row = web_by_fit[key]
+        py_points = replicate_fit_points(py_rep, py_row)
+        web_points = replicate_fit_points(web_rep, web_row)
+        paired = min(len(py_points), len(web_points))
+        x_match = paired > 0 and [x for x, _ in py_points[:paired]] == [x for x, _ in web_points[:paired]]
+        y_diffs = [abs(py_points[index][1] - web_points[index][1]) for index in range(paired) if py_points[index][0] == web_points[index][0]]
+        median_abs = statistics.median(y_diffs) if y_diffs else math.nan
+        max_abs = max(y_diffs) if y_diffs else math.nan
+        n_py = py_row.get("n_points", "")
+        n_web = web_row.get("n_points", "")
+        fit_diffs = numeric_field_diffs(py_row, web_row, ["m", "q", "R2", "C0", "C0_sd"], tolerance=1e-8)
+        explains = "yes: x matches but y differs" if x_match and y_diffs and max_abs > 1e-8 and fit_diffs else ("not enough exported points" if not py_points or not web_points else "unclear")
+        report.append(f"| `{key}` | `{n_py}`/`{n_web}` | {x_match} | {len(y_diffs)} | {stats_cell(median_abs)} | {stats_cell(max_abs)} | {explains} |")
+    report.append("- missing data: full point-level fit arrays, per-row robust weights, and per-row corrected PAbs intermediates are not exported; this limits separation of fit regression effects from upstream y-value effects.")
+    report.append("- stage classification: fit n_points generally match for common rows, while reconstructed y summaries differ, so regression is not the first detected cause.")
+
+
+def append_upstream_cause_chain(
+    report: list[str],
+    roi_metrics: dict[str, float],
+    bg_metrics: dict[str, float],
+    pabs_metrics: dict[str, float],
+    py_report: Workbook,
+    web_report: Workbook,
+) -> None:
+    py_cmp = rows_as_dicts(py_report.sheets.get("07_METHOD_COMPARISON", []))
+    web_cmp = rows_as_dicts(web_report.sheets.get("07_METHOD_COMPARISON", []))
+    py_best = next((row.get("Method", "") for row in py_cmp if str(row.get("Selected", "")).strip() in {"1", "1.0", "TRUE", "true"}), py_cmp[0].get("Method", "") if py_cmp else "")
+    web_best = next((row.get("Method", "") for row in web_cmp if str(row.get("Selected", "")).strip() in {"1", "1.0", "TRUE", "true"}), web_cmp[0].get("Method", "") if web_cmp else "")
+    report.extend(["### 9. Score/ranking impact"])
+    report.append(f"- selected/best method: Python=`{py_best}`, Web=`{web_best}`, canonical_match={canonical_method_name(py_best) == canonical_method_name(web_best)}")
+    report.append("- score formula status: already reconstructs internally where required inputs are finite; the ranking difference is therefore treated as downstream of fit-input y differences, not a score-formula mismatch.")
+    report.append(f"- largest PAbs well-level differences by channel: { {key: stats_cell(value) for key, value in pabs_metrics.items()} }")
+    report.append("- impact classification: upstream fit inputs are large enough to change slope/intercept/R2/C0 and therefore method ranking.")
+    report.extend(["", "## Upstream Cause Chain"])
+    report.append("1. First detected structural mismatch: geometry provenance/reporting (`floor_source` manual_D_projection versus JSON/JSON-derived), plus workbook/reporting differences in diagnostic details.")
+    report.append("2. First detected numeric mismatch: geometry radius/background-radius fields before ROI/BG extraction.")
+    report.append(f"3. First mismatch likely large enough to affect PAbs/CIELAB: ROI/BG pixel selection. Current maxima include ROI n_used abs diff {stats_cell(roi_metrics.get('max_n_used_abs', math.nan))}, ROI RGB median abs diff {stats_cell(roi_metrics.get('max_rgb_median_abs', math.nan))}, BG RGB median abs diff {stats_cell(bg_metrics.get('max_bg_rgb_abs', math.nan))}.")
+    report.append(f"4. First mismatch likely large enough to affect ranking: fit-input y differences from PAbs/CIELAB replicate medians; max PAbs diffs by channel are { {key: stats_cell(value) for key, value in pabs_metrics.items()} }.")
+    report.append("5. Cause assignment: geometry provenance A is earliest; ROI selection B and BG model C are downstream and scientifically meaningful; CIELAB conversion/reference D is unresolved but downstream of extracted RGB differences; PAbs correction mapping E affects reconstruction/export interpretation; fit regression and score formula are not first causes in the current ZIPs; PNG pixel identity is visual/reporting only.")
+    report.append("6. Recommended next milestone: shared-geometry import/export parity test that runs Python and web from identical well centers, mouth/floor radii, and floor-circle provenance, followed by a shared extracted-intermediate table for ROI/BG pixels and fit-input y values.")
+
+
+def append_upstream_fit_input_parity_audit(report: list[str], py_report: Workbook, web_report: Workbook, py_diag: Workbook, web_diag: Workbook) -> None:
+    report.extend([
+        "",
+        "## Upstream Fit-Input Parity Audit",
+        "- Pipeline audited: geometry -> well ROI robust statistics -> background samples/model -> MeanW/MeanBG extraction -> PAbs reconstruction/correction trace -> CIELAB conversion/delta descriptors -> replicate means/SDs -> fit inputs -> score/ranking impact.",
+        "- Cause classes: A geometry/provenance; B ROI pixel selection; C BG pixel/model selection; D color conversion/reference; E correction/intermediate mapping; F reporting-only; G unknown.",
+    ])
+    geometry_metrics = append_geometry_provenance_audit(report, py_diag, web_diag)
+    roi_metrics = append_roi_robust_stat_audit(report, py_diag, web_diag)
+    bg_metrics = append_bg_pixel_stat_audit(report, py_diag, web_diag)
+    pabs_metrics = append_meanw_meanbg_bridge_audit(report, py_report, web_report)
+    append_corrected_pabs_intermediate_audit(report, py_report, web_report)
+    append_cielab_source_audit(report, py_report, web_report)
+    report.extend(["### 7. Replicate means/SDs"])
+    py_rep = rows_as_dicts(py_report.sheets.get("05_REPLICATES_MEAN", []))
+    web_rep = rows_as_dicts(web_report.sheets.get("05_REPLICATES_MEAN", []))
+    report.extend(keyed_numeric_summary(py_rep, web_rep, ["ID", "DF", "Type", "Conc"], [
+        ("NReplicates", "NReplicates"),
+        ("PAbs_Red_median", "PAbs_Red_median"),
+        ("PAbs_Green_median", "PAbs_Green_median"),
+        ("PAbs_Blue_median", "PAbs_Blue_median"),
+        ("DeltaE_ab_median", "DeltaE_ab_median"),
+        ("DeltaE_ab_chroma_median", "DeltaE_ab_chroma_median"),
+    ]))
+    report.append("- stage classification: grouping keys mostly align, so nonzero replicate mean/SD differences propagate extracted-value differences into fits.")
+    append_fit_input_trace_audit(report, py_report, web_report)
+    append_upstream_cause_chain(report, roi_metrics | geometry_metrics, bg_metrics, pabs_metrics, py_report, web_report)
 
 
 def pabs_method_name(label: str) -> str:
@@ -1843,7 +2307,8 @@ def append_cause_classification(report: list[str]) -> None:
         "- PAbs Red/Green formula WARN with Python PASS and web Blue PASS: **B/D/E with possible C** when web low-signal correction metadata is present. The likely cause is corrected/display PAbs compared against raw extraction `MeanW`/`MeanBG`; per-row corrected PAbs input/intermediate columns are needed before calling this a mathematical formula mismatch.",
         "- Method-comparison `BaseScore`/ranking/name differences: **D/B depending on fresh export**. Header/name/reporting differences are D; residual score differences after a fresh export may indicate B or input-data differences.",
         "- CIELAB fitting extra or differently named rows in web ZIP: **D** for naming/reporting; residual numerical differences after row-name parity may be **A/B**.",
-        "- `BG_STAT_MASK` overlay vs Python binary mask: **E/F** unless the web output intentionally remains documented as an overlay.",
+        "- `BG_STAT_MASK` overlay vs Python binary mask: **visual/reporting difference, low scientific priority** if the web selected-pixel visualization is clear and its caption/legend states the semantics accurately.",
+        "- PNG visual differences generally: judge scientific visual parity, not pixel identity alone. Pixel differences are acceptable for beta parity when all scientific information is present, correctly labeled, and not misleading.",
         "- TXT caption differences: **F**, with some intentional beta transparency where web semantics are not yet Python-identical.",
     ])
 
@@ -2052,6 +2517,7 @@ def compare(python_zip: Path, web_zip: Path, visual_dir: Path = DEFAULT_VISUAL_D
             ("Blue_median_raw", "Blue_median_raw"),
         ]))
 
+        append_upstream_fit_input_parity_audit(report, py_report, web_report, py_diag, web_diag)
         append_process_parity_section(report, py_report, web_report, py_diag, web_diag)
         append_score_method_parity_section(
             report,
