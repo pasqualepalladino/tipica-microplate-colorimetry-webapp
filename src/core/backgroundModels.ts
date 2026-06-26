@@ -141,6 +141,8 @@ export interface BackgroundVisualDiagnostics {
   predictedRgbMap?: BackgroundRgbMapCell[];
 }
 
+export type WellExclusionRadiusMap = Map<string, number>;
+
 const BACKGROUND_CELL_DIAGNOSTIC_HEADERS = [
   'cell row',
   'cell column',
@@ -641,6 +643,7 @@ function createInterwellCandidates(
   wells: WellCenter[],
   geometry: PlateGeometry,
   floorCircles?: FloorCircle[],
+  wellExclusionRadiiByWell?: WellExclusionRadiusMap,
 ): CandidateCollection {
   // Build a candidate region from well centers bounding box expanded outward
   const { data, width, height } = imageData;
@@ -686,9 +689,12 @@ function createInterwellCandidates(
         const well = wells[w];
         const dx = px - well.x;
         const dy = py - well.y;
-        const radius = floorCircles && floorCircles.length === wells.length
-          ? floorCircles[w].r * 1.15
-          : radii[w];
+        const overrideRadius = wellExclusionRadiiByWell?.get(well.wellId);
+        const radius = overrideRadius && Number.isFinite(overrideRadius) && overrideRadius > 0
+          ? overrideRadius
+          : floorCircles && floorCircles.length === wells.length
+            ? floorCircles[w].r * 1.15
+            : radii[w];
 
         if (dx * dx + dy * dy <= radius * radius) {
           inAnyWell = true;
@@ -735,6 +741,7 @@ function createPhysicalInterwellCandidates(
   imageData: ImageData,
   wells: WellCenter[],
   floorCircles?: FloorCircle[],
+  wellExclusionRadiiByWell?: WellExclusionRadiusMap,
 ): { collection: CandidateCollection; diagnostics: BackgroundDiagnostics } {
   const { data, width, height } = imageData;
 
@@ -745,6 +752,11 @@ function createPhysicalInterwellCandidates(
   const pitches = wells.map((well) => estimateLocalPitch(wells, well.row, well.col));
   const medianPitch = median(pitches);
   const exclusionRadii = wells.map((well, index) => {
+    const overrideRadius = wellExclusionRadiiByWell?.get(well.wellId);
+    if (overrideRadius && Number.isFinite(overrideRadius) && overrideRadius > 0) {
+      return overrideRadius;
+    }
+
     const mouthRadius = PHYSICAL_MOUTH_RADIUS_FACTOR_OF_PITCH * estimateLocalPitch(wells, well.row, well.col);
     const mouthExclusion = PHYSICAL_EXCLUSION_RADIUS_FACTOR * mouthRadius;
     const floorExclusion = floorCircles && floorCircles.length === wells.length
@@ -753,6 +765,9 @@ function createPhysicalInterwellCandidates(
 
     return Math.max(1, mouthExclusion, floorExclusion);
   });
+  const wellExclusionRadiusApprox = wellExclusionRadiiByWell && exclusionRadii.length > 0
+    ? median(exclusionRadii)
+    : PHYSICAL_EXCLUSION_RADIUS_FACTOR * PHYSICAL_MOUTH_RADIUS_FACTOR_OF_PITCH * medianPitch;
   const pixels: CandidatePixel[] = [];
   const rawPixels: CandidatePixel[] = [];
   const cellDiagnostics: BackgroundCellDiagnostic[] = [];
@@ -1012,7 +1027,7 @@ function createPhysicalInterwellCandidates(
       candidateRegionX1: regionX1,
       candidateRegionY1: regionY1,
       medianPitch,
-      wellExclusionRadiusApprox: PHYSICAL_EXCLUSION_RADIUS_FACTOR * PHYSICAL_MOUTH_RADIUS_FACTOR_OF_PITCH * medianPitch,
+      wellExclusionRadiusApprox,
       fitSuccess: false,
       maskAlgorithm: PHYSICAL_MASK_ALGORITHM,
       cellDiagnostics,
@@ -1543,6 +1558,7 @@ export function estimateRobustInterwellBackground(
   roiRadius: number,
   pitch: number,
   floorCircles?: FloorCircle[],
+  wellExclusionRadiiByWell?: WellExclusionRadiusMap,
 ): BackgroundEstimate {
   // compute median pitch and expanded bounding box used for candidate region
   const pitches = wells.map((well) => estimateLocalPitch(wells, well.row, well.col));
@@ -1559,9 +1575,14 @@ export function estimateRobustInterwellBackground(
   regionY0 = Math.max(0, Math.floor(regionY0 - expand));
   regionY1 = Math.min(imageData.height - 1, Math.ceil(regionY1 + expand));
 
-  const wellExclusionRadiusApprox = 0.35 * medianPitch;
+  const overrideExclusionRadii = wells
+    .map((well) => wellExclusionRadiiByWell?.get(well.wellId) ?? Number.NaN)
+    .filter((radius) => Number.isFinite(radius) && radius > 0);
+  const wellExclusionRadiusApprox = overrideExclusionRadii.length > 0
+    ? median(overrideExclusionRadii)
+    : 0.35 * medianPitch;
 
-  const candidatesCollection = createInterwellCandidates(imageData, wells, geometry, floorCircles);
+  const candidatesCollection = createInterwellCandidates(imageData, wells, geometry, floorCircles, wellExclusionRadiiByWell);
   const totalCandidatePixels = candidatesCollection.pixels.length;
   const candidateStride = candidatesCollection.stride;
   const candidates = candidatesCollection.pixels;
@@ -1707,8 +1728,9 @@ export function estimatePhysicalInterwellPolynomialBackgrounds(
   imageData: ImageData,
   wells: WellCenter[],
   floorCircles?: FloorCircle[],
+  wellExclusionRadiiByWell?: WellExclusionRadiusMap,
 ): PhysicalPolynomialBackgroundResult {
-  const { collection, diagnostics } = createPhysicalInterwellCandidates(imageData, wells, floorCircles);
+  const { collection, diagnostics } = createPhysicalInterwellCandidates(imageData, wells, floorCircles, wellExclusionRadiiByWell);
 
   if (collection.pixels.length < PHYSICAL_MIN_CANDIDATE_PIXELS) {
     return physicalFallbackResult(
@@ -1809,9 +1831,10 @@ export function buildBackgroundVisualDiagnostics(
   geometry: PlateGeometry,
   backgroundModel: BackgroundModel,
   floorCircles?: FloorCircle[],
+  wellExclusionRadiiByWell?: WellExclusionRadiusMap,
 ): BackgroundVisualDiagnostics {
   if (backgroundModel === 'physical-interwell-polynomial-v1') {
-    const { collection, diagnostics } = createPhysicalInterwellCandidates(imageData, wells, floorCircles);
+    const { collection, diagnostics } = createPhysicalInterwellCandidates(imageData, wells, floorCircles, wellExclusionRadiiByWell);
     const filteredResult = filterPhysicalCandidatePixels(collection.pixels);
     const samples = buildPhysicalCellSamples(filteredResult.pixels);
     const cellDiagnosticsAfterFiltering = updateCellDiagnosticsAfterFiltering(diagnostics.cellDiagnostics, filteredResult.pixels);
@@ -1857,12 +1880,15 @@ export function buildBackgroundVisualDiagnostics(
   }
 
   if (backgroundModel === 'robust-interwell-v1') {
-    const collection = createInterwellCandidates(imageData, wells, geometry, floorCircles);
+    const collection = createInterwellCandidates(imageData, wells, geometry, floorCircles, wellExclusionRadiiByWell);
     const accepted = filterCandidatePixels(collection.pixels);
     const pitches = wells.map((well) => estimateLocalPitch(wells, well.row, well.col));
     const medianPitch = median(pitches);
     const candidateXs = collection.pixels.map((pixel) => pixel.x);
     const candidateYs = collection.pixels.map((pixel) => pixel.y);
+    const overrideExclusionRadii = wells
+      .map((well) => wellExclusionRadiiByWell?.get(well.wellId) ?? Number.NaN)
+      .filter((radius) => Number.isFinite(radius) && radius > 0);
     const diagnostics: BackgroundDiagnostics = {
       candidatePixels: collection.pixels.length,
       acceptedPixels: accepted.length,
@@ -1873,7 +1899,7 @@ export function buildBackgroundVisualDiagnostics(
       candidateRegionX1: candidateXs.length > 0 ? Math.ceil(Math.max(...candidateXs)) : 0,
       candidateRegionY1: candidateYs.length > 0 ? Math.ceil(Math.max(...candidateYs)) : 0,
       medianPitch,
-      wellExclusionRadiusApprox: 0.35 * medianPitch,
+      wellExclusionRadiusApprox: overrideExclusionRadii.length > 0 ? median(overrideExclusionRadii) : 0.35 * medianPitch,
       fitSuccess: false,
     };
 
@@ -1910,6 +1936,7 @@ export function estimateBackground(
   pitch: number,
   backgroundModel: BackgroundModel,
   floorCircles?: FloorCircle[],
+  wellExclusionRadiiByWell?: WellExclusionRadiusMap,
 ): BackgroundEstimateWithModel {
   if (backgroundModel === 'annular') {
     const stats = estimateLocalBackground(imageData, cx, cy, roiRadius, pitch);
@@ -1930,7 +1957,7 @@ export function estimateBackground(
   }
 
   if (backgroundModel === 'physical-interwell-polynomial-v1') {
-    const fallback = estimateRobustInterwellBackground(imageData, wells, geometry, cx, cy, roiRadius, pitch, floorCircles);
+    const fallback = estimateRobustInterwellBackground(imageData, wells, geometry, cx, cy, roiRadius, pitch, floorCircles, wellExclusionRadiiByWell);
     const fallbackWarning = 'Physical inter-well polynomial background was not precomputed; robust inter-well background v1 fallback used.';
 
     return {
@@ -1946,7 +1973,7 @@ export function estimateBackground(
     };
   }
 
-  const robust = estimateRobustInterwellBackground(imageData, wells, geometry, cx, cy, roiRadius, pitch, floorCircles);
+  const robust = estimateRobustInterwellBackground(imageData, wells, geometry, cx, cy, roiRadius, pitch, floorCircles, wellExclusionRadiiByWell);
   return {
     ...robust,
     backgroundModel: 'robust-interwell-v1',

@@ -1745,10 +1745,18 @@ def append_shared_geometry_parity_section(
     floor_r_matches = float(numeric["floor_r"]["max_abs"]) <= 1e-6 if math.isfinite(float(numeric["floor_r"]["max_abs"])) else False
     cyl_r_bg_matches = float(numeric["cyl_r_bg"]["max_abs"]) <= 1e-6 if math.isfinite(float(numeric["cyl_r_bg"]["max_abs"])) else False
     source_matches = int(floor_source["diffs"]) == 0
+    web_plate_geometry = web_geometry.get("plate_geometry", {})
+    web_override_active = False
+    web_override_source = ""
+    if isinstance(web_plate_geometry, dict):
+        web_override_active = str(web_plate_geometry.get("shared_geometry_override_active", "")).strip() in {"1", "1.0", "true", "True", "TRUE"}
+        web_override_source = str(web_plate_geometry.get("shared_geometry_override_source", "") or "")
     report.extend([
         "",
         "## Shared Geometry Parity Test",
         "- scope: diagnostic import/export comparison from DIAGNOSTICS workbook geometry sheets; no application runtime logic is changed by this helper.",
+        f"- web shared-geometry override active: {web_override_active}",
+        f"- web shared-geometry override source: `{web_override_source}`",
         f"- generated Python canonical geometry: `{files['python']}`",
         f"- generated web current geometry: `{files['web']}`",
         f"- generated geometry delta report: `{files['report']}`",

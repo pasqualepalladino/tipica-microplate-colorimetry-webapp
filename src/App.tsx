@@ -42,6 +42,7 @@ import {
   type BackgroundEstimateWithModel,
   type BackgroundVisualDiagnostics,
   type BackgroundModel,
+  type WellExclusionRadiusMap,
 } from './core/backgroundModels';
 import {
   addCalibrationSlopeContextToStandardAddition,
@@ -69,6 +70,31 @@ const MANUAL_CORNER_LABELS = ['A1', 'A12', 'H12', 'H1'];
 const LIMITED_STORED_CALIBRATION_METADATA_WARNING = 'Stored calibration has limited method metadata.';
 const STORED_CALIBRATION_METHOD_MISMATCH_WARNING = 'Stored calibration method differs from current extraction method; results may not be comparable.';
 const MISSING_VALUE = 'Not available';
+const SHARED_GEOMETRY_OVERRIDE_SOURCE = 'python_canonical_override';
+
+interface SharedGeometryOverrideRecord {
+  wellId: string;
+  mouthCx: number;
+  mouthCy: number;
+  floorCx: number;
+  floorCy: number;
+  mouthRadius: number;
+  floorRadius: number;
+  floorRadiusGeom?: number;
+  mouthRadiusGeom?: number;
+  cylRadiusBg?: number;
+  localPitchPx?: number;
+  floorSource?: string;
+}
+
+interface SharedGeometryOverrideState {
+  sourceName: string;
+  recordsByWell: Map<string, SharedGeometryOverrideRecord>;
+  wellCount: number;
+  missingWells: string[];
+  ignoredFields: string[];
+  mappingSummary: string;
+}
 
 function geometryFromManualPoints(points: Point[]): PlateGeometry | null {
   if (points.length !== 4) {
@@ -131,6 +157,163 @@ function clampManualMouthRadiusPx(radius: number): number {
   }
 
   return Math.max(MIN_MANUAL_MOUTH_RADIUS_PX, Math.min(MAX_MANUAL_MOUTH_RADIUS_PX, radius));
+}
+
+function isCanonicalWellId(value: string): boolean {
+  const match = /^([A-H])(\d{1,2})$/i.exec(value.trim());
+  if (!match) {
+    return false;
+  }
+
+  const col = Number(match[2]);
+  return Number.isInteger(col) && col >= 1 && col <= 12;
+}
+
+function defaultSharedGeometryWellIds(): string[] {
+  const ids: string[] = [];
+  for (let row = 0; row < 8; row += 1) {
+    for (let col = 1; col <= 12; col += 1) {
+      ids.push(`${String.fromCharCode(65 + row)}${col}`);
+    }
+  }
+  return ids;
+}
+
+function finiteNumberFromRecord(record: Record<string, unknown>, field: string): number | null {
+  const raw = record[field];
+  const value = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : Number.NaN;
+  return Number.isFinite(value) ? value : null;
+}
+
+function stringFromRecord(record: Record<string, unknown>, ...fields: string[]): string {
+  for (const field of fields) {
+    const raw = record[field];
+    if (typeof raw === 'string' && raw.trim() !== '') {
+      return raw.trim();
+    }
+  }
+  return '';
+}
+
+function canonicalGeometryRecordsFromJson(parsed: unknown): Record<string, unknown>[] {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Shared geometry JSON must be an object.');
+  }
+
+  const root = parsed as Record<string, unknown>;
+  if (Array.isArray(root.records)) {
+    return root.records.filter((record): record is Record<string, unknown> => (
+      Boolean(record) && typeof record === 'object' && !Array.isArray(record)
+    ));
+  }
+
+  if (Array.isArray(root.per_well)) {
+    return root.per_well.filter((record): record is Record<string, unknown> => (
+      Boolean(record) && typeof record === 'object' && !Array.isArray(record)
+    ));
+  }
+
+  if (root.per_well && typeof root.per_well === 'object' && !Array.isArray(root.per_well)) {
+    return Object.entries(root.per_well as Record<string, unknown>)
+      .filter(([, value]) => Boolean(value) && typeof value === 'object' && !Array.isArray(value))
+      .map(([wellId, value]) => ({ Well: wellId, ...(value as Record<string, unknown>) }));
+  }
+
+  throw new Error('Shared geometry JSON must contain records or per_well geometry rows.');
+}
+
+function parseSharedGeometryOverrideJson(
+  text: string,
+  sourceName: string,
+  requiredWellIds: string[],
+): SharedGeometryOverrideState {
+  const parsed = JSON.parse(text) as unknown;
+  const rawRecords = canonicalGeometryRecordsFromJson(parsed);
+  const knownFields = new Set([
+    'Well',
+    'well',
+    'well_id',
+    'mouth_cx',
+    'mouth_cy',
+    'floor_cx',
+    'floor_cy',
+    'mouth_r',
+    'floor_r',
+    'mouth_r_geom',
+    'floor_r_geom',
+    'cyl_r_bg',
+    'local_pitch_px',
+    'pitch_px',
+    'floor_source',
+    'source_fields_available',
+  ]);
+  const ignoredFields = new Set<string>();
+  const recordsByWell = new Map<string, SharedGeometryOverrideRecord>();
+
+  rawRecords.forEach((record) => {
+    Object.keys(record).forEach((field) => {
+      if (!knownFields.has(field)) {
+        ignoredFields.add(field);
+      }
+    });
+
+    const wellId = stringFromRecord(record, 'Well', 'well', 'well_id').toUpperCase();
+    if (!isCanonicalWellId(wellId)) {
+      throw new Error(`Shared geometry record has invalid well id "${wellId || '(blank)'}".`);
+    }
+    if (recordsByWell.has(wellId)) {
+      throw new Error(`Shared geometry JSON has duplicate well ${wellId}.`);
+    }
+
+    const mouthCx = finiteNumberFromRecord(record, 'mouth_cx');
+    const mouthCy = finiteNumberFromRecord(record, 'mouth_cy');
+    const floorCx = finiteNumberFromRecord(record, 'floor_cx');
+    const floorCy = finiteNumberFromRecord(record, 'floor_cy');
+    const mouthRadius = finiteNumberFromRecord(record, 'mouth_r');
+    const floorRadius = finiteNumberFromRecord(record, 'floor_r');
+
+    if (
+      mouthCx === null ||
+      mouthCy === null ||
+      floorCx === null ||
+      floorCy === null ||
+      mouthRadius === null ||
+      floorRadius === null ||
+      mouthRadius <= 0 ||
+      floorRadius <= 0
+    ) {
+      throw new Error(`Shared geometry well ${wellId} is missing required mouth/floor center or radius fields.`);
+    }
+
+    recordsByWell.set(wellId, {
+      wellId,
+      mouthCx,
+      mouthCy,
+      floorCx,
+      floorCy,
+      mouthRadius,
+      floorRadius,
+      mouthRadiusGeom: finiteNumberFromRecord(record, 'mouth_r_geom') ?? undefined,
+      floorRadiusGeom: finiteNumberFromRecord(record, 'floor_r_geom') ?? undefined,
+      cylRadiusBg: finiteNumberFromRecord(record, 'cyl_r_bg') ?? undefined,
+      localPitchPx: finiteNumberFromRecord(record, 'local_pitch_px') ?? finiteNumberFromRecord(record, 'pitch_px') ?? undefined,
+      floorSource: stringFromRecord(record, 'floor_source') || undefined,
+    });
+  });
+
+  const missingWells = requiredWellIds.filter((wellId) => !recordsByWell.has(wellId));
+  if (missingWells.length > 0) {
+    throw new Error(`Shared geometry override missing required wells: ${missingWells.slice(0, 12).join(', ')}${missingWells.length > 12 ? '...' : ''}.`);
+  }
+
+  return {
+    sourceName,
+    recordsByWell,
+    wellCount: recordsByWell.size,
+    missingWells,
+    ignoredFields: [...ignoredFields].sort(),
+    mappingSummary: 'Extraction mapping: mouth_cx/mouth_cy/mouth_r drive mouth ROI; floor_cx/floor_cy/floor_r drive floor ROI; cyl_r_bg drives background well exclusion when present; local_pitch_px and floor_source are diagnostic/reporting fields.',
+  };
 }
 
 function manualMouthRadiusToRadiusFactor(points: Point[], radiusPx: number): number | null {
@@ -1265,6 +1448,7 @@ interface PythonReportWorkbookOptions {
   geometrySource: string;
   floorGeometryAvailable: boolean;
   correctionApplied: boolean;
+  sharedGeometryOverride: SharedGeometryOverrideState | null;
 }
 
 function escapeXml(value: string): string {
@@ -2033,6 +2217,10 @@ function buildReportMetadataRows(options: PythonReportWorkbookOptions): XlsxRow[
     { Field: 'Geometry source', Value: options.geometrySource, Notes: '' },
     { Field: 'Geometry name', Value: options.geometryName ?? '', Notes: '' },
     { Field: 'Floor geometry available', Value: options.floorGeometryAvailable ? 1 : 0, Notes: '' },
+    { Field: 'SharedGeometryOverrideActive', Value: options.sharedGeometryOverride ? 1 : 0, Notes: 'Developer diagnostic geometry override status.' },
+    { Field: 'SharedGeometryOverrideSource', Value: options.sharedGeometryOverride?.sourceName ?? '', Notes: '' },
+    { Field: 'SharedGeometryOverrideWells', Value: options.sharedGeometryOverride?.wellCount ?? '', Notes: '' },
+    { Field: 'SharedGeometryOverrideMapping', Value: options.sharedGeometryOverride?.mappingSummary ?? '', Notes: '' },
     { Field: 'Measurements', Value: options.measurements.length, Notes: '' },
     { Field: 'Plate map entries', Value: options.plateMap.length, Notes: '' },
     { Field: 'Expected reference values', Value: options.expectedRefs.length, Notes: '' },
@@ -2400,16 +2588,20 @@ function buildDiagnosticsWellRobustStatsRows(
 
 function buildDiagnosticsGeometryQcRows(options: PythonDiagnosticsWorkbookOptions): XlsxRow[] {
   const wellsById = new Map(options.wells.map((well) => [well.wellId, well]));
+  const override = options.sharedGeometryOverride;
 
   return options.measurements.map((measurement) => {
     const context = diagnosticWellContext(measurement.wellId, wellsById);
+    const overrideRecord = override?.recordsByWell.get(measurement.wellId);
     const floor = Number.isFinite(context.row) && Number.isFinite(context.col) && options.floorCircles?.length === options.wells.length
       ? options.floorCircles[context.row * 12 + context.col]
       : null;
-    const mouthRadius = Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
+    const fallbackMouthRadius = Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
       ? estimateRoiRadius(options.wells, context.row, context.col, options.radiusFactor)
       : measurement.mouthRadiusUsed;
-    const floorRadius = floor ? floor.r * options.floorRoiRadiusFactor : measurement.floorRadiusUsed;
+    const fallbackFloorRadius = floor ? floor.r * options.floorRoiRadiusFactor : measurement.floorRadiusUsed;
+    const mouthRadius = overrideRecord?.mouthRadius ?? measurement.mouthRadiusUsed ?? fallbackMouthRadius;
+    const floorRadius = overrideRecord?.floorRadius ?? measurement.floorRadiusUsed ?? fallbackFloorRadius;
     const finiteMouthRadius = finiteOrBlank(mouthRadius);
     const finiteFloorRadius = finiteOrBlank(floorRadius);
     const shiftPx = floor && context.center ? Math.hypot(floor.x - context.center.x, floor.y - context.center.y) : Number.NaN;
@@ -2421,9 +2613,9 @@ function buildDiagnosticsGeometryQcRows(options: PythonDiagnosticsWorkbookOption
       Row: context.rowName,
       Col: context.colName,
       Well: measurement.wellId,
-      floor_source: options.floorGeometryAvailable ? options.geometrySource : 'none',
+      floor_source: overrideRecord ? `${overrideRecord.floorSource ?? 'manual_D_projection'}_override` : options.floorGeometryAvailable ? options.geometrySource : 'none',
       local_pitch_px: Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
-        ? estimateLocalPitch(options.wells, context.row, context.col)
+        ? overrideRecord?.localPitchPx ?? estimateLocalPitch(options.wells, context.row, context.col)
         : measurement.medianPitch ?? '',
       mouth_r: finiteMouthRadius,
       floor_r: finiteFloorRadius,
@@ -2439,19 +2631,23 @@ function buildDiagnosticsGeometryQcRows(options: PythonDiagnosticsWorkbookOption
 
 function buildDiagnosticsWellBottomRows(options: PythonDiagnosticsWorkbookOptions): XlsxRow[] {
   const wellsById = new Map(options.wells.map((well) => [well.wellId, well]));
+  const override = options.sharedGeometryOverride;
 
   return options.measurements.map((measurement) => {
     const context = diagnosticWellContext(measurement.wellId, wellsById);
+    const overrideRecord = override?.recordsByWell.get(measurement.wellId);
     const floor = Number.isFinite(context.row) && Number.isFinite(context.col) && options.floorCircles?.length === options.wells.length
       ? options.floorCircles[context.row * 12 + context.col]
       : null;
     const localPitch = Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
-      ? estimateLocalPitch(options.wells, context.row, context.col)
+      ? overrideRecord?.localPitchPx ?? estimateLocalPitch(options.wells, context.row, context.col)
       : Number.NaN;
-    const mouthRadius = Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
+    const fallbackMouthRadius = Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
       ? estimateRoiRadius(options.wells, context.row, context.col, options.radiusFactor)
       : measurement.mouthRadiusUsed;
-    const floorRadius = floor ? floor.r * options.floorRoiRadiusFactor : measurement.floorRadiusUsed;
+    const fallbackFloorRadius = floor ? floor.r * options.floorRoiRadiusFactor : measurement.floorRadiusUsed;
+    const mouthRadius = overrideRecord?.mouthRadius ?? measurement.mouthRadiusUsed ?? fallbackMouthRadius;
+    const floorRadius = overrideRecord?.floorRadius ?? measurement.floorRadiusUsed ?? fallbackFloorRadius;
     const shiftPx = floor && context.center ? Math.hypot(floor.x - context.center.x, floor.y - context.center.y) : Number.NaN;
 
     return {
@@ -2463,8 +2659,8 @@ function buildDiagnosticsWellBottomRows(options: PythonDiagnosticsWorkbookOption
       local_pitch_px: finiteOrBlank(localPitch),
       px_per_mm: Number.isFinite(localPitch) ? localPitch / 9 : '',
       cyl_r_bg: measurement.wellExclusionRadiusApprox ?? '',
-      mouth_r_geom: finiteOrBlank(mouthRadius),
-      floor_r_geom: finiteOrBlank(floorRadius),
+      mouth_r_geom: finiteOrBlank(overrideRecord?.mouthRadiusGeom ?? mouthRadius),
+      floor_r_geom: finiteOrBlank(overrideRecord?.floorRadiusGeom ?? floorRadius),
       mouth_cx: finiteOrBlank(context.center?.x),
       mouth_cy: finiteOrBlank(context.center?.y),
       mouth_r: finiteOrBlank(mouthRadius),
@@ -2498,6 +2694,10 @@ function buildDiagnosticsPlateGeometryRows(options: PythonDiagnosticsWorkbookOpt
     { key: 'background_accepted_samples', value: options.methodMetadata.backgroundAcceptedSamples ?? diagnostics?.acceptedSamples ?? '' },
     { key: 'background_fit_success', value: diagnostics?.fitSuccess === undefined ? '' : diagnostics.fitSuccess ? 1 : 0 },
     { key: 'floor_geometry_available', value: options.floorGeometryAvailable ? 1 : 0 },
+    { key: 'shared_geometry_override_active', value: options.sharedGeometryOverride ? 1 : 0 },
+    { key: 'shared_geometry_override_source', value: options.sharedGeometryOverride?.sourceName ?? '' },
+    { key: 'shared_geometry_override_wells', value: options.sharedGeometryOverride?.wellCount ?? '' },
+    { key: 'shared_geometry_override_mapping', value: options.sharedGeometryOverride?.mappingSummary ?? '' },
     { key: 'roi_radius_factor', value: options.radiusFactor },
     { key: 'floor_roi_radius_factor', value: options.floorRoiRadiusFactor },
     { key: 'unit_label', value: options.unitLabel },
@@ -4801,6 +5001,7 @@ function UnknownResultsTable({ results }: { results: UnknownConcentrationResult[
 function App() {
   const storedCalibrationFileInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
+  const sharedGeometryFileInputRef = useRef<HTMLInputElement>(null);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [imageName, setImageName] = useState<string | null>(null);
   const [geometry, setGeometry] = useState<PlateGeometry | null>(null);
@@ -4840,6 +5041,8 @@ function App() {
   const [manualFloorCircleRadiusDelta, setManualFloorCircleRadiusDelta] = useState(0);
   const [floorGeometrySource, setFloorGeometrySource] = useState<FloorGeometrySource>('none');
   const [floorGeometryNotice, setFloorGeometryNotice] = useState<string | null>(null);
+  const [sharedGeometryOverride, setSharedGeometryOverride] = useState<SharedGeometryOverrideState | null>(null);
+  const [sharedGeometryOverrideStatus, setSharedGeometryOverrideStatus] = useState('No Python canonical geometry override active.');
   const [radiusFactor, setRadiusFactor] = useState(DEFAULT_RADIUS_FACTOR);
   const [roiMode, setRoiMode] = useState<'simple' | 'floor-aware' | 'mouth-floor-intersection'>('mouth-floor-intersection');
   const [roiPixelStatisticsMode, setRoiPixelStatisticsMode] = useState<RoiPixelStatisticsMode>('robust-trimmed-v1');
@@ -4880,6 +5083,51 @@ function App() {
     () => (geometry ? generate96WellFloorCircles(geometry) : null),
     [geometry],
   );
+  const effectiveWells = useMemo(() => {
+    if (!sharedGeometryOverride) {
+      return wells;
+    }
+
+    return wells.map((well) => {
+      const overrideRecord = sharedGeometryOverride.recordsByWell.get(well.wellId);
+      return overrideRecord
+        ? { ...well, x: overrideRecord.mouthCx, y: overrideRecord.mouthCy }
+        : well;
+    });
+  }, [sharedGeometryOverride, wells]);
+  const effectiveFloorCircles = useMemo(() => {
+    if (!sharedGeometryOverride) {
+      return floorCircles;
+    }
+
+    return wells.map((well) => {
+      const overrideRecord = sharedGeometryOverride.recordsByWell.get(well.wellId);
+      return {
+        x: overrideRecord?.floorCx ?? well.x,
+        y: overrideRecord?.floorCy ?? well.y,
+        r: overrideRecord?.floorRadius ?? Math.max(1, estimateRoiRadius(wells, well.row, well.col, radiusFactor)),
+      };
+    });
+  }, [floorCircles, radiusFactor, sharedGeometryOverride, wells]);
+  const effectiveFloorGeometryAvailable = Boolean(
+    sharedGeometryOverride
+      ? effectiveFloorCircles && effectiveFloorCircles.length === wells.length && wells.length === 96
+      : floorGeometryAvailable,
+  );
+  const sharedGeometryExclusionRadiiByWell = useMemo<WellExclusionRadiusMap | undefined>(() => {
+    if (!sharedGeometryOverride) {
+      return undefined;
+    }
+
+    const radii = new Map<string, number>();
+    sharedGeometryOverride.recordsByWell.forEach((record) => {
+      if (record.cylRadiusBg && Number.isFinite(record.cylRadiusBg) && record.cylRadiusBg > 0) {
+        radii.set(record.wellId, record.cylRadiusBg);
+      }
+    });
+
+    return radii.size > 0 ? radii : undefined;
+  }, [sharedGeometryOverride]);
   const referenceFloorCircles = useMemo(
     () => (geometry && hasFloorGeometry(geometry) ? getReferenceFloorCircles(geometry) : []),
     [geometry],
@@ -4953,7 +5201,7 @@ function App() {
       correctionSource: lowSignalCorrectionEffective ? lowSignalCorrectionSource : 'none',
       correctionMetadata: correctionMetadataSummary,
       appVersion: packageJson.version,
-      geometrySource: formatFloorGeometrySource(floorGeometrySource, floorGeometryAvailable),
+      geometrySource: sharedGeometryOverride ? SHARED_GEOMETRY_OVERRIDE_SOURCE : formatFloorGeometrySource(floorGeometrySource, floorGeometryAvailable),
     };
   }, [
     backgroundModel,
@@ -4965,6 +5213,7 @@ function App() {
     measurements,
     roiMode,
     roiPixelStatisticsMode,
+    sharedGeometryOverride,
   ]);
   const methodSummaryPayload = useMemo(() => ({
     appVersion: packageJson.version,
@@ -4987,8 +5236,10 @@ function App() {
     },
     geometry: {
       source: currentMethodMetadata.geometrySource ?? 'unknown',
+      sharedGeometryOverrideActive: Boolean(sharedGeometryOverride),
+      sharedGeometryOverrideSource: sharedGeometryOverride?.sourceName ?? null,
     },
-  }), [backgroundModel, currentMethodMetadata, roiMode, roiPixelStatisticsMode, useLowSignalCorrection]);
+  }), [backgroundModel, currentMethodMetadata, roiMode, roiPixelStatisticsMode, sharedGeometryOverride, useLowSignalCorrection]);
   const storedCalibrationMetadataWarning = storedCalibration
     ? storedCalibration.methodMetadata
       ? methodMetadataMatches(currentMethodMetadata, storedCalibration.methodMetadata)
@@ -5194,6 +5445,53 @@ function App() {
     clearFits();
   }, [clearFits]);
 
+  const clearSharedGeometryOverrideState = useCallback((status = 'No Python canonical geometry override active.') => {
+    setSharedGeometryOverride(null);
+    setSharedGeometryOverrideStatus(status);
+  }, []);
+
+  const handleLoadSharedGeometryOverrideClick = useCallback(() => {
+    sharedGeometryFileInputRef.current?.click();
+  }, []);
+
+  const handleSharedGeometryOverrideFileChange = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const requiredWellIds = wells.length === 96
+        ? wells.map((well) => well.wellId)
+        : defaultSharedGeometryWellIds();
+      const override = parseSharedGeometryOverrideJson(text, file.name, requiredWellIds);
+      setSharedGeometryOverride(override);
+      setSharedGeometryOverrideStatus(
+        `Python canonical geometry override active: ${override.wellCount} wells from ${file.name}. Ignored fields: ${override.ignoredFields.length > 0 ? override.ignoredFields.join(', ') : 'none'}.`,
+      );
+      clearMeasurementsAndFits();
+      clearFits();
+      setStatusMessage('Developer shared-geometry override loaded; rerun extraction.');
+      setError(null);
+    } catch (overrideError) {
+      const detail = overrideError instanceof Error ? overrideError.message : 'Unknown shared-geometry parse error.';
+      clearSharedGeometryOverrideState(`Shared geometry override load failed: ${detail}`);
+      clearMeasurementsAndFits();
+      setError(`Could not load Python canonical geometry: ${file.name}. ${detail}`);
+    } finally {
+      event.currentTarget.value = '';
+    }
+  }, [clearFits, clearMeasurementsAndFits, clearSharedGeometryOverrideState, wells]);
+
+  const handleClearSharedGeometryOverride = useCallback(() => {
+    clearSharedGeometryOverrideState();
+    clearMeasurementsAndFits();
+    setStatusMessage('Developer shared-geometry override cleared; rerun extraction.');
+    setError(null);
+  }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState]);
+
   const handlePlateMapChange = useCallback((nextPlateMap: WellConfig[]) => {
     setPlateMap(nextPlateMap);
     clearFits();
@@ -5228,9 +5526,10 @@ function App() {
     setGeometry(null);
     setGeometryName(null);
     setGeometrySource('manual');
+    clearSharedGeometryOverrideState('Python canonical geometry override cleared because mouth/corner geometry changed.');
     clearMeasurementsAndFits();
     setError(null);
-  }, [clearMeasurementsAndFits, floorGeometryAvailable, image, radiusFactor, wells]);
+  }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, floorGeometryAvailable, image, radiusFactor, wells]);
 
   const handleManualPointPick = useCallback((point: Point) => {
     if (!manualPickingActive || manualPoints.length >= 4) {
@@ -5293,8 +5592,9 @@ function App() {
       setManualFloorCirclePreviewCenter(null);
       setManualFloorCircleRadiusDelta(0);
       setFloorCirclePickingActive(false);
+      clearSharedGeometryOverrideState('Python canonical geometry override cleared because mouth/corner geometry changed.');
     }
-  }, [clearMeasurementsAndFits, geometrySource, manualPoints]);
+  }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, geometrySource, manualPoints]);
 
   const handleResetManualPoints = useCallback(() => {
     setManualPickingActive(false);
@@ -5310,8 +5610,9 @@ function App() {
       setManualFloorCirclePreviewCenter(null);
       setManualFloorCircleRadiusDelta(0);
       setFloorCirclePickingActive(false);
+      clearSharedGeometryOverrideState('Python canonical geometry override cleared because mouth/corner geometry changed.');
     }
-  }, [clearMeasurementsAndFits, geometrySource]);
+  }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, geometrySource]);
 
   const handleExportGeometryJson = useCallback(() => {
     if (!geometry) {
@@ -5352,9 +5653,10 @@ function App() {
     setFloorGeometryNotice(null);
     setShowFloorCircles(true);
     setGeometry(geometryWithoutFloorCircles(geometry));
+    clearSharedGeometryOverrideState('Python canonical geometry override cleared because floor geometry changed.');
     clearMeasurementsAndFits();
     setError(null);
-  }, [clearMeasurementsAndFits, geometry, image, wells.length]);
+  }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, geometry, image, wells.length]);
 
   const handleFloorCirclePointerMove = useCallback((point: Point) => {
     if (!floorCirclePickingActive) {
@@ -5407,11 +5709,13 @@ function App() {
       setManualFloorCircleRadiusDelta(0);
       setFloorGeometryNotice(null);
       setStatusMessage('Manual floor-circle geometry complete');
+      clearSharedGeometryOverrideState('Python canonical geometry override cleared because floor geometry changed.');
     }
 
     setError(null);
   }, [
     clearMeasurementsAndFits,
+    clearSharedGeometryOverrideState,
     currentReferenceMouthCircle,
     floorCirclePickingActive,
     geometry,
@@ -5429,9 +5733,10 @@ function App() {
 
     if (geometry) {
       setGeometry(geometryWithoutFloorCircles(geometry));
+      clearSharedGeometryOverrideState('Python canonical geometry override cleared because floor geometry changed.');
       clearMeasurementsAndFits();
     }
-  }, [clearMeasurementsAndFits, geometry]);
+  }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, geometry]);
 
   const handleExportProjectJson = useCallback(() => {
     try {
@@ -5545,6 +5850,7 @@ function App() {
         savedLowSignalCorrectionEnabled,
       });
 
+      clearSharedGeometryOverrideState('Python canonical geometry override cleared because a project was loaded.');
       clearMeasurementsAndFits();
       setManualPickingActive(false);
       setManualPoints([]);
@@ -5562,6 +5868,7 @@ function App() {
   }, [
     backgroundModel,
     clearMeasurementsAndFits,
+    clearSharedGeometryOverrideState,
     floorGeometrySource,
     floorRoiRadiusFactor,
     geometry,
@@ -5598,9 +5905,10 @@ function App() {
     setFloorGeometrySource('none');
     setFloorGeometryNotice(null);
     setRoiStats(null);
+    clearSharedGeometryOverrideState();
     clearMeasurementsAndFits();
     setError(null);
-  }, [clearMeasurementsAndFits]);
+  }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState]);
 
   const runExtractionRoutine = useCallback(async (options?: {
     roiMode?: 'simple' | 'floor-aware' | 'mouth-floor-intersection';
@@ -5639,32 +5947,36 @@ function App() {
     const success = await new Promise<boolean>((resolve) => {
       window.setTimeout(() => {
         try {
-          const imageData = createAnalysisImageData(image, wells);
-          const floorCirclesForBackground = floorGeometryAvailable && floorCircles && floorCircles.length === wells.length
-            ? floorCircles
+          const extractionWells = sharedGeometryOverride ? effectiveWells : wells;
+          const extractionFloorCircles = sharedGeometryOverride ? effectiveFloorCircles : floorCircles;
+          const extractionFloorGeometryAvailable = sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable;
+          const imageData = createAnalysisImageData(image, extractionWells);
+          const floorCirclesForBackground = extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length
+            ? extractionFloorCircles
             : undefined;
           const precomputedPhysicalBackground = selectedBackgroundModel === 'physical-interwell-polynomial-v1'
-            ? estimatePhysicalInterwellPolynomialBackgrounds(imageData, wells, floorCirclesForBackground)
+            ? estimatePhysicalInterwellPolynomialBackgrounds(imageData, extractionWells, floorCirclesForBackground, sharedGeometryExclusionRadiiByWell)
             : null;
-          const nextMeasurements = wells.map((well) => {
-          const pitch = estimateLocalPitch(wells, well.row, well.col);
+          const nextMeasurements = extractionWells.map((well) => {
+          const overrideRecord = sharedGeometryOverride?.recordsByWell.get(well.wellId);
+          const pitch = overrideRecord?.localPitchPx ?? estimateLocalPitch(extractionWells, well.row, well.col);
           let roiSample;
           let floorRadiusUsed = 0;
           let mouthRadiusUsed = 0;
           let roiModeUsed: 'simple' | 'floor-aware' | 'mouth-floor-intersection' = 'simple';
           const roiWarnings: string[] = [];
 
-          if (selectedRoiMode === 'mouth-floor-intersection' && floorGeometryAvailable && floorCircles && floorCircles.length === wells.length) {
-            const projectedFloorCircle = floorCircles[well.row * 12 + well.col];
-            const floorRadius = Math.max(1, projectedFloorCircle.r * floorRoiRadiusFactor);
-            const mouthRadius = estimateRoiRadius(wells, well.row, well.col, radiusFactor);
+          if (selectedRoiMode === 'mouth-floor-intersection' && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length) {
+            const projectedFloorCircle = extractionFloorCircles[well.row * 12 + well.col];
+            const floorRadius = overrideRecord ? Math.max(1, overrideRecord.floorRadius) : Math.max(1, projectedFloorCircle.r * floorRoiRadiusFactor);
+            const mouthRadius = overrideRecord ? Math.max(1, overrideRecord.mouthRadius) : estimateRoiRadius(extractionWells, well.row, well.col, radiusFactor);
             floorRadiusUsed = floorRadius;
             mouthRadiusUsed = mouthRadius;
             roiModeUsed = 'mouth-floor-intersection';
             roiSample = sampleCircleIntersectionRoi(imageData, well.x, well.y, mouthRadius, projectedFloorCircle.x, projectedFloorCircle.y, floorRadius, { pixelStatisticsMode: selectedRoiPixelStatisticsMode });
-          } else if (selectedRoiMode === 'floor-aware' && floorGeometryAvailable && floorCircles && floorCircles.length === wells.length) {
-            const projectedFloorCircle = floorCircles[well.row * 12 + well.col];
-            const radius = Math.max(1, projectedFloorCircle.r * floorRoiRadiusFactor);
+          } else if (selectedRoiMode === 'floor-aware' && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length) {
+            const projectedFloorCircle = extractionFloorCircles[well.row * 12 + well.col];
+            const radius = overrideRecord ? Math.max(1, overrideRecord.floorRadius) : Math.max(1, projectedFloorCircle.r * floorRoiRadiusFactor);
             floorRadiusUsed = radius;
             roiModeUsed = 'floor-aware';
             roiSample = sampleCircularRoi(imageData, projectedFloorCircle.x, projectedFloorCircle.y, radius, { pixelStatisticsMode: selectedRoiPixelStatisticsMode });
@@ -5672,20 +5984,20 @@ function App() {
             if (selectedRoiMode === 'mouth-floor-intersection' || selectedRoiMode === 'floor-aware') {
               roiWarnings.push(`${selectedRoiMode === 'mouth-floor-intersection' ? 'Mouth-floor intersection' : 'Floor-aware'} ROI selected but floor geometry is unavailable; using simple center ROI instead.`);
             }
-            const roiRadius = estimateRoiRadius(wells, well.row, well.col, radiusFactor);
+            const roiRadius = overrideRecord ? Math.max(1, overrideRecord.mouthRadius) : estimateRoiRadius(extractionWells, well.row, well.col, radiusFactor);
             mouthRadiusUsed = roiRadius;
             roiSample = sampleCircularRoi(imageData, well.x, well.y, roiRadius, { pixelStatisticsMode: selectedRoiPixelStatisticsMode });
           }
 
-          const backgroundCx = (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && floorGeometryAvailable && floorCircles && floorCircles.length === wells.length
-            ? floorCircles[well.row * 12 + well.col].x
+          const backgroundCx = (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length
+            ? extractionFloorCircles[well.row * 12 + well.col].x
             : well.x;
-          const backgroundCy = (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && floorGeometryAvailable && floorCircles && floorCircles.length === wells.length
-            ? floorCircles[well.row * 12 + well.col].y
+          const backgroundCy = (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length
+            ? extractionFloorCircles[well.row * 12 + well.col].y
             : well.y;
-          const backgroundRoiRadius = (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && floorGeometryAvailable && floorCircles && floorCircles.length === wells.length
+          const backgroundRoiRadius = (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length
             ? floorRadiusUsed
-            : estimateRoiRadius(wells, well.row, well.col, radiusFactor);
+            : mouthRadiusUsed || estimateRoiRadius(extractionWells, well.row, well.col, radiusFactor);
           let backgroundSample: BackgroundEstimateWithModel;
 
           if (selectedBackgroundModel === 'physical-interwell-polynomial-v1') {
@@ -5696,14 +6008,15 @@ function App() {
             } else {
               const fallback = estimateBackground(
                 imageData,
-                wells,
+                extractionWells,
                 geometry!,
                 backgroundCx,
                 backgroundCy,
                 backgroundRoiRadius,
                 pitch,
                 'robust-interwell-v1',
-                (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && floorGeometryAvailable && floorCircles ? floorCircles : undefined,
+                (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && extractionFloorGeometryAvailable && extractionFloorCircles ? extractionFloorCircles : undefined,
+                sharedGeometryExclusionRadiiByWell,
               );
               const fallbackWarning = precomputedPhysicalBackground?.fallbackWarning
                 ?? 'Physical inter-well polynomial background unavailable; falling back to robust inter-well background v1.';
@@ -5734,14 +6047,15 @@ function App() {
           } else {
             backgroundSample = estimateBackground(
               imageData,
-              wells,
+              extractionWells,
               geometry!,
               backgroundCx,
               backgroundCy,
               backgroundRoiRadius,
               pitch,
               selectedBackgroundModel,
-              (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && floorGeometryAvailable && floorCircles ? floorCircles : undefined,
+              (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && extractionFloorGeometryAvailable && extractionFloorCircles ? extractionFloorCircles : undefined,
+              sharedGeometryExclusionRadiiByWell,
             );
           }
           const pabsResult = computePAbs(roiSample, backgroundSample.rgbBackground);
@@ -5772,8 +6086,8 @@ function App() {
             candidateRegionY0: backgroundSample.candidateRegionY0 ?? 0,
             candidateRegionX1: backgroundSample.candidateRegionX1 ?? 0,
             candidateRegionY1: backgroundSample.candidateRegionY1 ?? 0,
-            medianPitch: backgroundSample.medianPitch ?? 0,
-            wellExclusionRadiusApprox: backgroundSample.wellExclusionRadiusApprox ?? 0,
+            medianPitch: overrideRecord?.localPitchPx ?? backgroundSample.medianPitch ?? 0,
+            wellExclusionRadiusApprox: overrideRecord?.cylRadiusBg ?? backgroundSample.wellExclusionRadiusApprox ?? 0,
             backgroundMaskAlgorithm: backgroundSample.maskAlgorithm ?? '',
             backgroundWarning: backgroundSample.backgroundWarning ?? '',
             backgroundFitSuccess: backgroundSample.backgroundFitSuccess,
@@ -5786,7 +6100,7 @@ function App() {
             roiTrimDarkQ: roiSample.roiTrimDarkQ ?? null,
             roiTrimBrightQ: roiSample.roiTrimBrightQ ?? null,
             roiStatisticsWarning: (roiSample.roiStatisticsWarnings ?? []).join('; '),
-            floorGeometryAvailable,
+            floorGeometryAvailable: extractionFloorGeometryAvailable,
             floorRadiusUsed,
             mouthRadiusUsed,
             geometryA1MismatchPx: geometryAlignmentDiagnostics?.a1MismatchPx ?? Number.NaN,
@@ -5876,7 +6190,26 @@ function App() {
     });
 
     return success;
-  }, [backgroundModel, clearFits, floorCircles, floorGeometryAvailable, floorRoiRadiusFactor, geometry, geometryAlignmentDiagnostics, image, projectImageMismatchBlocksExtraction, radiusFactor, roiMode, roiPixelStatisticsMode, wells]);
+  }, [
+    backgroundModel,
+    clearFits,
+    effectiveFloorCircles,
+    effectiveFloorGeometryAvailable,
+    effectiveWells,
+    floorCircles,
+    floorGeometryAvailable,
+    floorRoiRadiusFactor,
+    geometry,
+    geometryAlignmentDiagnostics,
+    image,
+    projectImageMismatchBlocksExtraction,
+    radiusFactor,
+    roiMode,
+    roiPixelStatisticsMode,
+    sharedGeometryExclusionRadiiByWell,
+    sharedGeometryOverride,
+    wells,
+  ]);
 
   const runFittingRoutine = useCallback(async (options?: { useLowSignalCorrection?: boolean }): Promise<boolean> => {
     if (isFittingRef.current) {
@@ -6063,14 +6396,17 @@ function App() {
       let backgroundVisualDiagnostics: BackgroundVisualDiagnostics | null = null;
 
       if (image && measurements.length > 0 && wells.length === 96) {
-        const imageData = createAnalysisImageData(image, wells);
+        const exportWells = sharedGeometryOverride ? effectiveWells : wells;
+        const exportFloorCircles = sharedGeometryOverride ? effectiveFloorCircles : floorCircles;
+        const exportFloorGeometryAvailable = sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable;
+        const imageData = createAnalysisImageData(image, exportWells);
         const pythonPlateOverlayCanvas = buildPythonStylePlateRoiOverlayCanvas(
           imageData,
-          wells,
+          exportWells,
           measurements,
           radiusFactor,
           floorRoiRadiusFactor,
-          floorGeometryAvailable ? floorCircles : null,
+          exportFloorGeometryAvailable ? exportFloorCircles : null,
         );
         const pythonFigureRgbCanvas = buildPythonStyleFigureRgbCanvas({
           imageBase: pythonResultsBase,
@@ -6084,7 +6420,7 @@ function App() {
           unitLabel: plateMapUnit,
           roiMode: currentMethodMetadata.roiMode,
           backgroundModel,
-          floorGeometryAvailable,
+          floorGeometryAvailable: exportFloorGeometryAvailable,
           bestChannel,
         });
         const pythonBestChannelCanvas = buildPythonStyleBestChannelCanvas({
@@ -6117,13 +6453,14 @@ function App() {
           const diagnosticBackgroundModel = measurements[0]?.backgroundModel ?? backgroundModel;
           const diagnostics = buildBackgroundVisualDiagnostics(
             imageData,
-            wells,
+            exportWells,
             geometry,
             diagnosticBackgroundModel,
-            floorGeometryAvailable ? floorCircles ?? undefined : undefined,
+            exportFloorGeometryAvailable ? exportFloorCircles ?? undefined : undefined,
+            sharedGeometryExclusionRadiiByWell,
           );
           backgroundVisualDiagnostics = diagnostics;
-          const backgroundMaskCanvas = buildBackgroundMaskDiagnosticCanvas(imageData, wells, diagnostics, geometry);
+          const backgroundMaskCanvas = buildBackgroundMaskDiagnosticCanvas(imageData, exportWells, diagnostics, geometry);
 
           addZipBlob(
             files,
@@ -6153,8 +6490,9 @@ function App() {
           methodMetadata: currentMethodMetadata,
           geometryName,
           geometrySource: currentMethodMetadata.geometrySource ?? 'unknown',
-          floorGeometryAvailable,
+          floorGeometryAvailable: sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable,
           correctionApplied: lowSignalCorrectionEffective,
+          sharedGeometryOverride,
         }),
       );
       addZipBlob(
@@ -6177,14 +6515,17 @@ function App() {
           methodMetadata: currentMethodMetadata,
           geometryName,
           geometrySource: currentMethodMetadata.geometrySource ?? 'unknown',
-          floorGeometryAvailable,
+          floorGeometryAvailable: sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable,
           correctionApplied: lowSignalCorrectionEffective,
-          wells,
+          sharedGeometryOverride,
+          wells: sharedGeometryOverride ? effectiveWells : wells,
           geometry,
           backgroundDiagnostics: backgroundVisualDiagnostics,
           radiusFactor,
           floorRoiRadiusFactor,
-          floorCircles: floorGeometryAvailable ? floorCircles : null,
+          floorCircles: (sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable)
+            ? sharedGeometryOverride ? effectiveFloorCircles : floorCircles
+            : null,
         }),
       );
       if (measurements.length > 0) {
@@ -6238,6 +6579,9 @@ function App() {
     calibrationFits,
     correctedMeasurementSet.measurements,
     currentMethodMetadata,
+    effectiveFloorCircles,
+    effectiveFloorGeometryAvailable,
+    effectiveWells,
     floorCircles,
     floorGeometryAvailable,
     floorRoiRadiusFactor,
@@ -6251,6 +6595,8 @@ function App() {
     plateMapUnit,
     expectedRefs,
     radiusFactor,
+    sharedGeometryExclusionRadiiByWell,
+    sharedGeometryOverride,
     standardAdditionFitsWithSlopeContext,
     unknownResults,
     wells,
@@ -6492,6 +6838,7 @@ function App() {
           onImageLoaded={(loadedImage, fileName) => {
             setImage(loadedImage);
             setImageName(fileName);
+            clearSharedGeometryOverrideState('Python canonical geometry override cleared because a new image was loaded.');
             clearMeasurementsAndFits();
             setError(null);
           }}
@@ -6530,6 +6877,7 @@ function App() {
             setManualFloorCircles([]);
             setManualFloorCirclePreviewCenter(null);
             setManualFloorCircleRadiusDelta(0);
+            clearSharedGeometryOverrideState('Python canonical geometry override cleared because geometry changed.');
             clearMeasurementsAndFits();
             setError(null);
           }}
@@ -6616,6 +6964,46 @@ function App() {
           >
             Export complete geometry JSON
           </button>
+          <details className="geometry-subsection">
+            <summary>Developer diagnostic: shared geometry override</summary>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={handleLoadSharedGeometryOverrideClick}
+            >
+              Load Python canonical geometry JSON
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={!sharedGeometryOverride}
+              onClick={handleClearSharedGeometryOverride}
+            >
+              Clear Python geometry override
+            </button>
+            <input
+              ref={sharedGeometryFileInputRef}
+              className="visually-hidden"
+              type="file"
+              accept="application/json,.json"
+              onChange={handleSharedGeometryOverrideFileChange}
+            />
+            <dl className="status-list compact-status-list">
+              <div>
+                <dt>Override</dt>
+                <dd>{sharedGeometryOverride ? 'Python canonical geometry override active' : 'No override active'}</dd>
+              </div>
+              <div>
+                <dt>Override wells</dt>
+                <dd>{sharedGeometryOverride ? `${sharedGeometryOverride.wellCount} wells` : MISSING_VALUE}</dd>
+              </div>
+              <div>
+                <dt>Override source</dt>
+                <dd>{sharedGeometryOverride?.sourceName ?? MISSING_VALUE}</dd>
+              </div>
+            </dl>
+            <p className="panel-note">{sharedGeometryOverrideStatus}</p>
+          </details>
         </section>
 
         <section className="control-section" aria-labelledby="complete-workflow-heading">
@@ -6722,6 +7110,10 @@ function App() {
             <div>
               <dt>Floor geometry source</dt>
               <dd>{floorGeometrySourceLabel}</dd>
+            </div>
+            <div>
+              <dt>Shared geometry override</dt>
+              <dd>{sharedGeometryOverride ? `${sharedGeometryOverride.wellCount} wells from ${sharedGeometryOverride.sourceName}` : 'Inactive'}</dd>
             </div>
             {roiStats ? (
               <>
