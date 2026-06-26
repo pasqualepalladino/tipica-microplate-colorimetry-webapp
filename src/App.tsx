@@ -1875,7 +1875,6 @@ function buildMethodComparisonRowsFromFitRows(fitRows: XlsxRow[], expectedRefs: 
       Score: finiteOrBlank(scoreInfo.score),
       ScoreFormula: scoreInfo.formula,
       RankMode: scoreInfo.rankMode,
-      BaseScore: finiteOrBlank(scoreInfo.score),
       R2_cal: finiteOrBlank(r2Cal),
       R2_std_mean: finiteOrBlank(r2Std),
       m_cal: finiteOrBlank(mCal),
@@ -1920,8 +1919,10 @@ function buildMethodComparisonRowsFromFitRows(fitRows: XlsxRow[], expectedRefs: 
       baseRow[`estimate_for_expected_${key}`] = Number.isFinite(estimateForRef) ? estimateForRef : '';
       baseRow[`delta_expected_${key}`] = Number.isFinite(estimateForRef) && Number.isFinite(ref.value) ? estimateForRef - ref.value : '';
       baseRow[`recovery_pct_${key}`] = Number.isFinite(estimateForRef) && Number.isFinite(ref.value) && Math.abs(ref.value) > 1e-15 ? (100 * estimateForRef) / ref.value : '';
-      baseRow[`rel_error_${key}`] = Number.isFinite(estimateForRef) && Number.isFinite(ref.value) && Math.abs(ref.value) > 1e-15 ? (100 * (estimateForRef - ref.value)) / ref.value : '';
+      baseRow[`rel_error_${key}`] = Number.isFinite(estimateForRef) && Number.isFinite(ref.value) && Math.abs(ref.value) > 1e-15 ? (estimateForRef - ref.value) / ref.value : '';
     });
+
+    baseRow.BaseScore = finiteOrBlank(scoreInfo.score);
 
     return baseRow;
   });

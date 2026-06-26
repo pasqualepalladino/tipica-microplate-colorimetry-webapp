@@ -79,6 +79,42 @@ WEB_VALIDATION_EXTENSION_COLUMNS = {
 
 CHANNEL_LABELS = ["Red", "Green", "Blue"]
 PABS_FORMULA_TOLERANCE = 1e-9
+SCORE_TOLERANCE = 1e-9
+METHOD_ALIASES = {
+    "DeltaE": "DeltaE_ab",
+    "DeltaE_ab": "DeltaE_ab",
+    "DeltaE_chroma": "DeltaE_ab_chroma",
+    "DeltaE_ab_chroma": "DeltaE_ab_chroma",
+}
+SCORE_COMPARE_FIELDS = [
+    "Method",
+    "Family",
+    "ComparableGroup",
+    "Rank",
+    "Selected",
+    "Score",
+    "BaseScore",
+    "ScoreFormula",
+    "RankMode",
+    "R2_cal",
+    "R2_std_mean",
+    "m_cal",
+    "m_std_mean",
+    "SlopeAgreement",
+    "beta_mean",
+    "bias_index_mean",
+    "SNR",
+    "LOD",
+    "LOQ",
+    "n_stdadd",
+    "n_unknown",
+    "C0_mean",
+    "C0_median",
+    "C0_sd_median",
+    "Estimate_value",
+    "Estimate_sd",
+    "Estimate_source",
+]
 
 
 @dataclass
@@ -335,6 +371,140 @@ def first_row_comparison(py_rows: list[dict[str, str]], web_rows: list[dict[str,
 
 def method_order(rows: list[dict[str, str]]) -> list[str]:
     return [row.get("Method", "") for row in rows if row.get("Method", "")]
+
+
+def canonical_method_name(name: str) -> str:
+    return METHOD_ALIASES.get(str(name).strip(), str(name).strip())
+
+
+def method_rows_by_canonical_key(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    out: dict[str, dict[str, str]] = {}
+    for index, row in enumerate(rows):
+        method = canonical_method_name(row.get("Method", ""))
+        if not method:
+            method = f"row:{index + 1}"
+        out[method] = row
+    return out
+
+
+def has_method_alias_difference(py_row: dict[str, str], web_row: dict[str, str]) -> bool:
+    py_method = str(py_row.get("Method", "")).strip()
+    web_method = str(web_row.get("Method", "")).strip()
+    return py_method != web_method and canonical_method_name(py_method) == canonical_method_name(web_method)
+
+
+def finite_or_none(value: str) -> float | None:
+    parsed = as_float(value)
+    return parsed if math.isfinite(parsed) else None
+
+
+def recompute_method_score(row: dict[str, str]) -> tuple[float, str, list[str]]:
+    r2_cal = finite_or_none(row.get("R2_cal", ""))
+    r2_std = finite_or_none(row.get("R2_std_mean", row.get("R2_std", "")))
+    slope = finite_or_none(row.get("SlopeAgreement", ""))
+    loq = finite_or_none(row.get("LOQ", ""))
+    missing: list[str] = []
+
+    if r2_cal is not None and r2_std is not None and slope is not None:
+        base = (slope ** 2) * math.sqrt(max(r2_cal, 0.0) * max(r2_std, 0.0))
+        if loq is not None and loq > 0:
+            return base / loq, "slope_agreement^2 * sqrt(R2_cal * R2_std) * (1/LOQ)", []
+        return base, "slope_agreement^2 * sqrt(R2_cal * R2_std)", ["LOQ"]
+
+    if r2_cal is not None:
+        return max(r2_cal, 0.0), "R2_cal", []
+
+    if r2_std is not None:
+        return max(r2_std, 0.0), "R2_std_mean", []
+
+    for field, value in [("R2_cal", r2_cal), ("R2_std_mean", r2_std), ("SlopeAgreement", slope)]:
+        if value is None:
+            missing.append(field)
+    return math.nan, "not_recomputable", missing
+
+
+def score_reconstruction_status(row: dict[str, str], field: str) -> tuple[str, float, str, list[str]]:
+    recomputed, formula, missing = recompute_method_score(row)
+    workbook_value = as_float(row.get(field, ""))
+    if not math.isfinite(workbook_value):
+        return "NO_WORKBOOK_VALUE", math.nan, formula, missing
+    if not math.isfinite(recomputed):
+        return "NOT_RECOMPUTABLE", math.nan, formula, missing
+    residual = workbook_value - recomputed
+    return ("PASS" if abs(residual) <= SCORE_TOLERANCE else "WARN"), residual, formula, missing
+
+
+def score_formula_consistent(row: dict[str, str]) -> bool:
+    recomputed, formula, _missing = recompute_method_score(row)
+    workbook_score = as_float(row.get("Score", ""))
+    if not math.isfinite(recomputed) or not math.isfinite(workbook_score):
+        return False
+    return abs(workbook_score - recomputed) <= SCORE_TOLERANCE and (
+        not str(row.get("ScoreFormula", "")).strip() or str(row.get("ScoreFormula", "")).strip() == formula
+    )
+
+
+def numeric_field_diffs(py_row: dict[str, str], web_row: dict[str, str], fields: list[str], tolerance: float = SCORE_TOLERANCE) -> list[str]:
+    diffs: list[str] = []
+    for field in fields:
+        py_val = as_float(py_row.get(field, ""))
+        web_val = as_float(web_row.get(field, ""))
+        if math.isfinite(py_val) and math.isfinite(web_val) and abs(py_val - web_val) > tolerance:
+            diffs.append(field)
+    return diffs
+
+
+def text_field_diffs(py_row: dict[str, str], web_row: dict[str, str], fields: list[str]) -> list[str]:
+    diffs: list[str] = []
+    for field in fields:
+        if str(py_row.get(field, "")).strip() != str(web_row.get(field, "")).strip():
+            diffs.append(field)
+    return diffs
+
+
+def classify_method_difference(py_row: dict[str, str] | None, web_row: dict[str, str] | None) -> str:
+    if py_row is None or web_row is None:
+        return "A missing/extra method due to naming mismatch or availability"
+    if has_method_alias_difference(py_row, web_row):
+        return "A equivalent method alias used for comparison key"
+    input_diffs = numeric_field_diffs(py_row, web_row, [
+        "R2_cal",
+        "R2_std_mean",
+        "m_cal",
+        "m_std_mean",
+        "SlopeAgreement",
+        "beta_mean",
+        "bias_index_mean",
+        "SNR",
+        "LOD",
+        "LOQ",
+        "C0_mean",
+        "C0_median",
+        "C0_sd_median",
+        "Estimate_value",
+        "Estimate_sd",
+    ], tolerance=1e-8)
+    if input_diffs:
+        return f"B same method but different upstream fit inputs ({', '.join(input_diffs[:6])})"
+    py_score_ok = score_formula_consistent(py_row)
+    web_score_ok = score_formula_consistent(web_row)
+    if not py_score_ok or not web_score_ok:
+        return "C same method/input fields but Score does not reconstruct from inferred formula"
+    score_diffs = numeric_field_diffs(py_row, web_row, ["Score", "BaseScore"], tolerance=1e-8)
+    rank_diffs = text_field_diffs(py_row, web_row, ["Rank", "Selected"])
+    if not score_diffs and rank_diffs:
+        return "D same score but different ranking/tie-break or selected group"
+    reference_diffs = [
+        field for field in set(py_row) | set(web_row)
+        if field.startswith(("expected_", "estimate_for_expected_", "delta_expected_", "recovery_pct_", "rel_error_"))
+        and str(py_row.get(field, "")).strip() != str(web_row.get(field, "")).strip()
+    ]
+    if reference_diffs:
+        return "F expected-reference/bias/reporting metric difference"
+    reporting_diffs = text_field_diffs(py_row, web_row, ["Family", "ComparableGroup", "ScoreFormula", "RankMode"])
+    if reporting_diffs:
+        return f"E reporting/grouping label difference ({', '.join(reporting_diffs)})"
+    return "G unknown or below threshold"
 
 
 def key_rows(rows: list[dict[str, str]], fields: list[str]) -> dict[str, dict[str, str]]:
@@ -609,6 +779,153 @@ def method_header_order_status(py_rows: list[list[str]], web_rows: list[list[str
     if set(py_header) == set(web_header):
         return "SAME_COLUMNS_DIFFERENT_ORDER"
     return "DIFFERENT_COLUMNS"
+
+
+def append_score_reconstruction_lines(report: list[str], label: str, rows: list[dict[str, str]]) -> dict[str, dict[str, int]]:
+    report.append(f"### {label} score reconstruction")
+    totals = {"Score": {"PASS": 0, "WARN": 0, "NOT_RECOMPUTABLE": 0, "NO_WORKBOOK_VALUE": 0}, "BaseScore": {"PASS": 0, "WARN": 0, "NOT_RECOMPUTABLE": 0, "NO_WORKBOOK_VALUE": 0}}
+    for row in rows:
+        method = row.get("Method", "")
+        line_parts = [f"- `{method}`"]
+        for field in ["Score", "BaseScore"]:
+            status, residual, formula, missing = score_reconstruction_status(row, field)
+            totals[field][status] = totals[field].get(status, 0) + 1
+            residual_text = f"{residual:.8g}" if math.isfinite(residual) else "nan"
+            missing_text = ",".join(missing) if missing else "none"
+            line_parts.append(f"{field}: {status} residual={residual_text} formula=`{formula}` missing={missing_text}")
+        report.append("; ".join(line_parts))
+    return totals
+
+
+def expected_reference_fields(rows: list[dict[str, str]]) -> list[str]:
+    fields = sorted({
+        key
+        for row in rows
+        for key in row
+        if key.startswith(("expected_", "estimate_for_expected_", "delta_expected_", "recovery_pct_", "rel_error_"))
+    })
+    return fields
+
+
+def append_method_field_comparison(report: list[str], py_row: dict[str, str] | None, web_row: dict[str, str] | None) -> None:
+    fields = SCORE_COMPARE_FIELDS + sorted(set(expected_reference_fields([py_row or {}, web_row or {}])))
+    for field in fields:
+        py_value = py_row.get(field, "") if py_row else ""
+        web_value = web_row.get(field, "") if web_row else ""
+        if str(py_value).strip() == "" and str(web_value).strip() == "":
+            continue
+        if field == "Method" and py_row and web_row and canonical_method_name(str(py_value)) == canonical_method_name(str(web_value)):
+            status = "ALIAS" if str(py_value) != str(web_value) else "MATCH"
+        else:
+            py_num = as_float(str(py_value))
+            web_num = as_float(str(web_value))
+            if math.isfinite(py_num) and math.isfinite(web_num):
+                status = "MATCH" if abs(py_num - web_num) <= 1e-8 else f"DIFF abs={abs(py_num - web_num):.8g}"
+            else:
+                status = "MATCH" if str(py_value).strip() == str(web_value).strip() else "DIFF"
+        report.append(f"  - {field}: python=`{py_value}`, web=`{web_value}`, status={status}")
+
+
+def append_score_method_parity_section(
+    report: list[str],
+    py_cmp_rows: list[list[str]],
+    web_cmp_rows: list[list[str]],
+) -> None:
+    py_rows = rows_as_dicts(py_cmp_rows)
+    web_rows = rows_as_dicts(web_cmp_rows)
+    py_by_method = method_rows_by_canonical_key(py_rows)
+    web_by_method = method_rows_by_canonical_key(web_rows)
+    common = sorted(set(py_by_method) & set(web_by_method))
+    missing = sorted(set(py_by_method) - set(web_by_method))
+    extra = sorted(set(web_by_method) - set(py_by_method))
+    alias_pairs = [
+        (py_by_method[key].get("Method", ""), web_by_method[key].get("Method", ""))
+        for key in common
+        if has_method_alias_difference(py_by_method[key], web_by_method[key])
+    ]
+
+    report.extend(["", "## Score / Method-Comparison Parity"])
+    report.append(f"- header order status: {method_header_order_status(py_cmp_rows, web_cmp_rows)}")
+    report.append(f"- python methods: {method_order(py_rows)}")
+    report.append(f"- web methods: {method_order(web_rows)}")
+    report.append(f"- canonical common methods={len(common)}, missing_in_web={missing}, extra_in_web={extra}")
+    report.append(f"- comparison aliases used: {alias_pairs if alias_pairs else 'none'}")
+    report.append("- Formula audited from source: `Score = BaseScore = slope_agreement^2 * sqrt(R2_cal * R2_std_mean) * (1/LOQ)` for calibration-plus-standard-addition rows with finite positive LOQ; fallback comparable groups use `R2_cal`, `R2_std_mean`, or not-ranked score 0. Expected/reference, recovery, SNR, and clipping fields are diagnostics and are not score inputs.")
+
+    py_totals = append_score_reconstruction_lines(report, "Python", py_rows)
+    web_totals = append_score_reconstruction_lines(report, "Web", web_rows)
+
+    report.extend(["### Method-by-method comparison"])
+    for key in sorted(set(py_by_method) | set(web_by_method)):
+        py_row = py_by_method.get(key)
+        web_row = web_by_method.get(key)
+        classification = classify_method_difference(py_row, web_row)
+        report.append(f"- canonical_method=`{key}` classification={classification}")
+        append_method_field_comparison(report, py_row, web_row)
+
+    report.extend(["### Ranking and selection"])
+    py_selected = [row.get("Method", "") for row in py_rows if str(row.get("Selected", "")).strip() in {"1", "1.0", "TRUE", "true"}]
+    web_selected = [row.get("Method", "") for row in web_rows if str(row.get("Selected", "")).strip() in {"1", "1.0", "TRUE", "true"}]
+    py_best = py_selected[0] if py_selected else (py_rows[0].get("Method", "") if py_rows else "")
+    web_best = web_selected[0] if web_selected else (web_rows[0].get("Method", "") if web_rows else "")
+    report.append(f"- python selected/best: `{py_best}`")
+    report.append(f"- web selected/best: `{web_best}`")
+    report.append(f"- selected canonical match: {canonical_method_name(py_best) == canonical_method_name(web_best)}")
+    report.append(f"- Python reconstruction totals: {py_totals}")
+    report.append(f"- Web reconstruction totals: {web_totals}")
+
+
+def append_score_centered_summary(
+    report: list[str],
+    py_cmp_rows: list[list[str]],
+    web_cmp_rows: list[list[str]],
+) -> None:
+    py_rows = rows_as_dicts(py_cmp_rows)
+    web_rows = rows_as_dicts(web_cmp_rows)
+    py_by_method = method_rows_by_canonical_key(py_rows)
+    web_by_method = method_rows_by_canonical_key(web_rows)
+    common = sorted(set(py_by_method) & set(web_by_method))
+    missing = sorted(set(py_by_method) - set(web_by_method))
+    extra = sorted(set(web_by_method) - set(py_by_method))
+    aliases = [
+        (py_by_method[key].get("Method", ""), web_by_method[key].get("Method", ""))
+        for key in common
+        if has_method_alias_difference(py_by_method[key], web_by_method[key])
+    ]
+    classifications = [classify_method_difference(py_by_method.get(key), web_by_method.get(key)) for key in sorted(set(py_by_method) | set(web_by_method))]
+    input_dominated = sum(1 for item in classifications if item.startswith("B "))
+    formula_dominated = sum(1 for item in classifications if item.startswith("C "))
+    naming_dominated = sum(1 for item in classifications if item.startswith("A "))
+    py_best = next((row.get("Method", "") for row in py_rows if str(row.get("Selected", "")).strip() in {"1", "1.0", "TRUE", "true"}), py_rows[0].get("Method", "") if py_rows else "")
+    web_best = next((row.get("Method", "") for row in web_rows if str(row.get("Selected", "")).strip() in {"1", "1.0", "TRUE", "true"}), web_rows[0].get("Method", "") if web_rows else "")
+
+    report.extend(["", "## Score-Centered Summary"])
+    report.append(f"- Same methods compared after aliases: {not missing and not extra}; missing={missing}; extra={extra}")
+    report.append(f"- Method aliases needed: {aliases if aliases else 'none'}")
+    report.append("- Score/BaseScore internally reconstruct from workbook fields when required fields are finite; see reconstruction statuses above.")
+    if formula_dominated:
+        dominant = "formula reconstruction differences"
+    elif input_dominated:
+        dominant = "upstream numeric input differences"
+    elif naming_dominated:
+        dominant = "method naming/grouping differences"
+    else:
+        dominant = "ranking/reporting differences or below-threshold residuals"
+    report.append(f"- Score differences are currently dominated by: {dominant}")
+    report.append(f"- Python selected/best method: `{py_best}`")
+    report.append(f"- Web selected/best method: `{web_best}`")
+    report.append(f"- Selected/best canonical match: {canonical_method_name(py_best) == canonical_method_name(web_best)}")
+    if missing or extra:
+        first_blocker = "method naming/availability alignment"
+    elif input_dominated:
+        first_blocker = "upstream fit-input parity"
+    elif formula_dominated:
+        first_blocker = "score formula reconstruction parity"
+    elif canonical_method_name(py_best) != canonical_method_name(web_best):
+        first_blocker = "ranking/selection parity"
+    else:
+        first_blocker = "no score blocker identified from existing comparison ZIPs"
+    report.append(f"- First blocking cause: {first_blocker}")
 
 
 def append_process_parity_section(
@@ -943,6 +1260,11 @@ def compare(python_zip: Path, web_zip: Path) -> str:
         ]))
 
         append_process_parity_section(report, py_report, web_report, py_diag, web_diag)
+        append_score_method_parity_section(
+            report,
+            py_report.sheets.get("07_METHOD_COMPARISON", []),
+            web_report.sheets.get("07_METHOD_COMPARISON", []),
+        )
 
         report.extend(["", "## Extraction/Numeric Comparison"])
         py_raw = rows_as_dicts(py_report.sheets.get("04_RAW", []))
@@ -997,6 +1319,11 @@ def compare(python_zip: Path, web_zip: Path) -> str:
             for line in compare_text(py_text, web_text):
                 report.append(f"- {line}")
 
+        append_score_centered_summary(
+            report,
+            py_report.sheets.get("07_METHOD_COMPARISON", []),
+            web_report.sheets.get("07_METHOD_COMPARISON", []),
+        )
         append_cause_classification(report)
         append_next_blocks(report)
 
