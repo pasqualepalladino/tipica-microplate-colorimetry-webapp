@@ -6626,7 +6626,7 @@ function App() {
             disabled={!overlayReady || configuredWellCount === 0 || isExtracting || isFitting || isRunningCompleteAnalysis || projectImageMismatchBlocksExtraction}
             onClick={handleRunCompleteValidatedAnalysis}
           >
-            {isRunningCompleteAnalysis ? 'Running complete analysisâ€¦' : 'Run complete validated analysis'}
+            {isRunningCompleteAnalysis ? 'Running complete analysis...' : 'Run complete validated analysis'}
           </button>
         </section>
 
