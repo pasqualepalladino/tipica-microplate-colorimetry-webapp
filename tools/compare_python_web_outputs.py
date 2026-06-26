@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import math
 import re
 import statistics
@@ -12,6 +13,7 @@ import sys
 import zipfile
 import zlib
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Iterable
@@ -24,6 +26,7 @@ DEFAULT_PYTHON_ZIP = DEFAULT_DIR / "python_RUN_20260529_122854.zip"
 DEFAULT_WEB_ZIP = DEFAULT_DIR / "web_after_36U.zip"
 DEFAULT_REPORT = DEFAULT_DIR / "comparison_report_after_36V.md"
 DEFAULT_VISUAL_DIR = DEFAULT_DIR / "visual_audit_after_36W"
+DEFAULT_SHARED_GEOMETRY_DIR = DEFAULT_DIR / "shared_geometry_after_36W"
 NS = {
     "a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
@@ -1441,6 +1444,335 @@ def geometry_likely_consequence(field: str) -> str:
     return "diagnostic/provenance field"
 
 
+GEOMETRY_RECORD_FIELDS = [
+    "mouth_cx",
+    "mouth_cy",
+    "floor_cx",
+    "floor_cy",
+    "mouth_r",
+    "floor_r",
+    "mouth_r_geom",
+    "floor_r_geom",
+    "cyl_r_bg",
+    "local_pitch_px",
+    "shift_px",
+    "floor_source",
+    "floor_shift_x",
+    "floor_shift_y",
+]
+
+
+def json_value(value: str) -> float | str | None:
+    text = str(value).strip()
+    if text == "" or text.upper() in {"NA", "NAN", "NONE"}:
+        return None
+    numeric = as_float(text)
+    if math.isfinite(numeric):
+        return numeric
+    return text
+
+
+def json_numeric(value: str) -> float | None:
+    numeric = as_float(str(value).strip())
+    return numeric if math.isfinite(numeric) else None
+
+
+def plate_geometry_key_values(rows: list[dict[str, str]]) -> dict[str, float | str | None]:
+    out: dict[str, float | str | None] = {}
+    for row in rows:
+        key = row.get("key", row.get("Key", row.get("Field", ""))).strip()
+        if not key:
+            continue
+        out[key] = json_value(row.get("value", row.get("Value", "")))
+    return out
+
+
+def geometry_fields_present(records: list[dict[str, object]]) -> list[str]:
+    present: set[str] = set()
+    for record in records:
+        for field in GEOMETRY_RECORD_FIELDS:
+            value = record.get(field)
+            if value is not None and value != "":
+                present.add(field)
+    return [field for field in GEOMETRY_RECORD_FIELDS if field in present]
+
+
+def canonical_geometry_from_diagnostics(label: str, source_zip: Path, diagnostics: Workbook) -> dict[str, object]:
+    qc_rows = rows_as_dicts(diagnostics.sheets.get("05_GEOMETRY_QC", []))
+    bottom_rows = rows_as_dicts(diagnostics.sheets.get("06_WELL_BOTTOM", []))
+    plate_rows = rows_as_dicts(diagnostics.sheets.get("07_PLATE_GEOMETRY", []))
+    qc_by_well = key_rows(qc_rows, ["Well"])
+    bottom_by_well = key_rows(bottom_rows, ["Well"])
+    wells = sorted(set(qc_by_well) | set(bottom_by_well))
+    records: list[dict[str, object]] = []
+    for well in wells:
+        qc = qc_by_well.get(well, {})
+        bottom = bottom_by_well.get(well, {})
+        mouth_cx = json_numeric(bottom.get("mouth_cx", ""))
+        mouth_cy = json_numeric(bottom.get("mouth_cy", ""))
+        floor_cx = json_numeric(bottom.get("floor_cx", ""))
+        floor_cy = json_numeric(bottom.get("floor_cy", ""))
+        record: dict[str, object] = {
+            "Well": well,
+            "mouth_cx": mouth_cx,
+            "mouth_cy": mouth_cy,
+            "floor_cx": floor_cx,
+            "floor_cy": floor_cy,
+            "mouth_r": json_numeric(bottom.get("mouth_r", qc.get("mouth_r", ""))),
+            "floor_r": json_numeric(bottom.get("floor_r", qc.get("floor_r", ""))),
+            "mouth_r_geom": json_numeric(bottom.get("mouth_r_geom", "")),
+            "floor_r_geom": json_numeric(bottom.get("floor_r_geom", "")),
+            "cyl_r_bg": json_numeric(bottom.get("cyl_r_bg", "")),
+            "local_pitch_px": json_numeric(bottom.get("local_pitch_px", qc.get("local_pitch_px", ""))),
+            "shift_px": json_numeric(bottom.get("shift_px", qc.get("shift_px", ""))),
+            "floor_source": json_value(qc.get("floor_source", bottom.get("floor_source", ""))),
+        }
+        if mouth_cx is not None and floor_cx is not None:
+            record["floor_shift_x"] = floor_cx - mouth_cx
+        else:
+            record["floor_shift_x"] = None
+        if mouth_cy is not None and floor_cy is not None:
+            record["floor_shift_y"] = floor_cy - mouth_cy
+        else:
+            record["floor_shift_y"] = None
+        record["source_fields_available"] = {
+            "05_GEOMETRY_QC": sorted([key for key, value in qc.items() if str(value).strip() != ""]),
+            "06_WELL_BOTTOM": sorted([key for key, value in bottom.items() if str(value).strip() != ""]),
+        }
+        records.append(record)
+    return {
+        "schema": "tipica-shared-geometry-canonical-v1",
+        "source": label,
+        "source_zip": str(source_zip),
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
+        "source_sheets": ["05_GEOMETRY_QC", "06_WELL_BOTTOM", "07_PLATE_GEOMETRY"],
+        "record_count": len(records),
+        "fields_present": geometry_fields_present(records),
+        "plate_geometry": plate_geometry_key_values(plate_rows),
+        "records": records,
+    }
+
+
+def geometry_record_by_well(geometry: dict[str, object]) -> dict[str, dict[str, object]]:
+    records = geometry.get("records", [])
+    out: dict[str, dict[str, object]] = {}
+    if not isinstance(records, list):
+        return out
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        well = str(record.get("Well", "")).strip()
+        if well:
+            out[well] = record
+    return out
+
+
+def geometry_numeric_stat(py_records: dict[str, dict[str, object]], web_records: dict[str, dict[str, object]], field: str) -> dict[str, float | int]:
+    diffs: list[float] = []
+    signed: list[float] = []
+    for well in sorted(set(py_records) & set(web_records)):
+        py_value = py_records[well].get(field)
+        web_value = web_records[well].get(field)
+        if isinstance(py_value, (int, float)) and isinstance(web_value, (int, float)):
+            delta = float(web_value) - float(py_value)
+            diffs.append(abs(delta))
+            signed.append(delta)
+    return {
+        "paired": len(diffs),
+        "mean_abs": statistics.fmean(diffs) if diffs else math.nan,
+        "median_abs": statistics.median(diffs) if diffs else math.nan,
+        "max_abs": max(diffs) if diffs else math.nan,
+        "signed_mean": statistics.fmean(signed) if signed else math.nan,
+    }
+
+
+def geometry_text_match(py_records: dict[str, dict[str, object]], web_records: dict[str, dict[str, object]], field: str) -> dict[str, int]:
+    common = sorted(set(py_records) & set(web_records))
+    matches = 0
+    diffs = 0
+    for well in common:
+        if py_records[well].get(field) == web_records[well].get(field):
+            matches += 1
+        else:
+            diffs += 1
+    return {"paired": len(common), "matches": matches, "diffs": diffs}
+
+
+def geometry_center_stats(py_records: dict[str, dict[str, object]], web_records: dict[str, dict[str, object]], prefix: str) -> dict[str, float | int]:
+    distances: list[float] = []
+    for well in sorted(set(py_records) & set(web_records)):
+        py_x = py_records[well].get(f"{prefix}_cx")
+        py_y = py_records[well].get(f"{prefix}_cy")
+        web_x = web_records[well].get(f"{prefix}_cx")
+        web_y = web_records[well].get(f"{prefix}_cy")
+        if all(isinstance(value, (int, float)) for value in [py_x, py_y, web_x, web_y]):
+            distances.append(math.hypot(float(web_x) - float(py_x), float(web_y) - float(py_y)))
+    return {
+        "paired": len(distances),
+        "mean_distance": statistics.fmean(distances) if distances else math.nan,
+        "max_distance": max(distances) if distances else math.nan,
+    }
+
+
+def geometry_stats_bundle(py_geometry: dict[str, object], web_geometry: dict[str, object]) -> dict[str, object]:
+    py_records = geometry_record_by_well(py_geometry)
+    web_records = geometry_record_by_well(web_geometry)
+    common = sorted(set(py_records) & set(web_records))
+    numeric_fields = [
+        "mouth_r",
+        "floor_r",
+        "mouth_r_geom",
+        "floor_r_geom",
+        "cyl_r_bg",
+        "local_pitch_px",
+        "shift_px",
+        "floor_shift_x",
+        "floor_shift_y",
+    ]
+    return {
+        "python_count": len(py_records),
+        "web_count": len(web_records),
+        "common_count": len(common),
+        "missing_in_web": sorted(set(py_records) - set(web_records)),
+        "extra_in_web": sorted(set(web_records) - set(py_records)),
+        "mouth_center": geometry_center_stats(py_records, web_records, "mouth"),
+        "floor_center": geometry_center_stats(py_records, web_records, "floor"),
+        "numeric": {field: geometry_numeric_stat(py_records, web_records, field) for field in numeric_fields},
+        "floor_source": geometry_text_match(py_records, web_records, "floor_source"),
+    }
+
+
+def top_geometry_differences(
+    py_records: dict[str, dict[str, object]],
+    web_records: dict[str, dict[str, object]],
+    field: str,
+    limit: int = 8,
+) -> list[tuple[str, float, object, object]]:
+    rows: list[tuple[str, float, object, object]] = []
+    for well in sorted(set(py_records) & set(web_records)):
+        py_value = py_records[well].get(field)
+        web_value = web_records[well].get(field)
+        if isinstance(py_value, (int, float)) and isinstance(web_value, (int, float)):
+            rows.append((well, abs(float(web_value) - float(py_value)), py_value, web_value))
+    return sorted(rows, key=lambda row: row[1], reverse=True)[:limit]
+
+
+def shared_geometry_delta_report(py_geometry: dict[str, object], web_geometry: dict[str, object]) -> str:
+    stats = geometry_stats_bundle(py_geometry, web_geometry)
+    py_records = geometry_record_by_well(py_geometry)
+    web_records = geometry_record_by_well(web_geometry)
+    lines = [
+        "# Shared Geometry Delta Report",
+        "",
+        f"Python source ZIP: `{py_geometry.get('source_zip', '')}`",
+        f"Web source ZIP: `{web_geometry.get('source_zip', '')}`",
+        "",
+        "## Field Availability",
+        f"- Python fields present: {py_geometry.get('fields_present', [])}",
+        f"- Web fields present: {web_geometry.get('fields_present', [])}",
+        f"- records: python={stats['python_count']}, web={stats['web_count']}, common={stats['common_count']}",
+        f"- missing_in_web={stats['missing_in_web']}",
+        f"- extra_in_web={stats['extra_in_web']}",
+        "",
+        "## Center Agreement",
+    ]
+    for label in ["mouth_center", "floor_center"]:
+        center = stats[label]
+        lines.append(
+            f"- {label}: paired={center['paired']}, mean_distance={stats_cell(float(center['mean_distance']))}, max_distance={stats_cell(float(center['max_distance']))}"
+        )
+    lines.extend(["", "## Radius and Background Geometry"])
+    for field in ["mouth_r", "floor_r", "mouth_r_geom", "floor_r_geom", "cyl_r_bg", "local_pitch_px", "shift_px"]:
+        item = stats["numeric"][field]
+        lines.append(
+            f"- {field}: paired={item['paired']}, mean_abs={stats_cell(float(item['mean_abs']))}, max_abs={stats_cell(float(item['max_abs']))}, signed_mean={stats_cell(float(item['signed_mean']))}"
+        )
+    floor_source = stats["floor_source"]
+    lines.append(f"- floor_source: paired={floor_source['paired']}, matches={floor_source['matches']}, diffs={floor_source['diffs']}")
+    if "A1" in py_records and "A1" in web_records:
+        lines.extend(["", "## A1 Snapshot", "| field | Python | Web |", "|---|---:|---:|"])
+        for field in ["mouth_cx", "mouth_cy", "floor_cx", "floor_cy", "mouth_r", "floor_r", "cyl_r_bg", "floor_source"]:
+            lines.append(f"| {field} | `{py_records['A1'].get(field)}` | `{web_records['A1'].get(field)}` |")
+    lines.extend(["", "## Largest Differences"])
+    for field in ["mouth_r", "floor_r", "cyl_r_bg"]:
+        lines.append(f"### {field}")
+        rows = top_geometry_differences(py_records, web_records, field)
+        if not rows:
+            lines.append("- no paired finite differences")
+            continue
+        lines.extend(["| Well | abs_diff | Python | Web |", "|---|---:|---:|---:|"])
+        for well, diff, py_value, web_value in rows:
+            lines.append(f"| {well} | {diff:.8g} | `{py_value}` | `{web_value}` |")
+    lines.extend([
+        "",
+        "## Interpretation",
+        "- Centers are evaluated independently from radii so the next milestone can separate placement parity from mask-size parity.",
+        "- Radius and `cyl_r_bg` mismatches are sufficient to change ROI pixel counts and inter-well background exclusion before PAbs, fitting, or ranking code runs.",
+        "- This report is diagnostic only; it does not modify extraction, calibration, fitting, ranking, C0, dilution, or load-order logic.",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def write_shared_geometry_diagnostics(
+    py_geometry: dict[str, object],
+    web_geometry: dict[str, object],
+    output_dir: Path,
+) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    py_path = output_dir / "python_geometry_canonical.json"
+    web_path = output_dir / "web_geometry_current.json"
+    report_path = output_dir / "geometry_delta_report.md"
+    py_path.write_text(json.dumps(py_geometry, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    web_path.write_text(json.dumps(web_geometry, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    report_path.write_text(shared_geometry_delta_report(py_geometry, web_geometry), encoding="utf-8")
+    return {"python": py_path, "web": web_path, "report": report_path}
+
+
+def append_shared_geometry_parity_section(
+    report: list[str],
+    py_geometry: dict[str, object],
+    web_geometry: dict[str, object],
+    files: dict[str, Path],
+) -> dict[str, object]:
+    stats = geometry_stats_bundle(py_geometry, web_geometry)
+    mouth_center = stats["mouth_center"]
+    floor_center = stats["floor_center"]
+    numeric = stats["numeric"]
+    floor_source = stats["floor_source"]
+    mouth_centers_match = float(mouth_center["max_distance"]) <= 1.0 if math.isfinite(float(mouth_center["max_distance"])) else False
+    floor_centers_match = float(floor_center["max_distance"]) <= 1.0 if math.isfinite(float(floor_center["max_distance"])) else False
+    mouth_r_matches = float(numeric["mouth_r"]["max_abs"]) <= 1e-6 if math.isfinite(float(numeric["mouth_r"]["max_abs"])) else False
+    floor_r_matches = float(numeric["floor_r"]["max_abs"]) <= 1e-6 if math.isfinite(float(numeric["floor_r"]["max_abs"])) else False
+    cyl_r_bg_matches = float(numeric["cyl_r_bg"]["max_abs"]) <= 1e-6 if math.isfinite(float(numeric["cyl_r_bg"]["max_abs"])) else False
+    source_matches = int(floor_source["diffs"]) == 0
+    report.extend([
+        "",
+        "## Shared Geometry Parity Test",
+        "- scope: diagnostic import/export comparison from DIAGNOSTICS workbook geometry sheets; no application runtime logic is changed by this helper.",
+        f"- generated Python canonical geometry: `{files['python']}`",
+        f"- generated web current geometry: `{files['web']}`",
+        f"- generated geometry delta report: `{files['report']}`",
+        f"- records: python={stats['python_count']}, web={stats['web_count']}, common={stats['common_count']}, missing_in_web={len(stats['missing_in_web'])}, extra_in_web={len(stats['extra_in_web'])}",
+        f"- Python geometry fields available: {py_geometry.get('fields_present', [])}",
+        f"- Web geometry fields available: {web_geometry.get('fields_present', [])}",
+        f"- mouth centers: paired={mouth_center['paired']}, mean_distance={stats_cell(float(mouth_center['mean_distance']))}, max_distance={stats_cell(float(mouth_center['max_distance']))}, effective_match={mouth_centers_match}",
+        f"- floor centers: paired={floor_center['paired']}, mean_distance={stats_cell(float(floor_center['mean_distance']))}, max_distance={stats_cell(float(floor_center['max_distance']))}, effective_match={floor_centers_match}",
+        f"- mouth_r: mean_abs={stats_cell(float(numeric['mouth_r']['mean_abs']))}, max_abs={stats_cell(float(numeric['mouth_r']['max_abs']))}, match={mouth_r_matches}",
+        f"- floor_r: mean_abs={stats_cell(float(numeric['floor_r']['mean_abs']))}, max_abs={stats_cell(float(numeric['floor_r']['max_abs']))}, match={floor_r_matches}",
+        f"- cyl_r_bg: mean_abs={stats_cell(float(numeric['cyl_r_bg']['mean_abs']))}, max_abs={stats_cell(float(numeric['cyl_r_bg']['max_abs']))}, match={cyl_r_bg_matches}",
+        f"- floor_source: paired={floor_source['paired']}, matches={floor_source['matches']}, diffs={floor_source['diffs']}, match={source_matches}",
+        "- interpretation: center placement is much closer than radius/background geometry. The radius and `cyl_r_bg` deltas are large enough to explain ROI `n_used` differences and can plausibly drive MeanW/MeanBG drift before PAbs/fitting/ranking.",
+        "- source semantics inspected: Python `roi_geometry.py` projects manual floor circles and reports `manual_D_projection`; web diagnostics currently report JSON-derived floor geometry and derive mouth/floor/background radii through web geometry/background helpers.",
+    ])
+    report.extend([
+        "",
+        "## Shared Geometry Next Step",
+        "- implement a developer-only shared-geometry import/override path, using `python_geometry_canonical.json` as the source, so the web extraction can be rerun with Python centers/radii/background exclusion geometry before changing any scoring, fitting, PAbs, C0, dilution, or marker logic.",
+        "- current limitation: the existing exported web project/geometry path cannot by itself force Python-equivalent per-well `mouth_r`, `floor_r`, `floor_r_geom`, and `cyl_r_bg` values, so a true shared-geometry run is not yet available without code support.",
+    ])
+    return stats
+
+
 def append_geometry_provenance_audit(report: list[str], py_diag: Workbook, web_diag: Workbook) -> dict[str, float]:
     py_qc = rows_as_dicts(py_diag.sheets.get("05_GEOMETRY_QC", []))
     web_qc = rows_as_dicts(web_diag.sheets.get("05_GEOMETRY_QC", []))
@@ -2324,7 +2656,12 @@ def append_next_blocks(report: list[str]) -> None:
     ])
 
 
-def compare(python_zip: Path, web_zip: Path, visual_dir: Path = DEFAULT_VISUAL_DIR) -> str:
+def compare(
+    python_zip: Path,
+    web_zip: Path,
+    visual_dir: Path = DEFAULT_VISUAL_DIR,
+    shared_geometry_dir: Path = DEFAULT_SHARED_GEOMETRY_DIR,
+) -> str:
     report: list[str] = [
         "# TIPICA Python/Web Output Comparison",
         "",
@@ -2471,6 +2808,11 @@ def compare(python_zip: Path, web_zip: Path, visual_dir: Path = DEFAULT_VISUAL_D
             report.append(f"- first-row floor_shift_x: python=`{py_shift_x}`, web=`{web_shift_x}`")
             report.append(f"- first-row floor_shift_y: python=`{py_shift_y}`, web=`{web_shift_y}`")
 
+        py_geometry = canonical_geometry_from_diagnostics("python", python_zip, py_diag)
+        web_geometry = canonical_geometry_from_diagnostics("web", web_zip, web_diag)
+        shared_geometry_files = write_shared_geometry_diagnostics(py_geometry, web_geometry, shared_geometry_dir)
+        append_shared_geometry_parity_section(report, py_geometry, web_geometry, shared_geometry_files)
+
         report.extend(["", "## BG Sample Comparison"])
         py_bg = rows_as_dicts(py_diag.sheets.get("02_BG_SAMPLES", []))
         web_bg = rows_as_dicts(web_diag.sheets.get("02_BG_SAMPLES", []))
@@ -2609,8 +2951,9 @@ def main() -> int:
     parser.add_argument("--web-zip", type=Path, default=DEFAULT_WEB_ZIP)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     parser.add_argument("--visual-dir", type=Path, default=DEFAULT_VISUAL_DIR)
+    parser.add_argument("--shared-geometry-dir", type=Path, default=DEFAULT_SHARED_GEOMETRY_DIR)
     args = parser.parse_args()
-    text = compare(args.python_zip, args.web_zip, args.visual_dir)
+    text = compare(args.python_zip, args.web_zip, args.visual_dir, args.shared_geometry_dir)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(text, encoding="utf-8")
     output_encoding = sys.stdout.encoding or "utf-8"
