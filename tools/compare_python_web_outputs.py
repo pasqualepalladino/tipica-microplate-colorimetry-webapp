@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import math
 import re
 import statistics
+import sys
 import zipfile
+import zlib
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -20,6 +23,7 @@ DEFAULT_DIR = ROOT / "test_data" / "manual_comparison"
 DEFAULT_PYTHON_ZIP = DEFAULT_DIR / "python_RUN_20260529_122854.zip"
 DEFAULT_WEB_ZIP = DEFAULT_DIR / "web_after_36U.zip"
 DEFAULT_REPORT = DEFAULT_DIR / "comparison_report_after_36V.md"
+DEFAULT_VISUAL_DIR = DEFAULT_DIR / "visual_audit_after_36W"
 NS = {
     "a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
@@ -125,6 +129,32 @@ class Workbook:
 
 
 @dataclass
+class PngImage:
+    width: int
+    height: int
+    mode: str
+    bit_depth: int
+    color_type: int
+    rgba: bytes | None
+    error: str = ""
+
+
+@dataclass
+class PngAuditResult:
+    path: str
+    status: str
+    python_dimensions: tuple[int, int] | None
+    web_dimensions: tuple[int, int] | None
+    python_mode: str
+    web_mode: str
+    exact_pixels: bool | None
+    mean_abs_diff: float | None
+    max_abs_diff: int | None
+    percent_nonidentical_pixels: float | None
+    side_by_side: str
+
+
+@dataclass
 class PAbsFormulaSummary:
     label: str
     status: str
@@ -160,6 +190,203 @@ def read_png_size(data: bytes) -> tuple[int, int] | None:
     if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
         return None
     return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+def png_chunks(data: bytes) -> Iterable[tuple[str, bytes]]:
+    if len(data) < 8 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        return
+    offset = 8
+    while offset + 12 <= len(data):
+        length = int.from_bytes(data[offset:offset + 4], "big")
+        chunk_type = data[offset + 4:offset + 8].decode("ascii", errors="replace")
+        chunk_data = data[offset + 8:offset + 8 + length]
+        yield chunk_type, chunk_data
+        offset += 12 + length
+        if chunk_type == "IEND":
+            break
+
+
+def paeth_predictor(a: int, b: int, c: int) -> int:
+    p = a + b - c
+    pa = abs(p - a)
+    pb = abs(p - b)
+    pc = abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+
+def unfilter_png_scanlines(raw: bytes, width: int, height: int, stride: int, bpp: int) -> bytes:
+    rows = bytearray()
+    offset = 0
+    previous = bytearray(stride)
+    for _ in range(height):
+        if offset >= len(raw):
+            raise ValueError("truncated PNG scanline data")
+        filter_type = raw[offset]
+        offset += 1
+        row = bytearray(raw[offset:offset + stride])
+        offset += stride
+        if len(row) != stride:
+            raise ValueError("truncated PNG row")
+        for index in range(stride):
+            left = row[index - bpp] if index >= bpp else 0
+            up = previous[index]
+            up_left = previous[index - bpp] if index >= bpp else 0
+            if filter_type == 1:
+                row[index] = (row[index] + left) & 0xFF
+            elif filter_type == 2:
+                row[index] = (row[index] + up) & 0xFF
+            elif filter_type == 3:
+                row[index] = (row[index] + ((left + up) // 2)) & 0xFF
+            elif filter_type == 4:
+                row[index] = (row[index] + paeth_predictor(left, up, up_left)) & 0xFF
+            elif filter_type != 0:
+                raise ValueError(f"unsupported PNG filter {filter_type}")
+        rows.extend(row)
+        previous = row
+    return bytes(rows)
+
+
+def decode_png_image(data: bytes) -> PngImage:
+    size = read_png_size(data)
+    if size is None:
+        return PngImage(0, 0, "invalid", 0, -1, None, "not a PNG")
+    width, height = size
+    bit_depth = data[24]
+    color_type = data[25]
+    compression = data[26]
+    filter_method = data[27]
+    interlace = data[28]
+    mode_by_type = {0: "L", 2: "RGB", 3: "P", 4: "LA", 6: "RGBA"}
+    mode = mode_by_type.get(color_type, f"type-{color_type}")
+    idat = bytearray()
+    palette: list[tuple[int, int, int]] = []
+    transparency = b""
+    for chunk_type, chunk_data in png_chunks(data):
+        if chunk_type == "IDAT":
+            idat.extend(chunk_data)
+        elif chunk_type == "PLTE":
+            palette = [
+                (chunk_data[index], chunk_data[index + 1], chunk_data[index + 2])
+                for index in range(0, len(chunk_data) - 2, 3)
+            ]
+        elif chunk_type == "tRNS":
+            transparency = chunk_data
+    if bit_depth != 8:
+        return PngImage(width, height, mode, bit_depth, color_type, None, f"unsupported bit depth {bit_depth}")
+    if compression != 0 or filter_method != 0 or interlace != 0:
+        return PngImage(width, height, mode, bit_depth, color_type, None, "unsupported PNG compression/filter/interlace")
+    channels_by_type = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+    channels = channels_by_type.get(color_type)
+    if channels is None:
+        return PngImage(width, height, mode, bit_depth, color_type, None, f"unsupported color type {color_type}")
+    try:
+        decompressed = zlib.decompress(bytes(idat))
+        pixels = unfilter_png_scanlines(decompressed, width, height, width * channels, channels)
+    except Exception as exc:
+        return PngImage(width, height, mode, bit_depth, color_type, None, str(exc))
+
+    rgba = bytearray(width * height * 4)
+    if color_type == 0:
+        for index, value in enumerate(pixels):
+            out = index * 4
+            rgba[out:out + 4] = bytes((value, value, value, 255))
+    elif color_type == 2:
+        for index in range(width * height):
+            src = index * 3
+            out = index * 4
+            rgba[out:out + 4] = bytes((pixels[src], pixels[src + 1], pixels[src + 2], 255))
+    elif color_type == 3:
+        for index, palette_index in enumerate(pixels):
+            rgb = palette[palette_index] if palette_index < len(palette) else (0, 0, 0)
+            alpha = transparency[palette_index] if palette_index < len(transparency) else 255
+            out = index * 4
+            rgba[out:out + 4] = bytes((*rgb, alpha))
+    elif color_type == 4:
+        for index in range(width * height):
+            src = index * 2
+            out = index * 4
+            value = pixels[src]
+            rgba[out:out + 4] = bytes((value, value, value, pixels[src + 1]))
+    elif color_type == 6:
+        rgba[:] = pixels
+    return PngImage(width, height, mode, bit_depth, color_type, bytes(rgba))
+
+
+def png_chunk(chunk_type: bytes, payload: bytes) -> bytes:
+    crc = zlib.crc32(chunk_type)
+    crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
+    return len(payload).to_bytes(4, "big") + chunk_type + payload + crc.to_bytes(4, "big")
+
+
+def encode_png_rgba(width: int, height: int, rgba: bytes) -> bytes:
+    ihdr = (
+        width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+        + bytes((8, 6, 0, 0, 0))
+    )
+    stride = width * 4
+    raw = bytearray()
+    for row in range(height):
+        raw.append(0)
+        start = row * stride
+        raw.extend(rgba[start:start + stride])
+    return b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", ihdr) + png_chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + png_chunk(b"IEND", b"")
+
+
+def paste_rgba(canvas: bytearray, canvas_width: int, image: PngImage, x_offset: int) -> None:
+    if image.rgba is None:
+        return
+    for row in range(image.height):
+        dst = (row * canvas_width + x_offset) * 4
+        src = row * image.width * 4
+        canvas[dst:dst + image.width * 4] = image.rgba[src:src + image.width * 4]
+
+
+def make_side_by_side_png(py_image: PngImage, web_image: PngImage) -> bytes | None:
+    if py_image.rgba is None or web_image.rgba is None:
+        return None
+    gutter = 16
+    width = py_image.width + gutter + web_image.width
+    height = max(py_image.height, web_image.height)
+    canvas = bytearray([255] * width * height * 4)
+    paste_rgba(canvas, width, py_image, 0)
+    paste_rgba(canvas, width, web_image, py_image.width + gutter)
+    return encode_png_rgba(width, height, bytes(canvas))
+
+
+def png_pixel_stats(py_image: PngImage, web_image: PngImage) -> tuple[bool | None, float | None, int | None, float | None]:
+    if py_image.rgba is None or web_image.rgba is None:
+        return None, None, None, None
+    exact = py_image.width == web_image.width and py_image.height == web_image.height and py_image.rgba == web_image.rgba
+    common_width = min(py_image.width, web_image.width)
+    common_height = min(py_image.height, web_image.height)
+    if common_width == 0 or common_height == 0:
+        return exact, None, None, None
+    diff_sum = 0
+    diff_count = 0
+    max_diff = 0
+    nonidentical = 0
+    for y in range(common_height):
+        py_row = y * py_image.width * 4
+        web_row = y * web_image.width * 4
+        for x in range(common_width):
+            py_offset = py_row + x * 4
+            web_offset = web_row + x * 4
+            pixel_different = False
+            for channel in range(4):
+                delta = abs(py_image.rgba[py_offset + channel] - web_image.rgba[web_offset + channel])
+                diff_sum += delta
+                diff_count += 1
+                max_diff = max(max_diff, delta)
+                pixel_different = pixel_different or delta != 0
+            nonidentical += int(pixel_different)
+    mean_abs = diff_sum / diff_count if diff_count else None
+    percent_nonidentical = 100.0 * nonidentical / (common_width * common_height)
+    return exact, mean_abs, max_diff, percent_nonidentical
 
 
 def col_index(cell_ref: str) -> int:
@@ -290,6 +517,61 @@ def numeric_stats(py_rows: list[list[str]], web_rows: list[list[str]], headers: 
     return lines
 
 
+def artifact_category(canon: str) -> str:
+    suffix = Path(canon).suffix.lower()
+    if suffix == ".xlsx":
+        return "workbook"
+    if suffix == ".png":
+        return "PNG"
+    if suffix == ".txt":
+        return "TXT"
+    return "other"
+
+
+def append_full_artifact_inventory(
+    report: list[str],
+    py_zf: zipfile.ZipFile,
+    web_zf: zipfile.ZipFile,
+    py_canon: dict[str, str],
+    web_canon: dict[str, str],
+) -> dict[str, dict[str, str]]:
+    summary: dict[str, dict[str, str]] = {}
+    report.extend([
+        "## Full Artifact Inventory",
+        "| Relative path | Category | Python | Web | Python bytes | Web bytes | Size ratio | Status |",
+        "|---|---|---:|---:|---:|---:|---:|---|",
+    ])
+    for canon in sorted(set(py_canon) | set(web_canon)):
+        py_present = canon in py_canon
+        web_present = canon in web_canon
+        py_size = py_zf.getinfo(py_canon[canon]).file_size if py_present else None
+        web_size = web_zf.getinfo(web_canon[canon]).file_size if web_present else None
+        if py_size and web_size is not None:
+            ratio = f"{web_size / py_size:.6g}"
+        elif py_size == 0 and web_size == 0:
+            ratio = "1"
+        else:
+            ratio = ""
+        status = "PRESENT_BOTH" if py_present and web_present else ("MISSING_IN_WEB" if py_present else "EXTRA_IN_WEB")
+        category = artifact_category(canon)
+        summary[canon] = {
+            "category": category,
+            "file": status,
+            "structure": "",
+            "numeric": "",
+            "text": "",
+            "visual": "",
+            "blocker": "",
+            "next": "",
+        }
+        report.append(
+            f"| `{canon}` | {category} | {'yes' if py_present else 'no'} | {'yes' if web_present else 'no'} | "
+            f"{py_size if py_size is not None else ''} | {web_size if web_size is not None else ''} | {ratio} | {status} |"
+        )
+    report.append("")
+    return summary
+
+
 def sheet_shape(rows: list[list[str]]) -> tuple[int, int]:
     return len(rows), max((len(row) for row in rows), default=0)
 
@@ -311,6 +593,270 @@ def compare_text(py_text: str, web_text: str) -> list[str]:
     return lines
 
 
+def classify_text_difference(py_text: str, web_text: str, present_both: bool) -> str:
+    if not present_both:
+        return "MISSING"
+    if py_text == web_text:
+        return "MATCH"
+    combined = f"{py_text}\n{web_text}".lower()
+    if any(token in combined for token in ["beta", "webapp", "not yet", "not python", "python-identical", "parity"]):
+        return "INTENTIONAL_BETA_DIFFERENCE"
+    if any(token in combined for token in ["formula", "semantics", "calibration", "diagnostic", "mask", "overlay"]):
+        return "SCIENTIFIC_SEMANTIC_DIFFERENCE"
+    normalized_py = re.sub(r"\W+", "", py_text.lower())
+    normalized_web = re.sub(r"\W+", "", web_text.lower())
+    if normalized_py == normalized_web:
+        return "WORDING_ONLY_DIFFERENCE"
+    return "UNKNOWN"
+
+
+def text_diff_excerpt(py_text: str, web_text: str, max_lines: int = 80) -> list[str]:
+    diff = list(difflib.unified_diff(
+        py_text.splitlines(),
+        web_text.splitlines(),
+        fromfile="python",
+        tofile="web",
+        lineterm="",
+        n=3,
+    ))
+    return diff[:max_lines]
+
+
+def append_txt_caption_audit(
+    report: list[str],
+    py_zf: zipfile.ZipFile,
+    web_zf: zipfile.ZipFile,
+    py_canon: dict[str, str],
+    web_canon: dict[str, str],
+    artifact_summary: dict[str, dict[str, str]],
+) -> dict[str, str]:
+    text_status: dict[str, str] = {}
+    report.extend(["", "## TXT Caption/Text Audit"])
+    for canon in sorted(name for name in set(py_canon) | set(web_canon) if name.lower().endswith(".txt")):
+        py_present = canon in py_canon
+        web_present = canon in web_canon
+        py_text = py_zf.read(py_canon[canon]).decode("utf-8", errors="replace") if py_present else ""
+        web_text = web_zf.read(web_canon[canon]).decode("utf-8", errors="replace") if web_present else ""
+        py_lines = py_text.splitlines()
+        web_lines = web_text.splitlines()
+        max_len = max(len(py_lines), len(web_lines))
+        differing_lines = sum(
+            1 for index in range(max_len)
+            if (py_lines[index] if index < len(py_lines) else "") != (web_lines[index] if index < len(web_lines) else "")
+        )
+        first_diff = next((
+            index + 1 for index in range(max_len)
+            if (py_lines[index] if index < len(py_lines) else "") != (web_lines[index] if index < len(web_lines) else "")
+        ), None)
+        classification = classify_text_difference(py_text, web_text, py_present and web_present)
+        text_status[canon] = classification
+        if canon in artifact_summary:
+            artifact_summary[canon]["text"] = classification
+            artifact_summary[canon]["blocker"] = "" if classification == "MATCH" else "caption/text content differs"
+            artifact_summary[canon]["next"] = "decide whether caption semantics are intentional" if classification != "MATCH" else ""
+        report.append(f"### {canon}")
+        report.append(f"- presence: python={py_present}, web={web_present}")
+        report.append(f"- char_count: python={len(py_text)}, web={len(web_text)}")
+        report.append(f"- line_count: python={len(py_lines)}, web={len(web_lines)}")
+        report.append(f"- first_differing_line={first_diff}")
+        report.append(f"- differing_line_count={differing_lines}")
+        report.append(f"- classification={classification}")
+        if first_diff is not None:
+            py_line = py_lines[first_diff - 1] if first_diff - 1 < len(py_lines) else ""
+            web_line = web_lines[first_diff - 1] if first_diff - 1 < len(web_lines) else ""
+            report.append(f"- python_line={py_line[:200]}")
+            report.append(f"- web_line={web_line[:200]}")
+        excerpt = text_diff_excerpt(py_text, web_text)
+        if excerpt:
+            report.append("- unified_diff_excerpt:")
+            report.append("```diff")
+            report.extend(excerpt)
+            report.append("```")
+    if not text_status:
+        report.append("- no TXT files found")
+    return text_status
+
+
+def side_by_side_filename(canon: str) -> str | None:
+    suffixes = {
+        ("RESULTS", "FIGURE_RGB"): "RESULTS_FIGURE_RGB_side_by_side.png",
+        ("RESULTS", "BEST_CHANNEL"): "RESULTS_BEST_CHANNEL_side_by_side.png",
+        ("RESULTS", "PLATE_ROI_OVERLAY"): "RESULTS_PLATE_ROI_OVERLAY_side_by_side.png",
+        ("RAW_DATA_DETAILS", "BG_STAT_MASK"): "RAW_BG_STAT_MASK_side_by_side.png",
+        ("RAW_DATA_DETAILS", "FIGURE_CIELAB_DELTAE"): "RAW_FIGURE_CIELAB_DELTAE_side_by_side.png",
+        ("RAW_DATA_DETAILS", "METHOD_COMPARISON"): "RAW_METHOD_COMPARISON_side_by_side.png",
+    }
+    folder = canon.split("/", 1)[0] if "/" in canon else ""
+    for (expected_folder, token), filename in suffixes.items():
+        if folder == expected_folder and canon.endswith(f"_{token}.png"):
+            return filename
+    return None
+
+
+def append_png_visual_audit(
+    report: list[str],
+    py_zf: zipfile.ZipFile,
+    web_zf: zipfile.ZipFile,
+    py_canon: dict[str, str],
+    web_canon: dict[str, str],
+    visual_dir: Path,
+    artifact_summary: dict[str, dict[str, str]],
+) -> dict[str, PngAuditResult]:
+    visual_dir.mkdir(parents=True, exist_ok=True)
+    png_results: dict[str, PngAuditResult] = {}
+    generated: list[str] = []
+    report.extend(["", "## PNG Visual Audit"])
+    for canon in sorted(name for name in set(py_canon) | set(web_canon) if name.lower().endswith(".png")):
+        py_present = canon in py_canon
+        web_present = canon in web_canon
+        py_image = decode_png_image(py_zf.read(py_canon[canon])) if py_present else PngImage(0, 0, "missing", 0, -1, None, "missing")
+        web_image = decode_png_image(web_zf.read(web_canon[canon])) if web_present else PngImage(0, 0, "missing", 0, -1, None, "missing")
+        exact, mean_abs, max_abs, pct_nonidentical = png_pixel_stats(py_image, web_image)
+        dimensions_match = (py_image.width, py_image.height) == (web_image.width, web_image.height) if py_present and web_present else False
+        if not py_present or not web_present:
+            status = "MISSING"
+        elif py_image.rgba is None or web_image.rgba is None:
+            status = "UNSUPPORTED_OR_DECODE_ERROR"
+        elif exact:
+            status = "PIXEL_IDENTICAL"
+        elif dimensions_match:
+            status = "DIMENSIONS_MATCH_PIXEL_DIFFERENT"
+        else:
+            status = "DIMENSIONS_DIFFER"
+        side_name = side_by_side_filename(canon) or ""
+        if side_name and py_image.rgba is not None and web_image.rgba is not None:
+            composite = make_side_by_side_png(py_image, web_image)
+            if composite is not None:
+                (visual_dir / side_name).write_bytes(composite)
+                generated.append(side_name)
+        result = PngAuditResult(
+            path=canon,
+            status=status,
+            python_dimensions=(py_image.width, py_image.height) if py_present else None,
+            web_dimensions=(web_image.width, web_image.height) if web_present else None,
+            python_mode=py_image.mode,
+            web_mode=web_image.mode,
+            exact_pixels=exact,
+            mean_abs_diff=mean_abs,
+            max_abs_diff=max_abs,
+            percent_nonidentical_pixels=pct_nonidentical,
+            side_by_side=side_name,
+        )
+        png_results[canon] = result
+        if canon in artifact_summary:
+            artifact_summary[canon]["visual"] = status
+            artifact_summary[canon]["blocker"] = "" if status == "PIXEL_IDENTICAL" else "PNG pixels differ or image missing"
+            artifact_summary[canon]["next"] = "inspect visual audit side-by-side" if status != "PIXEL_IDENTICAL" else ""
+        report.append(f"### {canon}")
+        report.append(f"- presence: python={py_present}, web={web_present}")
+        report.append(f"- dimensions: python={result.python_dimensions}, web={result.web_dimensions}, match={dimensions_match}")
+        report.append(f"- mode: python={result.python_mode}, web={result.web_mode}")
+        if py_image.error or web_image.error:
+            report.append(f"- decode_errors: python=`{py_image.error}`, web=`{web_image.error}`")
+        report.append(f"- exact_pixel_equality={result.exact_pixels}")
+        report.append(f"- mean_abs_diff={'' if result.mean_abs_diff is None else f'{result.mean_abs_diff:.8g}'}")
+        report.append(f"- max_abs_diff={'' if result.max_abs_diff is None else result.max_abs_diff}")
+        report.append(f"- percent_nonidentical_pixels={'' if result.percent_nonidentical_pixels is None else f'{result.percent_nonidentical_pixels:.6g}'}")
+        report.append(f"- structural_notes=status {status}; side_by_side={side_name or 'not generated'}")
+    readme = [
+        "# Visual audit after 36W",
+        "",
+        "Generated by `python tools/compare_python_web_outputs.py`.",
+        "",
+        "Each side-by-side PNG places the Python artifact on the left and the web artifact on the right with a white gutter.",
+        "The images are comparison aids only; numerical pixel metrics are in `comparison_report_after_36V.md`.",
+        "",
+        "Generated files:",
+        *[f"- `{name}`" for name in sorted(generated)],
+        "",
+    ]
+    (visual_dir / "README.md").write_text("\n".join(readme), encoding="utf-8")
+    report.append(f"- visual audit folder: `{visual_dir}`")
+    report.append(f"- generated side-by-side PNGs: {sorted(generated)}")
+    report.append("- generated README: `README.md`")
+    return png_results
+
+
+def append_artifact_parity_summary(
+    report: list[str],
+    artifact_summary: dict[str, dict[str, str]],
+    png_results: dict[str, PngAuditResult],
+    text_status: dict[str, str],
+    workbook_status: dict[str, str],
+) -> None:
+    report.extend([
+        "",
+        "## Artifact Parity Summary",
+        "| Artifact | Category | File | Structure/Numeric/Text/Visual | First blocking issue | Recommended next action |",
+        "|---|---|---|---|---|---|",
+    ])
+    for canon, status in sorted(artifact_summary.items()):
+        category = status["category"]
+        details = ""
+        if category == "workbook":
+            kind = workbook_kind(canon) or "workbook"
+            details = f"workbook={workbook_status.get(kind, '')}, numeric={status.get('numeric', '')}"
+        elif category == "PNG":
+            details = f"visual={png_results.get(canon).status if canon in png_results else ''}"
+        elif category == "TXT":
+            details = f"text={text_status.get(canon, '')}"
+        else:
+            details = "not audited deeply"
+        blocker = status.get("blocker") or ("missing/extra artifact" if status.get("file") != "PRESENT_BOTH" else "")
+        next_action = status.get("next") or ("restore matching artifact set" if status.get("file") != "PRESENT_BOTH" else "")
+        report.append(f"| `{canon}` | {category} | {status.get('file', '')} | {details} | {blocker} | {next_action} |")
+
+
+def append_full_artifact_audit_conclusion(
+    report: list[str],
+    py_canon: dict[str, str],
+    web_canon: dict[str, str],
+    png_results: dict[str, PngAuditResult],
+    text_status: dict[str, str],
+    workbook_status: dict[str, str],
+    py_report: Workbook,
+    web_report: Workbook,
+) -> None:
+    png_dimensions_match = all(
+        result.python_dimensions == result.web_dimensions
+        for result in png_results.values()
+        if result.python_dimensions is not None and result.web_dimensions is not None
+    )
+    png_pixels_match = all(result.exact_pixels is True for result in png_results.values())
+    py_methods = rows_as_dicts(py_report.sheets.get("07_METHOD_COMPARISON", []))
+    web_methods = rows_as_dicts(web_report.sheets.get("07_METHOD_COMPARISON", []))
+    py_selected = [row.get("Method", "") for row in py_methods if row.get("Selected", "").strip().upper() in {"YES", "TRUE", "1"}]
+    web_selected = [row.get("Method", "") for row in web_methods if row.get("Selected", "").strip().upper() in {"YES", "TRUE", "1"}]
+    if not py_selected and py_methods:
+        py_selected = [py_methods[0].get("Method", "")]
+    if not web_selected and web_methods:
+        web_selected = [web_methods[0].get("Method", "")]
+    visual_priority = [
+        result.path for result in sorted(
+            png_results.values(),
+            key=lambda item: (
+                item.exact_pixels is True,
+                -(item.percent_nonidentical_pixels or 0),
+                item.path,
+            ),
+        ) if result.exact_pixels is not True
+    ][:3]
+    report.extend([
+        "",
+        "## Full Artifact Audit Conclusion",
+        f"- file_list_status={'MATCH' if set(py_canon) == set(web_canon) else 'DIFFER'}",
+        f"- workbook_status={workbook_status}",
+        f"- txt_classifications={text_status}",
+        f"- png_dimensions_match={png_dimensions_match}",
+        f"- png_pixel_contents_match={png_pixels_match}",
+        f"- selected_method_python={py_selected}",
+        f"- selected_method_web={web_selected}",
+        f"- selected_method_differs={py_selected != web_selected}",
+        f"- first_pngs_for_human_inspection={visual_priority}",
+        "- first_scientific_blocker: resolve workbook numeric/input parity before treating plot and caption differences as final artifact mismatches.",
+    ])
+
+
 def rows_as_dicts(rows: list[list[str]]) -> list[dict[str, str]]:
     if not rows:
         return []
@@ -326,6 +872,250 @@ def row_value(row: dict[str, str], *keys: str) -> str:
         if key in row:
             return row.get(key, "")
     return ""
+
+
+def pearson_correlation(xs: list[float], ys: list[float]) -> float | None:
+    if len(xs) < 3 or len(xs) != len(ys):
+        return None
+    mean_x = statistics.fmean(xs)
+    mean_y = statistics.fmean(ys)
+    centered_x = [value - mean_x for value in xs]
+    centered_y = [value - mean_y for value in ys]
+    denom_x = sum(value * value for value in centered_x)
+    denom_y = sum(value * value for value in centered_y)
+    if denom_x <= 0 or denom_y <= 0:
+        return None
+    return sum(x * y for x, y in zip(centered_x, centered_y)) / math.sqrt(denom_x * denom_y)
+
+
+def empty_counts_by_header(rows: list[list[str]]) -> dict[str, int]:
+    if not rows:
+        return {}
+    headers = rows[0]
+    counts = {header: 0 for header in headers}
+    for row in rows[1:]:
+        for index, header in enumerate(headers):
+            if index >= len(row) or str(row[index]).strip() == "":
+                counts[header] += 1
+    return counts
+
+
+def finite_counts_by_header(rows: list[list[str]]) -> dict[str, int]:
+    if not rows:
+        return {}
+    headers = rows[0]
+    counts = {header: 0 for header in headers}
+    for row in rows[1:]:
+        for index, header in enumerate(headers):
+            value = row[index] if index < len(row) else ""
+            counts[header] += int(math.isfinite(as_float(value)))
+    return {header: count for header, count in counts.items() if count > 0}
+
+
+def compact_count_diff(py_counts: dict[str, int], web_counts: dict[str, int]) -> dict[str, tuple[int, int]]:
+    diff: dict[str, tuple[int, int]] = {}
+    for header in sorted(set(py_counts) | set(web_counts)):
+        py_count = py_counts.get(header, 0)
+        web_count = web_counts.get(header, 0)
+        if py_count != web_count:
+            diff[header] = (py_count, web_count)
+    return diff
+
+
+def common_stable_key_fields(py_header: list[str], web_header: list[str]) -> list[str]:
+    candidates = [
+        ["Well"],
+        ["BG_Cell_Row", "BG_Cell_Col"],
+        ["Method"],
+        ["Channel", "FitType", "ID", "DF"],
+        ["Channel", "FitType"],
+        ["Sheet"],
+        ["Field"],
+        ["Key"],
+    ]
+    for fields in candidates:
+        if all(field in py_header and field in web_header for field in fields):
+            return fields
+    return []
+
+
+def canonical_key_part(field: str, value: str) -> str:
+    text = str(value).strip()
+    if field == "Method":
+        return canonical_method_name(text)
+    if field in {"Well", "Channel", "FitType", "ID", "DF"}:
+        return text.upper()
+    return text
+
+
+def keyed_rows(rows: list[list[str]], key_fields: list[str]) -> tuple[dict[tuple[str, ...], dict[str, str]], list[tuple[str, ...]], bool]:
+    dicts = rows_as_dicts(rows)
+    out: dict[tuple[str, ...], dict[str, str]] = {}
+    order: list[tuple[str, ...]] = []
+    unique = True
+    for index, row in enumerate(dicts):
+        key = tuple(canonical_key_part(field, row.get(field, "")) for field in key_fields)
+        if not any(key):
+            key = (f"row:{index + 1}",)
+            unique = False
+        if key in out:
+            unique = False
+            key = (*key, f"duplicate:{index + 1}")
+        out[key] = row
+        order.append(key)
+    return out, order, unique
+
+
+def paired_workbook_rows(py_rows: list[list[str]], web_rows: list[list[str]]) -> tuple[str, list[tuple[dict[str, str], dict[str, str]]], list[str]]:
+    if not py_rows or not web_rows:
+        return "missing rows", [], []
+    py_header = py_rows[0]
+    web_header = web_rows[0]
+    key_fields = common_stable_key_fields(py_header, web_header)
+    if key_fields:
+        py_by_key, py_order, py_unique = keyed_rows(py_rows, key_fields)
+        web_by_key, web_order, web_unique = keyed_rows(web_rows, key_fields)
+        if py_unique and web_unique:
+            common_keys = [key for key in py_order if key in web_by_key]
+            pairs = [(py_by_key[key], web_by_key[key]) for key in common_keys]
+            row_order = "MATCH" if py_order == web_order else "DIFFER"
+            mode = f"key-based ({'+'.join(key_fields)}), common={len(common_keys)}, row_order={row_order}"
+            return mode, pairs, ["|".join(key) for key in common_keys[:5]]
+    row_count = min(len(py_rows), len(web_rows)) - 1
+    py_dicts = rows_as_dicts(py_rows)
+    web_dicts = rows_as_dicts(web_rows)
+    return "row-order comparison only (no stable unique key)", list(zip(py_dicts[:row_count], web_dicts[:row_count])), [str(index + 1) for index in range(min(5, row_count))]
+
+
+def paired_numeric_column_stats(
+    pairs: list[tuple[dict[str, str], dict[str, str]]],
+    shared_headers: list[str],
+) -> list[str]:
+    lines: list[str] = []
+    for header in shared_headers:
+        py_values: list[float] = []
+        web_values: list[float] = []
+        diffs: list[float] = []
+        signed: list[float] = []
+        for py_row, web_row in pairs:
+            py_value = as_float(py_row.get(header, ""))
+            web_value = as_float(web_row.get(header, ""))
+            if math.isfinite(py_value) and math.isfinite(web_value):
+                py_values.append(py_value)
+                web_values.append(web_value)
+                diffs.append(abs(web_value - py_value))
+                signed.append(web_value - py_value)
+        if not diffs:
+            continue
+        corr = pearson_correlation(py_values, web_values)
+        corr_text = f"{corr:.8g}" if corr is not None else "NA"
+        lines.append(
+            f"- `{header}`: paired={len(diffs)}, mean_abs={statistics.fmean(diffs):.8g}, "
+            f"median_abs={statistics.median(diffs):.8g}, max_abs={max(diffs):.8g}, "
+            f"signed_mean={statistics.fmean(signed):.8g}, pearson={corr_text}"
+        )
+    return lines
+
+
+def numeric_lines_have_nonzero_delta(lines: list[str]) -> bool:
+    for line in lines:
+        match = re.search(r"max_abs=([-+0-9.eE]+)", line)
+        if match and abs(float(match.group(1))) > 1e-12:
+            return True
+    return False
+
+
+def classify_sheet_audit(
+    py_rows: list[list[str]],
+    web_rows: list[list[str]],
+    header_status: str,
+    row_mode: str,
+    numeric_lines: list[str],
+    empty_diff: dict[str, tuple[int, int]],
+) -> str:
+    if not py_rows or not web_rows:
+        return "MISSING_SHEET_OR_ROWS"
+    if header_status == "WEB_VALIDATION_EXTENSION":
+        return "WEB_VALIDATION_EXTENSION"
+    if header_status != "MATCH":
+        return "HEADER_DIFFERENCE"
+    if numeric_lines_have_nonzero_delta(numeric_lines):
+        return "NUMERIC_DIFFERENCE"
+    if empty_diff:
+        return "EMPTY_CELL_DIFFERENCE"
+    if "row_order=DIFFER" in row_mode:
+        return "ROW_ORDER_DIFFERENCE"
+    return "STRUCTURE_MATCH"
+
+
+def append_workbook_deep_audit(
+    report: list[str],
+    workbooks: dict[tuple[str, str], Workbook],
+    artifact_summary: dict[str, dict[str, str]],
+) -> dict[str, str]:
+    workbook_status: dict[str, str] = {}
+    report.extend(["", "## Workbook Deep Audit"])
+    for kind in ["REPORT", "DIAGNOSTICS"]:
+        py_wb = workbooks.get(("python", kind))
+        web_wb = workbooks.get(("web", kind))
+        if not py_wb or not web_wb:
+            report.append(f"### {kind}")
+            report.append("- workbook missing on one side")
+            workbook_status[kind] = "MISSING"
+            continue
+        artifact_key = canonical_zip_name(py_wb.name)
+        report.append(f"### {kind}")
+        report.append(f"- sheet_order_status={'MATCH' if py_wb.order == web_wb.order else 'DIFFER'}")
+        sheet_statuses: list[str] = []
+        for sheet in sorted(set(py_wb.sheets) | set(web_wb.sheets), key=lambda name: (KEY_SHEETS.get(kind, []).index(name) if name in KEY_SHEETS.get(kind, []) else 999, name)):
+            py_rows = py_wb.sheets.get(sheet, [])
+            web_rows = web_wb.sheets.get(sheet, [])
+            py_header = py_rows[0] if py_rows else []
+            web_header = web_rows[0] if web_rows else []
+            extension_columns = WEB_VALIDATION_EXTENSION_COLUMNS.get((kind, sheet), [])
+            web_without_extensions = [header for header in web_header if header not in extension_columns]
+            intentional_extension = bool(extension_columns) and py_header == web_without_extensions
+            header_match = py_header == web_header
+            missing_cols = [header for header in py_header if header not in web_header]
+            extra_cols = [header for header in web_header if header not in py_header]
+            header_status = "MATCH" if header_match else ("WEB_VALIDATION_EXTENSION" if intentional_extension else "DIFFER")
+            row_mode, pairs, first_keys = paired_workbook_rows(py_rows, web_rows)
+            shared_headers = [header for header in py_header if header in web_header]
+            numeric_lines = paired_numeric_column_stats(pairs, shared_headers)
+            py_empty = empty_counts_by_header(py_rows)
+            web_empty = empty_counts_by_header(web_rows)
+            empty_diff = compact_count_diff(py_empty, web_empty)
+            py_finite = finite_counts_by_header(py_rows)
+            web_finite = finite_counts_by_header(web_rows)
+            finite_diff = compact_count_diff(py_finite, web_finite)
+            classification = classify_sheet_audit(py_rows, web_rows, header_status, row_mode, numeric_lines, empty_diff)
+            sheet_statuses.append(classification)
+            report.append(f"#### {sheet}")
+            report.append(f"- exists: python={bool(py_rows)}, web={bool(web_rows)}")
+            report.append(f"- shape: python={sheet_shape(py_rows)}, web={sheet_shape(web_rows)}")
+            report.append(f"- header_status={header_status}")
+            report.append(f"- missing_columns={missing_cols}")
+            report.append(f"- extra_columns={extra_cols}")
+            if intentional_extension:
+                report.append(f"- accepted_web_validation_columns={[header for header in extension_columns if header in web_header]}")
+            report.append(f"- matching_mode={row_mode}")
+            report.append(f"- first_5_key_values={first_keys}")
+            report.append(f"- row_order_status={'DIFFER' if 'row_order=DIFFER' in row_mode else ('ROW_ORDER_ONLY' if 'row-order comparison only' in row_mode else 'MATCH')}")
+            report.append(f"- empty_count_differences={empty_diff}")
+            report.append(f"- numeric_finite_count_differences={finite_diff}")
+            report.append("- shared_numeric_stats:")
+            report.extend(numeric_lines[:60] if numeric_lines else ["  - none"])
+            if len(numeric_lines) > 60:
+                report.append(f"  - ... {len(numeric_lines) - 60} additional numeric columns omitted from display")
+            report.append(f"- classification={classification}")
+        overall = "MATCH" if all(status == "STRUCTURE_MATCH" for status in sheet_statuses) else "DIFFER"
+        workbook_status[kind] = overall
+        if artifact_key in artifact_summary:
+            artifact_summary[artifact_key]["structure"] = overall
+            artifact_summary[artifact_key]["numeric"] = "DIFFER" if any("NUMERIC" in status for status in sheet_statuses) else overall
+            artifact_summary[artifact_key]["blocker"] = "workbook sheet/header/numeric differences" if overall == "DIFFER" else ""
+            artifact_summary[artifact_key]["next"] = "inspect Workbook Deep Audit" if overall == "DIFFER" else ""
+    return workbook_status
 
 
 def numeric_delta_summary(py_rows: list[dict[str, str]], web_rows: list[dict[str, str]], fields: list[tuple[str, str]]) -> list[str]:
@@ -1069,7 +1859,7 @@ def append_next_blocks(report: list[str]) -> None:
     ])
 
 
-def compare(python_zip: Path, web_zip: Path) -> str:
+def compare(python_zip: Path, web_zip: Path, visual_dir: Path = DEFAULT_VISUAL_DIR) -> str:
     report: list[str] = [
         "# TIPICA Python/Web Output Comparison",
         "",
@@ -1082,6 +1872,7 @@ def compare(python_zip: Path, web_zip: Path) -> str:
         web_names = [name for name in web_zf.namelist() if not name.endswith("/")]
         py_canon = {canonical_zip_name(name): name for name in py_names}
         web_canon = {canonical_zip_name(name): name for name in web_names}
+        artifact_summary = append_full_artifact_inventory(report, py_zf, web_zf, py_canon, web_canon)
         report.extend([
             "## File/package Parity",
             f"Python files: {len(py_names)}",
@@ -1122,6 +1913,8 @@ def compare(python_zip: Path, web_zip: Path) -> str:
             report.append(f"python_order={py_wb.order}")
             report.append(f"web_order={web_wb.order}")
         report.append(f"Workbook sheet-order status: {'MATCH' if sheet_order_mismatches == 0 else 'DIFFER'}")
+
+        workbook_status = append_workbook_deep_audit(report, workbooks, artifact_summary)
 
         report.extend(["", "## Workbook Shape/Header/Numeric Overview"])
         for kind in ["DIAGNOSTICS", "REPORT"]:
@@ -1319,10 +2112,24 @@ def compare(python_zip: Path, web_zip: Path) -> str:
             for line in compare_text(py_text, web_text):
                 report.append(f"- {line}")
 
+        text_status = append_txt_caption_audit(report, py_zf, web_zf, py_canon, web_canon, artifact_summary)
+        png_results = append_png_visual_audit(report, py_zf, web_zf, py_canon, web_canon, visual_dir, artifact_summary)
+        append_artifact_parity_summary(report, artifact_summary, png_results, text_status, workbook_status)
+
         append_score_centered_summary(
             report,
             py_report.sheets.get("07_METHOD_COMPARISON", []),
             web_report.sheets.get("07_METHOD_COMPARISON", []),
+        )
+        append_full_artifact_audit_conclusion(
+            report,
+            py_canon,
+            web_canon,
+            png_results,
+            text_status,
+            workbook_status,
+            py_report,
+            web_report,
         )
         append_cause_classification(report)
         append_next_blocks(report)
@@ -1335,11 +2142,13 @@ def main() -> int:
     parser.add_argument("--python-zip", type=Path, default=DEFAULT_PYTHON_ZIP)
     parser.add_argument("--web-zip", type=Path, default=DEFAULT_WEB_ZIP)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument("--visual-dir", type=Path, default=DEFAULT_VISUAL_DIR)
     args = parser.parse_args()
-    text = compare(args.python_zip, args.web_zip)
+    text = compare(args.python_zip, args.web_zip, args.visual_dir)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(text, encoding="utf-8")
-    print(text)
+    output_encoding = sys.stdout.encoding or "utf-8"
+    print(text.encode(output_encoding, errors="replace").decode(output_encoding, errors="replace"))
     print(f"Wrote {args.report}")
     return 0
 
