@@ -1917,6 +1917,50 @@ def append_shared_geometry_residual_source_audit(
     report.append("- practical next step: compare the exported intermediate rows for ROI pixels, BG samples, raw PAbs inputs, corrected PAbs intermediates, and fit-input y values side by side; the current report only exposes the residual symptoms, not the exact source rows.")
 
 
+def append_next_corrective_target_decision(
+    report: list[str],
+    py_report: Workbook,
+    web_report: Workbook,
+    py_diag: Workbook,
+    web_diag: Workbook,
+) -> None:
+    py_stats = rows_as_dicts(py_diag.sheets.get("04_WELL_ROBUST_STATS", []))
+    web_stats = rows_as_dicts(web_diag.sheets.get("04_WELL_ROBUST_STATS", []))
+    py_bg = rows_as_dicts(py_diag.sheets.get("02_BG_SAMPLES", []))
+    web_bg = rows_as_dicts(web_diag.sheets.get("02_BG_SAMPLES", []))
+    py_raw = rows_as_dicts(py_report.sheets.get("04_RAW", []))
+    web_raw = rows_as_dicts(web_report.sheets.get("04_RAW", []))
+    py_cielab = rows_as_dicts(py_report.sheets.get("04_RAW", []))
+    web_cielab = rows_as_dicts(web_report.sheets.get("04_RAW", []))
+    fit_summary = shared_geometry_fit_input_summary(py_report, web_report)
+
+    roi_n_used = field_diff_stats(py_stats, web_stats, ["Well"], "n_used")
+    roi_used_fraction = field_diff_stats(py_stats, web_stats, ["Well"], "used_fraction")
+    roi_rgb = [field_diff_stats(py_stats, web_stats, ["Well"], field) for field in ["Red_median", "Green_median", "Blue_median"]]
+    roi_rgb_max = max((float(item["max_abs"]) for item in roi_rgb if math.isfinite(float(item["max_abs"]))), default=math.nan)
+    bg_area = field_diff_stats(py_bg, web_bg, ["BG_Cell_Row", "BG_Cell_Col"], "area")
+    bg_rgb = [field_diff_stats(py_bg, web_bg, ["BG_Cell_Row", "BG_Cell_Col"], field) for field in ["Red_median_raw", "Green_median_raw", "Blue_median_raw"]]
+    bg_rgb_max = max((float(item["max_abs"]) for item in bg_rgb if math.isfinite(float(item["max_abs"]))), default=math.nan)
+    pabs_summaries = {label: pabs_formula_summary(web_raw, label) for label in CHANNEL_LABELS}
+    pabs_warn_count = sum(1 for summary in pabs_summaries.values() if summary.status == "WARN")
+    pabs_pass_count = sum(1 for summary in pabs_summaries.values() if summary.status == "PASS")
+
+    report.extend(["", "## Next Corrective Target Decision"])
+    report.append("- first corrective target: ROI mask/inclusion parity under shared geometry.")
+    report.append("- second corrective target: BG mask/model parity under shared geometry.")
+    report.append("- diagnostic-only target: PAbs correction traceability/export and CIELAB conversion/reference parity.")
+    report.append("- not currently first cause: fit regression/score formula, geometry/radii override behavior, and selected-method naming.")
+    report.append("- reason: shared-geometry geometry/radii now match exactly, so the next scientific correction should attack the pixel-inclusion path that still changes ROI/BG inputs before MeanW/MeanBG/PAbs/fit-input y-values are formed.")
+    report.append(f"- evidence: ROI n_used max_abs={stats_cell(roi_n_used['max_abs'])}, used_fraction max_abs={stats_cell(roi_used_fraction['max_abs'])}, RGB_median max_abs={stats_cell(roi_rgb_max)}; BG area max_abs={stats_cell(bg_area['max_abs'])}, RGB_median max_abs={stats_cell(bg_rgb_max)}")
+    report.append("- evidence: MeanW/MeanBG/PAbs remain nonzero after shared geometry, and the current report shows PAbs reconstruction PASS/WARN rather than a clean pass across all channels.")
+    report.append(f"- evidence: fit-input y residuals remain present with common rows={fit_summary['common_fit_rows']}, x_match_count={fit_summary['x_match_count']}, y_diff_max_abs={stats_cell(float(fit_summary['y_diff_max_abs']))}, y_diff_mean_abs={stats_cell(float(fit_summary['y_diff_mean_abs']))}")
+    report.append(f"- evidence: PAbs reconstruction status counts are pass={pabs_pass_count}, warn={pabs_warn_count}; CIELAB residuals remain downstream of extraction/conversion and are not the first target.")
+    report.append("- what not to change yet: no runtime app logic, no score/fitting/PAbs formula/C0/dilution/geometry override/workbook schema changes.")
+    report.extend(["### Proposed Next Milestone"])
+    report.append("- 36W-N — ROI mask/inclusion parity under shared geometry")
+    report.append("- follow-up: 36W-O — BG mask/model parity under shared geometry")
+
+
 def append_shared_geometry_override_residual_audit(
     report: list[str],
     py_report: Workbook,
@@ -1941,6 +1985,7 @@ def append_shared_geometry_override_residual_audit(
         report.append(f"- shared-geometry override wells: {wells}")
     report.append("- scope: compare residual extraction and downstream numeric fields after shared-geometry override geometry is active.")
     append_shared_geometry_residual_source_audit(report, py_report, web_report, py_diag, web_diag)
+    append_next_corrective_target_decision(report, py_report, web_report, py_diag, web_diag)
 
     py_stats = rows_as_dicts(py_diag.sheets.get("04_WELL_ROBUST_STATS", []))
     web_stats = rows_as_dicts(web_diag.sheets.get("04_WELL_ROBUST_STATS", []))
