@@ -1839,6 +1839,36 @@ def shared_geometry_override_wells(geometry: dict[str, object]) -> str:
     return str(raw_value).strip()
 
 
+def append_roi_mask_inclusion_parity_audit(
+    report: list[str],
+    py_diag: Workbook,
+    web_diag: Workbook,
+) -> None:
+    py_stats = rows_as_dicts(py_diag.sheets.get("04_WELL_ROBUST_STATS", []))
+    web_stats = rows_as_dicts(web_diag.sheets.get("04_WELL_ROBUST_STATS", []))
+
+    report.extend(["", "## ROI Mask/Inclusion Parity Audit"])
+    report.append("- scope: inspect ROI inclusion semantics using the exported robust-stat rows only; no runtime logic is changed by this diagnostic section.")
+    report.append("- objective: separate whether remaining residuals come from full-mask inclusion, core-pixel erosion, or used-pixel trimming after shared geometry is already matched.")
+
+    for label, field in [
+        ("n_roi", "n_roi"),
+        ("n_core", "n_core"),
+        ("n_used", "n_used"),
+        ("used_fraction", "used_fraction"),
+        ("highlight_fraction_roi", "highlight_fraction_roi"),
+        ("highlight_fraction_core", "highlight_fraction_core"),
+    ]:
+        stats = field_diff_stats(py_stats, web_stats, ["Well"], field)
+        report.append(f"- {label}: paired={stats['paired']}, mean_abs={stats_cell(stats['mean_abs'])}, max_abs={stats_cell(stats['max_abs'])}, signed_mean={stats_cell(stats['signed_mean'])}")
+
+    report.append("- interpretation: nonzero `n_roi`/`n_core`/`n_used` deltas point to mask construction or inclusion-filtering differences; nonzero `used_fraction` deltas suggest different trimming or robust-pixel selection even when the mask footprint is similar.")
+    append_top_differences_table(report, "- worst ROI wells by `n_used` difference:", top_numeric_differences(py_stats, web_stats, ["Well"], "n_used", 5))
+    append_top_differences_table(report, "- worst ROI wells by `used_fraction` difference:", top_numeric_differences(py_stats, web_stats, ["Well"], "used_fraction", 5))
+    report.append("- source-code note: the current web ROI path samples circular or mouth/floor-intersection masks and then applies robust trimming/erosion heuristics before producing the exported statistics; this can change `n_used` and `used_fraction` without altering sheet geometry centers/radii.")
+    report.append("- next action if this audit is confirmed: compare the exact pixel-coordinate lists exported by the web path with the Python ROI mask semantics, then decide whether the mismatch is a benign reporting difference or a low-risk inclusion fix.")
+
+
 def append_shared_geometry_residual_source_audit(
     report: list[str],
     py_report: Workbook,
@@ -1985,6 +2015,7 @@ def append_shared_geometry_override_residual_audit(
         report.append(f"- shared-geometry override wells: {wells}")
     report.append("- scope: compare residual extraction and downstream numeric fields after shared-geometry override geometry is active.")
     append_shared_geometry_residual_source_audit(report, py_report, web_report, py_diag, web_diag)
+    append_roi_mask_inclusion_parity_audit(report, py_diag, web_diag)
     append_next_corrective_target_decision(report, py_report, web_report, py_diag, web_diag)
 
     py_stats = rows_as_dicts(py_diag.sheets.get("04_WELL_ROBUST_STATS", []))
