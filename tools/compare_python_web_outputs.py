@@ -123,6 +123,77 @@ SCORE_COMPARE_FIELDS = [
     "Estimate_source",
 ]
 
+AUDIT_36W_O_RAW_COLUMNS = [
+    "PAbs_Red_raw",
+    "PAbs_Red_exported",
+    "PAbs_Red_correction_delta",
+    "S0_Red_applied",
+    "ClipDelta_Red_applied",
+    "TotalDelta_Red_applied",
+    "PAbs_Green_raw",
+    "PAbs_Green_exported",
+    "PAbs_Green_correction_delta",
+    "S0_Green_applied",
+    "ClipDelta_Green_applied",
+    "TotalDelta_Green_applied",
+    "PAbs_Blue_raw",
+    "PAbs_Blue_exported",
+    "PAbs_Blue_correction_delta",
+    "S0_Blue_applied",
+    "ClipDelta_Blue_applied",
+    "TotalDelta_Blue_applied",
+]
+
+AUDIT_36W_O_REPLICATE_COLUMNS = [
+    "PAbs_Red_raw_median",
+    "PAbs_Red_raw_sd",
+    "PAbs_Red_fit_input_median",
+    "PAbs_Red_fit_input_sd",
+    "PAbs_Red_fit_input_delta",
+    "S0_Red_fit_input",
+    "ClipDelta_Red_fit_input",
+    "TotalDelta_Red_fit_input",
+    "PAbs_Green_raw_median",
+    "PAbs_Green_raw_sd",
+    "PAbs_Green_fit_input_median",
+    "PAbs_Green_fit_input_sd",
+    "PAbs_Green_fit_input_delta",
+    "S0_Green_fit_input",
+    "ClipDelta_Green_fit_input",
+    "TotalDelta_Green_fit_input",
+    "PAbs_Blue_raw_median",
+    "PAbs_Blue_raw_sd",
+    "PAbs_Blue_fit_input_median",
+    "PAbs_Blue_fit_input_sd",
+    "PAbs_Blue_fit_input_delta",
+    "S0_Blue_fit_input",
+    "ClipDelta_Blue_fit_input",
+    "TotalDelta_Blue_fit_input",
+]
+
+AUDIT_36W_O_FIT_COLUMNS = [
+    "FitSignalSource",
+    "FitX_points",
+    "FitY_raw_points",
+    "FitY_input_points",
+    "FitY_input_delta_points",
+    "ClipDelta_points",
+    "ClipY_observed_points",
+    "ClipY_shifted_points",
+    "ClipY_expected_points",
+    "ClipY_corrected_points",
+    "ClipSDThreshold_points",
+]
+
+AUDIT_36W_O_COLUMNS = {
+    "04_RAW": AUDIT_36W_O_RAW_COLUMNS,
+    "05_REPLICATES_MEAN": AUDIT_36W_O_REPLICATE_COLUMNS,
+    "06_FITTING": AUDIT_36W_O_FIT_COLUMNS,
+}
+
+AUDIT_MATERIAL_THRESHOLD = 1e-6
+AUDIT_DOMINANCE_RATIO = 3.0
+
 
 @dataclass
 class Workbook:
@@ -488,6 +559,88 @@ def as_float(value: str) -> float:
         return float(value)
     except ValueError:
         return math.nan
+
+
+def parse_number_list(value: str) -> list[float]:
+    text = str(value).strip()
+    if not text:
+        return []
+    out: list[float] = []
+    for item in text.split(","):
+        parsed = as_float(item.strip())
+        if math.isfinite(parsed):
+            out.append(parsed)
+    return out
+
+
+def recompute_pabs(row: dict[str, str], label: str) -> float:
+    meanw = as_float(row.get(f"MeanW_{label}", ""))
+    meanbg = as_float(row.get(f"MeanBG_{label}", ""))
+    if not (math.isfinite(meanw) and math.isfinite(meanbg) and meanw > 0 and meanbg > 0):
+        return math.nan
+    return math.log10(meanbg / meanw)
+
+
+def finite_deltas(values: Iterable[float]) -> list[float]:
+    return [value for value in values if math.isfinite(value)]
+
+
+def delta_summary(values: Iterable[float]) -> dict[str, float | int]:
+    deltas = finite_deltas(values)
+    if not deltas:
+        return {
+            "paired": 0,
+            "mean_abs": math.nan,
+            "median_abs": math.nan,
+            "max_abs": math.nan,
+            "signed_mean": math.nan,
+        }
+    abs_values = [abs(value) for value in deltas]
+    return {
+        "paired": len(deltas),
+        "mean_abs": statistics.fmean(abs_values),
+        "median_abs": statistics.median(abs_values),
+        "max_abs": max(abs_values),
+        "signed_mean": statistics.fmean(deltas),
+    }
+
+
+def fmt_number(value: float | int | None) -> str:
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and math.isfinite(value):
+        return f"{value:.8g}"
+    return "NA"
+
+
+def max_or_nan(current: float, candidate: float) -> float:
+    if math.isfinite(current) and math.isfinite(candidate):
+        return max(current, candidate)
+    if math.isfinite(candidate):
+        return candidate
+    return current
+
+
+def markdown_cell_text(value: str) -> str:
+    return str(value).replace("|", " / ")
+
+
+def sheet_headers(workbook: Workbook, sheet: str) -> list[str]:
+    rows = workbook.sheets.get(sheet, [])
+    return rows[0] if rows else []
+
+
+def available_columns(headers: list[str], expected: list[str]) -> dict[str, list[str]]:
+    present = [column for column in expected if column in headers]
+    missing = [column for column in expected if column not in headers]
+    return {"present": present, "missing": missing}
+
+
+def first_present_column(headers: list[str], candidates: list[str]) -> str | None:
+    for candidate in candidates:
+        if candidate in headers:
+            return candidate
+    return None
 
 
 def numeric_stats(py_rows: list[list[str]], web_rows: list[list[str]], headers: list[str]) -> list[str]:
@@ -1350,6 +1503,340 @@ def paired_by_keys(
     py_by_key = key_rows(py_rows, key_fields)
     web_by_key = key_rows(web_rows, key_fields)
     return py_by_key, web_by_key, sorted(set(py_by_key) & set(web_by_key))
+
+
+def classify_pabs_channel(raw_mismatch_max: float, correction_max: float, py_formula_max: float, web_formula_max: float) -> tuple[str, str]:
+    if not math.isfinite(raw_mismatch_max):
+        return "UNRESOLVED", "required raw audit values are missing"
+    raw_material = math.isfinite(raw_mismatch_max) and raw_mismatch_max > AUDIT_MATERIAL_THRESHOLD
+    correction_material = math.isfinite(correction_max) and correction_max > AUDIT_MATERIAL_THRESHOLD
+    py_formula_ok = math.isfinite(py_formula_max) and py_formula_max <= AUDIT_MATERIAL_THRESHOLD
+    web_formula_ok = math.isfinite(web_formula_max) and web_formula_max <= AUDIT_MATERIAL_THRESHOLD
+
+    if not raw_material and not correction_material and py_formula_ok and web_formula_ok:
+        return "NO_FORMULA_MISMATCH", (
+            f"raw_max={fmt_number(raw_mismatch_max)}, correction_max={fmt_number(correction_max)}, "
+            f"py_formula_max={fmt_number(py_formula_max)}, web_formula_max={fmt_number(web_formula_max)}"
+        )
+    if raw_material and (not correction_material or raw_mismatch_max >= AUDIT_DOMINANCE_RATIO * max(correction_max, AUDIT_MATERIAL_THRESHOLD)):
+        return "RAW_EXTRACTION_DOMINANT", (
+            f"raw_max={fmt_number(raw_mismatch_max)} is >= {AUDIT_DOMINANCE_RATIO}x correction_max={fmt_number(correction_max)}"
+        )
+    if correction_material and (not raw_material or correction_max >= AUDIT_DOMINANCE_RATIO * max(raw_mismatch_max, AUDIT_MATERIAL_THRESHOLD)):
+        return "CORRECTION_MAPPING_DOMINANT", (
+            f"correction_max={fmt_number(correction_max)} is >= {AUDIT_DOMINANCE_RATIO}x raw_max={fmt_number(raw_mismatch_max)}"
+        )
+    if raw_material and correction_material:
+        return "MIXED_RAW_AND_CORRECTION", (
+            f"raw_max={fmt_number(raw_mismatch_max)}, correction_max={fmt_number(correction_max)}, "
+            f"dominance ratio < {AUDIT_DOMINANCE_RATIO}"
+        )
+    return "UNRESOLVED", (
+        f"raw_max={fmt_number(raw_mismatch_max)}, correction_max={fmt_number(correction_max)}, "
+        f"py_formula_max={fmt_number(py_formula_max)}, web_formula_max={fmt_number(web_formula_max)}"
+    )
+
+
+def append_delta_summary_table(report: list[str], summaries: list[tuple[str, dict[str, float | int]]]) -> None:
+    report.append("| comparison | paired | mean_abs | median_abs | max_abs | signed_mean |")
+    report.append("|---|---:|---:|---:|---:|---:|")
+    for label, summary in summaries:
+        report.append(
+            f"| {label} | {fmt_number(summary['paired'])} | {fmt_number(summary['mean_abs'])} | "
+            f"{fmt_number(summary['median_abs'])} | {fmt_number(summary['max_abs'])} | {fmt_number(summary['signed_mean'])} |"
+        )
+
+
+def append_36w_o_column_availability(report: list[str], py_report: Workbook, web_report: Workbook) -> None:
+    report.extend(["### 1. Column availability", "- 36W-O audit columns are expected to be web-only unless Python exports equivalent fields."])
+    for sheet, expected in AUDIT_36W_O_COLUMNS.items():
+        py_headers = sheet_headers(py_report, sheet)
+        web_headers = sheet_headers(web_report, sheet)
+        py = available_columns(py_headers, expected)
+        web = available_columns(web_headers, expected)
+        missing = [column for column in expected if column not in py_headers and column not in web_headers]
+        web_only = [column for column in expected if column in web_headers and column not in py_headers]
+        py_only = [column for column in expected if column in py_headers and column not in web_headers]
+        report.append(f"#### {sheet}")
+        report.append(f"- expected columns checked: {expected}")
+        report.append(f"- present in Python: {py['present']}")
+        report.append(f"- present in web: {web['present']}")
+        report.append(f"- missing: {missing}")
+        report.append(f"- web-only: {web_only}")
+        report.append(f"- Python-only: {py_only}")
+
+
+def append_36w_o_raw_trace(report: list[str], py_report: Workbook, web_report: Workbook) -> dict[str, dict[str, float | int | str]]:
+    py_raw = rows_as_dicts(py_report.sheets.get("04_RAW", []))
+    web_raw = rows_as_dicts(web_report.sheets.get("04_RAW", []))
+    py_by_key, web_by_key, common = paired_by_keys(py_raw, web_raw, ["Well"])
+    classifications: dict[str, dict[str, float | int | str]] = {}
+    report.extend(["### 2. RAW row-level PAbs trace", f"- rows paired by `Well`: common={len(common)}"])
+    for label in CHANNEL_LABELS:
+        rows: list[dict[str, object]] = []
+        for key in common:
+            py_row = py_by_key[key]
+            web_row = web_by_key[key]
+            py_exported = as_float(py_row.get(f"PAbs_{label}", ""))
+            py_raw_reconstructed = recompute_pabs(py_row, label)
+            web_exported = as_float(web_row.get(f"PAbs_{label}_exported", web_row.get(f"PAbs_{label}", "")))
+            web_raw_audit = as_float(web_row.get(f"PAbs_{label}_raw", ""))
+            web_raw_reconstructed = recompute_pabs(web_row, label)
+            web_correction_delta = as_float(web_row.get(f"PAbs_{label}_correction_delta", ""))
+            web_s0 = as_float(web_row.get(f"S0_{label}_applied", ""))
+            web_clip = as_float(web_row.get(f"ClipDelta_{label}_applied", ""))
+            web_total = as_float(web_row.get(f"TotalDelta_{label}_applied", ""))
+            rows.append({
+                "Well": key,
+                "py_exported": py_exported,
+                "py_raw_reconstructed": py_raw_reconstructed,
+                "web_exported": web_exported,
+                "web_raw_audit": web_raw_audit,
+                "web_raw_reconstructed": web_raw_reconstructed,
+                "web_correction_delta": web_correction_delta,
+                "web_s0": web_s0,
+                "web_clip": web_clip,
+                "web_total": web_total,
+                "web_exported_minus_raw": web_exported - web_raw_audit if math.isfinite(web_exported) and math.isfinite(web_raw_audit) else math.nan,
+                "py_exported_minus_raw": py_exported - py_raw_reconstructed if math.isfinite(py_exported) and math.isfinite(py_raw_reconstructed) else math.nan,
+                "py_exported_minus_web_raw": py_exported - web_raw_audit if math.isfinite(py_exported) and math.isfinite(web_raw_audit) else math.nan,
+                "py_exported_minus_web_exported": py_exported - web_exported if math.isfinite(py_exported) and math.isfinite(web_exported) else math.nan,
+                "web_raw_audit_minus_reconstructed": web_raw_audit - web_raw_reconstructed if math.isfinite(web_raw_audit) and math.isfinite(web_raw_reconstructed) else math.nan,
+            })
+
+        py_formula = delta_summary(row["py_exported_minus_raw"] for row in rows if isinstance(row, dict))
+        web_formula = delta_summary(row["web_exported_minus_raw"] for row in rows if isinstance(row, dict))
+        raw_vs_web_raw = delta_summary(row["py_exported_minus_web_raw"] for row in rows if isinstance(row, dict))
+        exported_vs_exported = delta_summary(row["py_exported_minus_web_exported"] for row in rows if isinstance(row, dict))
+        web_raw_formula = delta_summary(row["web_raw_audit_minus_reconstructed"] for row in rows if isinstance(row, dict))
+        correction_delta_stats = delta_summary(row["web_correction_delta"] for row in rows if isinstance(row, dict))
+        total_delta_stats = delta_summary(row["web_total"] for row in rows if isinstance(row, dict))
+        correction_max = max(
+            [value for value in [float(correction_delta_stats["max_abs"]), float(total_delta_stats["max_abs"]), float(web_formula["max_abs"])] if math.isfinite(value)],
+            default=math.nan,
+        )
+        raw_max = max(
+            [value for value in [float(raw_vs_web_raw["max_abs"]), float(web_raw_formula["max_abs"])] if math.isfinite(value)],
+            default=math.nan,
+        )
+        classification, evidence = classify_pabs_channel(raw_max, correction_max, float(py_formula["max_abs"]), float(web_formula["max_abs"]))
+        nonzero_corrections = sum(1 for row in rows if math.isfinite(float(row["web_total"])) and abs(float(row["web_total"])) > AUDIT_MATERIAL_THRESHOLD)
+        classifications[label] = {
+            "classification": classification,
+            "evidence": evidence,
+            "raw_max": raw_max,
+            "correction_max": correction_max,
+            "py_formula_max": float(py_formula["max_abs"]),
+            "web_formula_max": float(web_formula["max_abs"]),
+            "nonzero_corrections": nonzero_corrections,
+            "paired_rows": len(common),
+        }
+        worst = sorted(
+            rows,
+            key=lambda row: abs(float(row["py_exported_minus_web_exported"])) if math.isfinite(float(row["py_exported_minus_web_exported"])) else -1.0,
+            reverse=True,
+        )[:5]
+
+        report.append(f"#### {label}")
+        append_delta_summary_table(report, [
+            ("Python exported - Python reconstructed raw", py_formula),
+            ("Web exported - Web raw audit", web_formula),
+            ("Web raw audit - Web reconstructed raw", web_raw_formula),
+            ("Python exported - Web raw audit", raw_vs_web_raw),
+            ("Python exported - Web exported", exported_vs_exported),
+            ("Web correction delta", correction_delta_stats),
+            ("Web total delta", total_delta_stats),
+        ])
+        report.append(f"- nonzero correction rows: {nonzero_corrections}")
+        report.append(f"- classification: {classification}")
+        report.append(f"- evidence: {evidence}; thresholds: material>{AUDIT_MATERIAL_THRESHOLD}, dominance>={AUDIT_DOMINANCE_RATIO}x")
+        report.append("| Well | Python exported | Python reconstructed raw | Web exported | Web raw audit | Web reconstructed raw | Web correction delta | Web S0 | Web ClipDelta | Web TotalDelta | Python exported - Web raw | Python exported - Web exported |")
+        report.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        for row in worst:
+            report.append(
+                f"| {markdown_cell_text(str(row['Well']))} | {fmt_number(float(row['py_exported']))} | {fmt_number(float(row['py_raw_reconstructed']))} | "
+                f"{fmt_number(float(row['web_exported']))} | {fmt_number(float(row['web_raw_audit']))} | {fmt_number(float(row['web_raw_reconstructed']))} | "
+                f"{fmt_number(float(row['web_correction_delta']))} | {fmt_number(float(row['web_s0']))} | {fmt_number(float(row['web_clip']))} | "
+                f"{fmt_number(float(row['web_total']))} | {fmt_number(float(row['py_exported_minus_web_raw']))} | "
+                f"{fmt_number(float(row['py_exported_minus_web_exported']))} |"
+            )
+    return classifications
+
+
+def append_36w_o_classification_section(report: list[str], raw_summary: dict[str, dict[str, float | int | str]]) -> None:
+    report.extend(["### 3. Classification per channel"])
+    report.append("| channel | classification | paired rows | raw mismatch max_abs | correction max_abs | Python exported-minus-raw max_abs | Web exported-minus-raw max_abs | nonzero correction rows | evidence |")
+    report.append("|---|---|---:|---:|---:|---:|---:|---:|---|")
+    for label in CHANNEL_LABELS:
+        summary = raw_summary.get(label, {})
+        report.append(
+            f"| {label} | {summary.get('classification', 'UNRESOLVED')} | {fmt_number(summary.get('paired_rows'))} | "
+            f"{fmt_number(summary.get('raw_max'))} | {fmt_number(summary.get('correction_max'))} | "
+            f"{fmt_number(summary.get('py_formula_max'))} | {fmt_number(summary.get('web_formula_max'))} | "
+            f"{fmt_number(summary.get('nonzero_corrections'))} | {summary.get('evidence', '')} |"
+        )
+
+
+def append_36w_o_replicate_trace(report: list[str], py_report: Workbook, web_report: Workbook) -> dict[str, dict[str, float]]:
+    py_rep = rows_as_dicts(py_report.sheets.get("05_REPLICATES_MEAN", []))
+    web_rep = rows_as_dicts(web_report.sheets.get("05_REPLICATES_MEAN", []))
+    py_by_key, web_by_key, common = paired_by_keys(py_rep, web_rep, ["ID", "DF", "Type", "Conc"])
+    summary: dict[str, dict[str, float]] = {}
+    report.extend(["### 4. Replicate-level propagation", f"- replicate groups paired by `ID|DF|Type|Conc`: common={len(common)}"])
+    for label in CHANNEL_LABELS:
+        raw_field = f"PAbs_{label}_raw_median"
+        fit_field = f"PAbs_{label}_fit_input_median"
+        if not common or raw_field not in sheet_headers(web_report, "05_REPLICATES_MEAN") or fit_field not in sheet_headers(web_report, "05_REPLICATES_MEAN"):
+            report.append(f"#### {label}")
+            report.append(f"- UNRESOLVED: missing web replicate audit columns `{raw_field}` and/or `{fit_field}`")
+            summary[label] = {"py_vs_web_raw_max": math.nan, "py_vs_web_fit_max": math.nan, "web_fit_minus_raw_max": math.nan}
+            continue
+        rows = []
+        for key in common:
+            py_row = py_by_key[key]
+            web_row = web_by_key[key]
+            py_median = as_float(py_row.get(f"PAbs_{label}_median", ""))
+            web_raw = as_float(web_row.get(raw_field, ""))
+            web_fit = as_float(web_row.get(fit_field, ""))
+            rows.append({
+                "key": key,
+                "py_median": py_median,
+                "web_raw": web_raw,
+                "web_fit": web_fit,
+                "py_minus_web_raw": py_median - web_raw if math.isfinite(py_median) and math.isfinite(web_raw) else math.nan,
+                "py_minus_web_fit": py_median - web_fit if math.isfinite(py_median) and math.isfinite(web_fit) else math.nan,
+                "web_fit_minus_raw": web_fit - web_raw if math.isfinite(web_fit) and math.isfinite(web_raw) else math.nan,
+            })
+        py_vs_web_raw = delta_summary(row["py_minus_web_raw"] for row in rows)
+        py_vs_web_fit = delta_summary(row["py_minus_web_fit"] for row in rows)
+        web_fit_minus_raw = delta_summary(row["web_fit_minus_raw"] for row in rows)
+        summary[label] = {
+            "py_vs_web_raw_max": float(py_vs_web_raw["max_abs"]),
+            "py_vs_web_fit_max": float(py_vs_web_fit["max_abs"]),
+            "web_fit_minus_raw_max": float(web_fit_minus_raw["max_abs"]),
+        }
+        worst = sorted(rows, key=lambda row: abs(float(row["py_minus_web_fit"])) if math.isfinite(float(row["py_minus_web_fit"])) else -1.0, reverse=True)[:5]
+        report.append(f"#### {label}")
+        append_delta_summary_table(report, [
+            ("Python median - Web raw median", py_vs_web_raw),
+            ("Python median - Web fit-input median", py_vs_web_fit),
+            ("Web fit-input median - Web raw median", web_fit_minus_raw),
+        ])
+        report.append("| ID|DF|Type|Conc | Python median | Web raw median | Web fit-input median | Python-Web raw | Python-Web fit-input | Web fit-input-raw |")
+        report.append("|---|---:|---:|---:|---:|---:|---:|")
+        for row in worst:
+            report.append(
+                f"| {row['key']} | {fmt_number(float(row['py_median']))} | {fmt_number(float(row['web_raw']))} | "
+                f"{fmt_number(float(row['web_fit']))} | {fmt_number(float(row['py_minus_web_raw']))} | "
+                f"{fmt_number(float(row['py_minus_web_fit']))} | {fmt_number(float(row['web_fit_minus_raw']))} |"
+            )
+    return summary
+
+
+def append_36w_o_fit_input_trace(report: list[str], py_report: Workbook, web_report: Workbook) -> dict[str, dict[str, float]]:
+    py_rep = rows_as_dicts(py_report.sheets.get("05_REPLICATES_MEAN", []))
+    py_fit = rows_as_dicts(py_report.sheets.get("06_FITTING", []))
+    web_fit = rows_as_dicts(web_report.sheets.get("06_FITTING", []))
+    web_headers = sheet_headers(web_report, "06_FITTING")
+    final_y_col = first_present_column(web_headers, ["FitY_input_points", "FitY_final_points"])
+    delta_col = first_present_column(web_headers, ["FitY_input_delta_points", "FitY_delta_points"])
+    threshold_col = first_present_column(web_headers, ["ClipSDThreshold_points", "ClipThreshold_points"])
+    py_by_fit = {fit_key(row): row for row in py_fit if canonical_method_name(row.get("Channel", "")).startswith("PAbs_")}
+    web_by_fit = {fit_key(row): row for row in web_fit if canonical_method_name(row.get("Channel", "")).startswith("PAbs_")}
+    common = sorted(set(py_by_fit) & set(web_by_fit))
+    summary: dict[str, dict[str, float]] = {label: {"py_vs_web_raw_max": math.nan, "py_vs_web_final_max": math.nan, "web_final_minus_raw_max": math.nan} for label in CHANNEL_LABELS}
+    report.extend([
+        "### 5. Fit-input array trace",
+        "- Python fit-input point arrays are not exported directly; they are reconstructed cautiously from REPORT/05_REPLICATES_MEAN.",
+        f"- resolved web columns: FitY_final={final_y_col or 'missing'}, FitY_delta={delta_col or 'missing'}, ClipThreshold={threshold_col or 'missing'}",
+    ])
+    report.append("| fit key | channel | FitType | ID | DF | x_match | n_py_reconstructed | n_web_raw | n_web_final | py-vs-web raw max_abs | py-vs-web final max_abs | web final-minus-raw max_abs | note |")
+    report.append("|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---|")
+    for key in common:
+        py_row = py_by_fit[key]
+        web_row = web_by_fit[key]
+        channel = canonical_method_name(py_row.get("Channel", "")).replace("PAbs_", "")
+        fit_type = py_row.get("FitType", "")
+        sample_id = py_row.get("ID", "")
+        df = py_row.get("DF", "")
+        py_points = replicate_fit_points(py_rep, py_row)
+        py_x = [x for x, _y in py_points]
+        py_y = [y for _x, y in py_points]
+        web_x = parse_number_list(web_row.get("FitX_points", ""))
+        web_raw_y = parse_number_list(web_row.get("FitY_raw_points", ""))
+        web_final_y = parse_number_list(web_row.get(final_y_col or "", "")) if final_y_col else []
+        x_match = bool(py_x and web_x and len(py_x) == len(web_x) and all(abs(px - wx) <= 1e-12 for px, wx in zip(py_x, web_x)))
+        raw_diffs = [pyv - webv for pyv, webv in zip(py_y, web_raw_y)] if x_match and len(py_y) == len(web_raw_y) else []
+        final_diffs = [pyv - webv for pyv, webv in zip(py_y, web_final_y)] if x_match and len(py_y) == len(web_final_y) else []
+        web_delta = [final - raw for final, raw in zip(web_final_y, web_raw_y)] if len(web_final_y) == len(web_raw_y) and web_final_y and web_raw_y else []
+        raw_summary = delta_summary(raw_diffs)
+        final_summary = delta_summary(final_diffs)
+        web_delta_summary = delta_summary(web_delta)
+        if channel in summary:
+            summary[channel]["py_vs_web_raw_max"] = max_or_nan(summary[channel]["py_vs_web_raw_max"], float(raw_summary["max_abs"]))
+            summary[channel]["py_vs_web_final_max"] = max_or_nan(summary[channel]["py_vs_web_final_max"], float(final_summary["max_abs"]))
+            summary[channel]["web_final_minus_raw_max"] = max_or_nan(summary[channel]["web_final_minus_raw_max"], float(web_delta_summary["max_abs"]))
+        note = "python points reconstructed from replicate means"
+        if not py_points:
+            note = "Python point array not reconstructible from replicate sheet"
+        elif not web_x or not web_raw_y or not web_final_y:
+            note = "web fit-input audit arrays missing"
+        elif not x_match:
+            note = "x arrays differ; point-level parity not claimed"
+        report.append(
+            f"| {markdown_cell_text(key)} | {channel} | {fit_type} | {markdown_cell_text(sample_id)} | {markdown_cell_text(df)} | {x_match} | {len(py_y)} | {len(web_raw_y)} | {len(web_final_y)} | "
+            f"{fmt_number(raw_summary['max_abs'])} | {fmt_number(final_summary['max_abs'])} | {fmt_number(web_delta_summary['max_abs'])} | {note} |"
+        )
+    return summary
+
+
+def append_36w_o_decision_summary(
+    report: list[str],
+    raw_summary: dict[str, dict[str, float | int | str]],
+    replicate_summary: dict[str, dict[str, float]],
+    fit_summary: dict[str, dict[str, float]],
+) -> None:
+    report.extend(["### 6. Decision summary"])
+    for label in CHANNEL_LABELS:
+        raw_info = raw_summary.get(label, {})
+        replicate_fit = replicate_summary.get(label, {})
+        fit_input = fit_summary.get(label, {})
+        report.append(
+            f"- {label}: raw/exported classification={raw_info.get('classification', 'UNRESOLVED')}; "
+            f"replicate py-vs-web raw max_abs={fmt_number(replicate_fit.get('py_vs_web_raw_max'))}, "
+            f"replicate py-vs-web fit-input max_abs={fmt_number(replicate_fit.get('py_vs_web_fit_max'))}, "
+            f"fit-array py-vs-web raw max_abs={fmt_number(fit_input.get('py_vs_web_raw_max'))}, "
+            f"fit-array py-vs-web final max_abs={fmt_number(fit_input.get('py_vs_web_final_max'))}, "
+            f"web final-minus-raw max_abs={fmt_number(fit_input.get('web_final_minus_raw_max'))}"
+        )
+    classes = [str(info.get('classification', 'UNRESOLVED')) for info in raw_summary.values()]
+    if any(value == "CORRECTION_MAPPING_DOMINANT" for value in classes):
+        overall = "correction/display mapping"
+        next_target = "PAbs correction mapping parity"
+    elif any(value == "MIXED_RAW_AND_CORRECTION" for value in classes):
+        overall = "mixed raw extraction and correction mapping"
+        next_target = "PAbs correction mapping parity only after confirming BG/MeanBG parity remains close"
+    elif any(value == "RAW_EXTRACTION_DOMINANT" for value in classes):
+        overall = "raw extraction/BG"
+        next_target = "BG/MeanBG parity"
+    elif all(value == "NO_FORMULA_MISMATCH" for value in classes if value):
+        overall = "no formula mismatch detected from exported PAbs columns"
+        next_target = "final fit-input y construction or CIELAB conversion/reference parity"
+    else:
+        overall = "unresolved"
+        next_target = "smallest missing export addition needed to classify raw vs fit-input deltas"
+    report.append(f"- Overall residual bucket from 36W-O audit columns: {overall}")
+    report.append(f"- Recommended next runtime target, if any: {next_target}")
+
+
+def append_36w_o_pabs_audit_trace(report: list[str], py_report: Workbook, web_report: Workbook) -> None:
+    report.extend(["", "## 36W-O PAbs Audit Column Trace"])
+    append_36w_o_column_availability(report, py_report, web_report)
+    raw_summary = append_36w_o_raw_trace(report, py_report, web_report)
+    append_36w_o_classification_section(report, raw_summary)
+    replicate_summary = append_36w_o_replicate_trace(report, py_report, web_report)
+    fit_summary = append_36w_o_fit_input_trace(report, py_report, web_report)
+    append_36w_o_decision_summary(report, raw_summary, replicate_summary, fit_summary)
 
 
 def field_diff_stats(
@@ -3253,6 +3740,7 @@ def compare(
 
         append_upstream_fit_input_parity_audit(report, py_report, web_report, py_diag, web_diag)
         append_process_parity_section(report, py_report, web_report, py_diag, web_diag)
+        append_36w_o_pabs_audit_trace(report, py_report, web_report)
         append_score_method_parity_section(
             report,
             py_report.sheets.get("07_METHOD_COMPARISON", []),
