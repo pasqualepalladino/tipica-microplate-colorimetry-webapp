@@ -1789,9 +1789,9 @@ export function estimatePhysicalInterwellPolynomialBackgrounds(
 
   wells.forEach((well) => {
     const rgbBackground = {
-      r: clampRgb(evaluatePoly2(modelR, well.x, well.y)),
-      g: clampRgb(evaluatePoly2(modelG, well.x, well.y)),
-      b: clampRgb(evaluatePoly2(modelB, well.x, well.y)),
+      r: evaluatePoly2(modelR, well.x, well.y),
+      g: evaluatePoly2(modelG, well.x, well.y),
+      b: evaluatePoly2(modelB, well.x, well.y),
     };
 
     if (!isFiniteRgb(rgbBackground)) {
