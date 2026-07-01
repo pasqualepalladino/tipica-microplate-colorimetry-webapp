@@ -7,8 +7,8 @@ TIPICA Webapp is a beta browser-based companion implementation. The archived Pyt
 | File list parity | Implemented | Implemented for the current Python-style reference package structure with `RESULTS/` and `RAW_DATA_DETAILS/`. |
 | PNG dimensions | Implemented | Implemented for the current reference dimensions used by the browser export. |
 | XLSX sheet order | Implemented | The report and diagnostics workbooks use the intended Python-style sheet order. |
-| RESULTS report workbook content | Partially implemented | Workbook exists, but numerical and table-content parity remain under validation. |
-| RAW_DATA_DETAILS diagnostics workbook content | Partially implemented | Workbook exists with Python-style sheets, but several diagnostic quantities remain under validation or blank when not computed by the webapp. |
+| RESULTS report workbook content | Implemented | `comparison_after_36X_D3_method_comparison.md` shows `RESULTS/..._REPORT.xlsx` sheet order, sheet shapes, headers, structural text, and audited numeric fields matching the Python reference ZIP for the validated D3 reference pair. |
+| RAW_DATA_DETAILS diagnostics workbook content | Implemented | `comparison_after_36X_D3_method_comparison.md` shows `RAW_DATA_DETAILS/..._DIAGNOSTICS.xlsx` sheet order, sheet shapes, headers, structural text, and audited numeric fields matching the Python reference ZIP for the validated D3 reference pair. |
 | RGB pseudo-absorbance numerical parity | Under validation | RGB/PAbs values are being compared against the archived Python desktop output. |
 | Fitting input parity | Under validation | Replicate aggregation and `n_points` semantics require continued parity checks. |
 | Standard-addition C0 marker semantics | Partially implemented | Corrected and considered aligned with Python semantics after 36S, but still subject to broader parity validation. |
