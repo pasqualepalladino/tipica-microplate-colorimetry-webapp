@@ -2718,6 +2718,8 @@ function buildDiagnosticsBackgroundSampleRows(options: PythonDiagnosticsWorkbook
     Web_Raw_Canonical_Mask_Samples: cell.rawCanonicalMaskPixels,
     Web_Sampled_After_Well_Exclusion: cell.pixelsAfterWellDiskExclusion,
     Web_Sampled_After_Luminance_Chroma_Filtering: cell.pixelsAfterLuminanceChromaFiltering,
+    Web_Zero_Reason: cell.zeroReason,
+    Web_Geometry_Source: options.geometrySource,
     Red_median_raw: finiteOrBlank(cell.redMedianRaw),
     Green_median_raw: finiteOrBlank(cell.greenMedianRaw),
     Blue_median_raw: finiteOrBlank(cell.blueMedianRaw),
@@ -3292,6 +3294,8 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: 'Web_FullRes_After_Well_Exclusion', Meaning: 'Full-resolution candidate pixels remaining after canonical BG model and well exclusion', Formula: 'integer image pixels in the inter-well cell after model/background and neighboring-well exclusion', Unit: 'pixels', 'Where used': '02_BG_SAMPLES', Notes: 'Diagnostics only; not used to change quantitative outputs.' },
     { Term: 'Web_FullRes_Final_Accepted_Pixels', Meaning: 'Full-resolution accepted pixels used for the Python-style area field', Formula: 'full-resolution cell candidates after web per-cell robust filtering', Unit: 'pixels', 'Where used': '02_BG_SAMPLES', Notes: 'Same value as area when available.' },
     { Term: 'Web_Projected_Cell_Area_Px / Web_Raw_Canonical_Mask_Samples / Web_Sampled_After_*', Meaning: 'Intermediate web BG-cell validation counters', Formula: 'projected cell polygon area and sampled-candidate counts at major filtering stages', Unit: 'pixels or sampled points', 'Where used': '02_BG_SAMPLES', Notes: 'These are web validation extensions for diagnosing geometry/mask/sample-count differences.' },
+    { Term: 'Web_Zero_Reason', Meaning: 'Cell-level reason when the final accepted BG cell is empty', Formula: 'diagnostic category inferred from sampled/full-resolution cell counters', Unit: 'text', 'Where used': '02_BG_SAMPLES', Notes: 'Diagnostics only; not consumed by quantitative outputs.' },
+    { Term: 'Web_Geometry_Source', Meaning: 'Geometry provenance used for the current extraction/export run', Formula: 'same source label exported in metadata and geometry sheets', Unit: 'text', 'Where used': '02_BG_SAMPLES', Notes: 'Repeated per BG cell to simplify direct Python-vs-web comparison joins.' },
     { Term: 'BG_Red_raw/BG_Green_raw/BG_Blue_raw', Meaning: 'Predicted or sampled local raw background at a well', Formula: 'background model value at well center', Unit: 'raw image intensity', 'Where used': '03_BG_WELL_FIT', Notes: 'Exported in standard RGB order.' },
     { Term: 'n_roi/n_core/n_used', Meaning: 'Pixel counts used during well ROI filtering', Formula: 'ROI pixels, core pixels and retained pixels', Unit: 'pixels', 'Where used': '04_WELL_ROBUST_STATS', Notes: '' },
     { Term: 'used_fraction/UsedFraction', Meaning: 'Fraction of ROI core pixels retained after filtering', Formula: 'n_used / n_core', Unit: 'dimensionless', 'Where used': '04_WELL_ROBUST_STATS, 08_EMPTY_WELLS', Notes: '' },
@@ -3364,7 +3368,7 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
     {
       name: '02_BG_SAMPLES',
       rows: tableRows(
-        ['BG_Cell_Row', 'BG_Cell_Col', 'Associated_Wells', 'x', 'y', 'area', 'Web_Sampled_Final_Accepted_Pixels', 'Web_FullRes_After_Well_Exclusion', 'Web_FullRes_Final_Accepted_Pixels', 'Web_Projected_Cell_Area_Px', 'Web_Raw_Canonical_Mask_Samples', 'Web_Sampled_After_Well_Exclusion', 'Web_Sampled_After_Luminance_Chroma_Filtering', 'Red_median_raw', 'Green_median_raw', 'Blue_median_raw'],
+        ['BG_Cell_Row', 'BG_Cell_Col', 'Associated_Wells', 'x', 'y', 'area', 'Web_Sampled_Final_Accepted_Pixels', 'Web_FullRes_After_Well_Exclusion', 'Web_FullRes_Final_Accepted_Pixels', 'Web_Projected_Cell_Area_Px', 'Web_Raw_Canonical_Mask_Samples', 'Web_Sampled_After_Well_Exclusion', 'Web_Sampled_After_Luminance_Chroma_Filtering', 'Web_Zero_Reason', 'Web_Geometry_Source', 'Red_median_raw', 'Green_median_raw', 'Blue_median_raw'],
         buildDiagnosticsBackgroundSampleRows(options),
       ),
     },

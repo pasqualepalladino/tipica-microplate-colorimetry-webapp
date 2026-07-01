@@ -81,6 +81,8 @@ WEB_VALIDATION_EXTENSION_COLUMNS = {
         "Web_Raw_Canonical_Mask_Samples",
         "Web_Sampled_After_Well_Exclusion",
         "Web_Sampled_After_Luminance_Chroma_Filtering",
+        "Web_Zero_Reason",
+        "Web_Geometry_Source",
     ],
 }
 
@@ -559,6 +561,51 @@ def as_float(value: str) -> float:
         return float(value)
     except ValueError:
         return math.nan
+
+
+def parse_well_position(well: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"\s*([A-Ha-h])(\d{1,2})\s*", str(well))
+    if not match:
+        return None
+    row = ord(match.group(1).upper()) - ord("A")
+    col = int(match.group(2)) - 1
+    if 0 <= row <= 7 and 0 <= col <= 11:
+        return row, col
+    return None
+
+
+def bg_cell_keys_for_well(row: int, col: int) -> list[str]:
+    keys: list[str] = []
+    for dr in (-1, 0):
+        for dc in (-1, 0):
+            rr = row + dr
+            cc = col + dc
+            if 0 <= rr <= 6 and 0 <= cc <= 10:
+                keys.append(f"{rr}|{cc}")
+    return keys
+
+
+def mean_finite(values: list[float]) -> float:
+    finite = [value for value in values if math.isfinite(value)]
+    if not finite:
+        return math.nan
+    return statistics.fmean(finite)
+
+
+def pearson_correlation(xs: list[float], ys: list[float]) -> float:
+    pairs = [(x, y) for x, y in zip(xs, ys) if math.isfinite(x) and math.isfinite(y)]
+    if len(pairs) < 3:
+        return math.nan
+    x_vals = [pair[0] for pair in pairs]
+    y_vals = [pair[1] for pair in pairs]
+    x_mean = statistics.fmean(x_vals)
+    y_mean = statistics.fmean(y_vals)
+    num = sum((x - x_mean) * (y - y_mean) for x, y in pairs)
+    den_x = math.sqrt(sum((x - x_mean) ** 2 for x in x_vals))
+    den_y = math.sqrt(sum((y - y_mean) ** 2 for y in y_vals))
+    if den_x <= 0 or den_y <= 0:
+        return math.nan
+    return num / (den_x * den_y)
 
 
 def parse_number_list(value: str) -> list[float]:
@@ -2795,10 +2842,24 @@ def approximate_pabs_contributions(py_row: dict[str, str], web_row: dict[str, st
     return well_term, bg_term
 
 
-def append_meanw_meanbg_bridge_audit(report: list[str], py_report: Workbook, web_report: Workbook) -> dict[str, float]:
+def append_meanw_meanbg_bridge_audit(
+    report: list[str],
+    py_report: Workbook,
+    web_report: Workbook,
+    py_diag: Workbook,
+    web_diag: Workbook,
+) -> dict[str, float]:
     py_raw = rows_as_dicts(py_report.sheets.get("04_RAW", []))
     web_raw = rows_as_dicts(web_report.sheets.get("04_RAW", []))
+    py_bg = rows_as_dicts(py_diag.sheets.get("02_BG_SAMPLES", []))
+    web_bg = rows_as_dicts(web_diag.sheets.get("02_BG_SAMPLES", []))
+    py_bg_fit = rows_as_dicts(py_diag.sheets.get("03_BG_WELL_FIT", []))
+    web_bg_fit = rows_as_dicts(web_diag.sheets.get("03_BG_WELL_FIT", []))
     py_by_key, web_by_key, common = paired_by_keys(py_raw, web_raw, ["Well"])
+    py_bg_by_cell = key_rows(py_bg, ["BG_Cell_Row", "BG_Cell_Col"])
+    web_bg_by_cell = key_rows(web_bg, ["BG_Cell_Row", "BG_Cell_Col"])
+    py_bg_fit_by_well = key_rows(py_bg_fit, ["Well"])
+    web_bg_fit_by_well = key_rows(web_bg_fit, ["Well"])
     report.extend(["### 4. MeanW / MeanBG extraction"])
     report.append("- keys compared: `Well`; fields compared: `MeanW_*`, `MeanBG_*`, `PAbs_*`.")
     report.append(f"- matched/common/missing/extra: python={len(py_by_key)}, web={len(web_by_key)}, common={len(common)}, missing_in_web={len(set(py_by_key)-set(web_by_key))}, extra_in_web={len(set(web_by_key)-set(py_by_key))}")
@@ -2819,9 +2880,15 @@ def append_meanw_meanbg_bridge_audit(report: list[str], py_report: Workbook, web
         report.append(
             f"- {label}: mean_abs MeanW={stats_cell(meanw_stats['mean_abs'])}, "
             f"MeanBG={stats_cell(meanbg_stats['mean_abs'])}, PAbs={stats_cell(pabs_stats['mean_abs'])}; "
+            f"MeanBG signed_bias(web-py)={stats_cell(meanbg_stats['signed_mean'])}; "
             f"approx_contribution MeanW={stats_cell(statistics.fmean(well_terms) if well_terms else math.nan)}, "
             f"MeanBG={stats_cell(statistics.fmean(bg_terms) if bg_terms else math.nan)}; "
             f"dominant={'MeanW' if well_terms and bg_terms and statistics.fmean(well_terms) > statistics.fmean(bg_terms) else 'MeanBG or mixed'}"
+        )
+        append_top_differences_table(
+            report,
+            f"- top 10 wells by absolute MeanBG_{label} difference:",
+            top_numeric_differences(py_raw, web_raw, ["Well"], f"MeanBG_{label}", 10),
         )
         top_rows = []
         for key, diff, py_v, web_v in top_numeric_differences(py_raw, web_raw, ["Well"], f"PAbs_{label}", 10):
@@ -2834,6 +2901,84 @@ def append_meanw_meanbg_bridge_audit(report: list[str], py_report: Workbook, web
                 f"PAbs={web_v}; W={web_row.get(f'MeanW_{label}', '')}; BG={web_row.get(f'MeanBG_{label}', '')}",
             ))
         append_top_differences_table(report, f"- top 10 wells by absolute PAbs_{label} difference:", top_rows)
+
+        sample_field = f"{label}_median_raw"
+        model_field = f"BG_{label}_raw"
+        tracking_rows: list[dict[str, float | str]] = []
+        for key in common:
+            py_meanbg = as_float(py_by_key[key].get(f"MeanBG_{label}", ""))
+            web_meanbg = as_float(web_by_key[key].get(f"MeanBG_{label}", ""))
+            if not (math.isfinite(py_meanbg) and math.isfinite(web_meanbg)):
+                continue
+            well_position = parse_well_position(key)
+            if well_position is None:
+                continue
+            row, col = well_position
+            nearby_cells = bg_cell_keys_for_well(row, col)
+            sample_diffs: list[float] = []
+            centroid_diffs: list[float] = []
+            for cell_key in nearby_cells:
+                py_cell = py_bg_by_cell.get(cell_key)
+                web_cell = web_bg_by_cell.get(cell_key)
+                if py_cell is None or web_cell is None:
+                    continue
+                py_sample = as_float(py_cell.get(sample_field, ""))
+                web_sample = as_float(web_cell.get(sample_field, ""))
+                if math.isfinite(py_sample) and math.isfinite(web_sample):
+                    sample_diffs.append(abs(web_sample - py_sample))
+                py_x = as_float(py_cell.get("x", ""))
+                py_y = as_float(py_cell.get("y", ""))
+                web_x = as_float(web_cell.get("x", ""))
+                web_y = as_float(web_cell.get("y", ""))
+                if all(math.isfinite(value) for value in [py_x, py_y, web_x, web_y]):
+                    centroid_diffs.append(math.hypot(web_x - py_x, web_y - py_y))
+
+            py_model = as_float(py_bg_fit_by_well.get(key, {}).get(model_field, ""))
+            web_model = as_float(web_bg_fit_by_well.get(key, {}).get(model_field, ""))
+            model_diff = abs(web_model - py_model) if math.isfinite(py_model) and math.isfinite(web_model) else math.nan
+
+            tracking_rows.append({
+                "well": key,
+                "meanbg_abs": abs(web_meanbg - py_meanbg),
+                "meanbg_signed": web_meanbg - py_meanbg,
+                "sample_abs": mean_finite(sample_diffs),
+                "centroid_abs": mean_finite(centroid_diffs),
+                "model_abs": model_diff,
+            })
+
+        meanbg_abs_vals = [float(row["meanbg_abs"]) for row in tracking_rows]
+        sample_vals = [float(row["sample_abs"]) for row in tracking_rows]
+        centroid_vals = [float(row["centroid_abs"]) for row in tracking_rows]
+        model_vals = [float(row["model_abs"]) for row in tracking_rows]
+        corr_sample = pearson_correlation(meanbg_abs_vals, sample_vals)
+        corr_centroid = pearson_correlation(meanbg_abs_vals, centroid_vals)
+        corr_model = pearson_correlation(meanbg_abs_vals, model_vals)
+        corr_candidates = {
+            "BG sample median mismatch": corr_sample,
+            "BG sample centroid mismatch": corr_centroid,
+            "BG model interpolation mismatch": corr_model,
+        }
+        finite_corr = {name: value for name, value in corr_candidates.items() if math.isfinite(value)}
+        dominant_tracking = max(finite_corr, key=lambda name: abs(finite_corr[name])) if finite_corr else "insufficient paired finite data"
+        report.append(
+            f"- MeanBG_{label} tracking correlations (abs deltas): "
+            f"sample_median={stats_cell(corr_sample)}, centroid={stats_cell(corr_centroid)}, model={stats_cell(corr_model)}; "
+            f"dominant_tracker={dominant_tracking}"
+        )
+
+        worst_tracking = sorted(
+            tracking_rows,
+            key=lambda row: float(row["meanbg_abs"]) if math.isfinite(float(row["meanbg_abs"])) else -1.0,
+            reverse=True,
+        )[:10]
+        report.append(f"- top 10 wells by absolute MeanBG_{label} with source-tracking fields:")
+        report.append("| Well | abs MeanBG diff | signed MeanBG bias (web-py) | nearby BG median diff | nearby BG centroid diff | well BG model diff |")
+        report.append("|---|---:|---:|---:|---:|---:|")
+        for row in worst_tracking:
+            report.append(
+                f"| {markdown_cell_text(str(row['well']))} | {fmt_number(float(row['meanbg_abs']))} | {fmt_number(float(row['meanbg_signed']))} | "
+                f"{fmt_number(float(row['sample_abs']))} | {fmt_number(float(row['centroid_abs']))} | {fmt_number(float(row['model_abs']))} |"
+            )
     report.append("- stage classification: E corrected/intermediate mapping where PAbs does not reconstruct from exported MeanW/MeanBG; otherwise B/C extraction and BG differences dominate.")
     return pabs_max
 
@@ -2993,7 +3138,7 @@ def append_upstream_fit_input_parity_audit(report: list[str], py_report: Workboo
     geometry_metrics = append_geometry_provenance_audit(report, py_diag, web_diag)
     roi_metrics = append_roi_robust_stat_audit(report, py_diag, web_diag)
     bg_metrics = append_bg_pixel_stat_audit(report, py_diag, web_diag)
-    pabs_metrics = append_meanw_meanbg_bridge_audit(report, py_report, web_report)
+    pabs_metrics = append_meanw_meanbg_bridge_audit(report, py_report, web_report, py_diag, web_diag)
     append_corrected_pabs_intermediate_audit(report, py_report, web_report)
     append_cielab_source_audit(report, py_report, web_report)
     report.extend(["### 7. Replicate means/SDs"])
