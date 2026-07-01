@@ -1152,6 +1152,192 @@ def append_full_artifact_audit_conclusion(
     ])
 
 
+def has_finite_field(rows: list[dict[str, str]], field: str) -> bool:
+    return any(is_finite_number(row.get(field, "")) for row in rows)
+
+
+def classify_txt_artifact_status(status: str) -> str:
+    if status == "MATCH":
+        return "OK"
+    if status == "INTENTIONAL_BETA_DIFFERENCE":
+        return "INTENTIONAL_BETA_DIFFERENCE"
+    if status == "WORDING_ONLY_DIFFERENCE":
+        return "STYLE_DIFFERENCE_ONLY"
+    if status == "MISSING":
+        return "RELEASE_BLOCKING_GAP"
+    if status == "SCIENTIFIC_SEMANTIC_DIFFERENCE":
+        return "SCIENTIFIC_CONTENT_GAP"
+    return "SCIENTIFIC_CONTENT_GAP"
+
+
+def append_36x_a_artifact_parity_audit(
+    report: list[str],
+    py_canon: dict[str, str],
+    web_canon: dict[str, str],
+    workbooks: dict[tuple[str, str], Workbook],
+    artifact_summary: dict[str, dict[str, str]],
+    text_status: dict[str, str],
+    png_results: dict[str, PngAuditResult],
+    py_text_cache: dict[str, str],
+    web_text_cache: dict[str, str],
+) -> None:
+    py_report_rows = rows_as_dicts(workbooks.get(("python", "REPORT"), Workbook("", {}, [])).sheets.get("07_METHOD_COMPARISON", []))
+    web_report_rows = rows_as_dicts(workbooks.get(("web", "REPORT"), Workbook("", {}, [])).sheets.get("07_METHOD_COMPARISON", []))
+    py_fit_rows = rows_as_dicts(workbooks.get(("python", "REPORT"), Workbook("", {}, [])).sheets.get("06_FITTING", []))
+    web_fit_rows = rows_as_dicts(workbooks.get(("web", "REPORT"), Workbook("", {}, [])).sheets.get("06_FITTING", []))
+
+    py_expected_fields = expected_reference_fields(py_report_rows)
+    web_expected_fields = expected_reference_fields(web_report_rows)
+    py_has_reference = bool(py_expected_fields)
+    web_has_reference = bool(web_expected_fields)
+    py_has_c0_sd = has_finite_field(py_fit_rows, "C0") and has_finite_field(py_fit_rows, "C0_sd")
+    web_has_c0_sd = has_finite_field(web_fit_rows, "C0") and has_finite_field(web_fit_rows, "C0_sd")
+
+    py_results_caption = next((text for name, text in py_text_cache.items() if name.endswith("_RESULTS_CAPTION.txt")), "")
+    web_results_caption = next((text for name, text in web_text_cache.items() if name.endswith("_RESULTS_CAPTION.txt")), "")
+    py_caption_has_reference = "reference" in py_results_caption.lower() and ("recovery" in py_results_caption.lower() or "relative error" in py_results_caption.lower())
+    web_caption_has_reference = "reference" in web_results_caption.lower() and ("recovery" in web_results_caption.lower() or "relative error" in web_results_caption.lower())
+
+    report.extend([
+        "",
+        "## 36X-A Artifact Parity Audit (audit-only)",
+        "- classification legend: OK, STYLE_DIFFERENCE_ONLY, INTENTIONAL_BETA_DIFFERENCE, DIAGNOSTIC_ONLY_EXTRA, SCIENTIFIC_CONTENT_GAP, RELEASE_BLOCKING_GAP.",
+    ])
+
+    release_blockers: list[str] = []
+
+    report.extend([
+        "### PNG/Figure semantic-content audit",
+        "| Artifact | Inventory | Semantic-content check | Classification | Rationale |",
+        "|---|---|---|---|---|",
+    ])
+    for canon in sorted(name for name in set(py_canon) | set(web_canon) if name.lower().endswith(".png")):
+        py_present = canon in py_canon
+        web_present = canon in web_canon
+        inv = "present_both" if py_present and web_present else "missing_one_side"
+        classification = "OK"
+        rationale = ""
+        semantic = "manual visual confirmation required for overlap/readability; automated audit checks inventory, caption/workbook support, and known required scientific fields."
+
+        if not py_present or not web_present:
+            classification = "RELEASE_BLOCKING_GAP"
+            rationale = "artifact missing on one side"
+        else:
+            png_status = png_results.get(canon).status if canon in png_results else ""
+            if png_status == "PIXEL_IDENTICAL":
+                classification = "OK"
+                rationale = "pixel-identical"
+            elif png_status == "DIMENSIONS_MATCH_PIXEL_DIFFERENT":
+                classification = "STYLE_DIFFERENCE_ONLY"
+                rationale = "same canvas size; visual content differs"
+            elif png_status == "DIMENSIONS_DIFFER":
+                classification = "SCIENTIFIC_CONTENT_GAP"
+                rationale = "different figure dimensions"
+            else:
+                classification = "SCIENTIFIC_CONTENT_GAP"
+                rationale = f"png status={png_status}"
+
+        if canon.startswith("RESULTS/") and canon.endswith(("_FIGURE_RGB.png", "_BEST_CHANNEL.png")):
+            semantic = (
+                f"C0±SD support: python={py_has_c0_sd}, web={web_has_c0_sd}; "
+                f"reference/recovery support (REPORT/07 columns): python={py_has_reference}, web={web_has_reference}; "
+                f"caption reference/recovery mention: python={py_caption_has_reference}, web={web_caption_has_reference}"
+            )
+            if py_has_reference and (not web_has_reference or not web_caption_has_reference):
+                classification = "RELEASE_BLOCKING_GAP"
+                rationale = "web RESULTS figure context lacks reference/recovery evidence while Python provides it"
+            elif py_has_c0_sd and not web_has_c0_sd:
+                classification = "RELEASE_BLOCKING_GAP"
+                rationale = "web RESULTS fit context lacks C0/C0_sd evidence while Python provides it"
+
+        if classification == "RELEASE_BLOCKING_GAP":
+            release_blockers.append(f"{canon}: {rationale}")
+
+        report.append(f"| `{canon}` | {inv} | {semantic} | {classification} | {markdown_cell_text(rationale)} |")
+
+    report.extend([
+        "### Workbook sheet/panel audit",
+        "| Workbook/Sheet | Presence | Shape python/web | Important missing columns in web | Classification | Notes |",
+        "|---|---|---|---|---|---|",
+    ])
+    for kind in ["REPORT", "DIAGNOSTICS"]:
+        py_wb = workbooks.get(("python", kind))
+        web_wb = workbooks.get(("web", kind))
+        if not py_wb or not web_wb:
+            report.append(f"| {kind} | missing workbook | n/a | n/a | RELEASE_BLOCKING_GAP | workbook missing in at least one ZIP |")
+            release_blockers.append(f"{kind}: workbook missing in one ZIP")
+            continue
+        all_sheets = sorted(set(py_wb.order) | set(web_wb.order))
+        for sheet in all_sheets:
+            py_rows = py_wb.sheets.get(sheet, [])
+            web_rows = web_wb.sheets.get(sheet, [])
+            py_present = bool(py_rows)
+            web_present = bool(web_rows)
+            presence = "present_both" if py_present and web_present else "missing_one_side"
+            py_shape = sheet_shape(py_rows)
+            web_shape = sheet_shape(web_rows)
+            py_header = py_rows[0] if py_rows else []
+            web_header = web_rows[0] if web_rows else []
+            missing_cols = [col for col in py_header if col not in web_header]
+            missing_text = ", ".join(missing_cols[:8]) + (" ..." if len(missing_cols) > 8 else "") if missing_cols else ""
+
+            classification = "OK"
+            note = ""
+            if not py_present or not web_present:
+                classification = "RELEASE_BLOCKING_GAP" if kind == "REPORT" else "SCIENTIFIC_CONTENT_GAP"
+                note = "sheet missing in one workbook"
+            elif missing_cols:
+                if kind == "DIAGNOSTICS" and all(col.startswith("Web_") for col in (set(web_header) - set(py_header))):
+                    classification = "DIAGNOSTIC_ONLY_EXTRA"
+                    note = "web diagnostic-only extension columns"
+                elif sheet == "07_METHOD_COMPARISON" and any(col.startswith(("expected_", "estimate_for_expected_", "delta_expected_", "recovery_pct_", "rel_error_")) for col in missing_cols):
+                    classification = "RELEASE_BLOCKING_GAP"
+                    note = "web missing reference/recovery panel fields used for scientific interpretation"
+                else:
+                    classification = "SCIENTIFIC_CONTENT_GAP"
+                    note = "header/content mismatch beyond style-only differences"
+            elif py_shape != web_shape:
+                classification = "SCIENTIFIC_CONTENT_GAP"
+                note = "different row/column counts"
+
+            if classification == "RELEASE_BLOCKING_GAP":
+                release_blockers.append(f"{kind}/{sheet}: {note}")
+            report.append(
+                f"| {kind}/{sheet} | {presence} | {py_shape}/{web_shape} | {markdown_cell_text(missing_text)} | {classification} | {markdown_cell_text(note)} |"
+            )
+
+    report.extend([
+        "### TXT caption audit",
+        "| Caption | Presence | Classification | Key-science mention check | Notes |",
+        "|---|---|---|---|---|",
+    ])
+    for canon in sorted(name for name in set(py_canon) | set(web_canon) if name.lower().endswith(".txt")):
+        py_present = canon in py_canon
+        web_present = canon in web_canon
+        presence = "present_both" if py_present and web_present else "missing_one_side"
+        status = text_status.get(canon, "MISSING" if not (py_present and web_present) else "UNKNOWN")
+        classification = classify_txt_artifact_status(status)
+        py_text = py_text_cache.get(canon, "")
+        web_text = web_text_cache.get(canon, "")
+        py_has_key = any(token in py_text.lower() for token in ["c0", "reference", "recovery", "relative error"]) if py_text else False
+        web_has_key = any(token in web_text.lower() for token in ["c0", "reference", "recovery", "relative error"]) if web_text else False
+        key_check = f"python={py_has_key}, web={web_has_key}"
+        note = ""
+        if canon.endswith("_RESULTS_CAPTION.txt") and py_has_key and not web_has_key:
+            classification = "RELEASE_BLOCKING_GAP"
+            note = "web results caption omits key scientific comparison terms present in python"
+        if classification == "RELEASE_BLOCKING_GAP":
+            release_blockers.append(f"{canon}: {note or status}")
+        report.append(f"| `{canon}` | {presence} | {classification} | {key_check} | {markdown_cell_text(note)} |")
+
+    report.extend(["### 36X-A release-blocker summary"])
+    if release_blockers:
+        for item in release_blockers:
+            report.append(f"- RELEASE_BLOCKING_GAP: {item}")
+    else:
+        report.append("- no release-blocking artifact gaps detected for this ZIP pair.")
+
+
 def rows_as_dicts(rows: list[list[str]]) -> list[dict[str, str]]:
     if not rows:
         return []
@@ -4275,6 +4461,28 @@ def compare(
 
         text_status = append_txt_caption_audit(report, py_zf, web_zf, py_canon, web_canon, artifact_summary)
         png_results = append_png_visual_audit(report, py_zf, web_zf, py_canon, web_canon, visual_dir, artifact_summary)
+
+        py_text_cache = {
+            canon: py_zf.read(py_canon[canon]).decode("utf-8", errors="replace")
+            for canon in py_canon
+            if canon.lower().endswith(".txt")
+        }
+        web_text_cache = {
+            canon: web_zf.read(web_canon[canon]).decode("utf-8", errors="replace")
+            for canon in web_canon
+            if canon.lower().endswith(".txt")
+        }
+        append_36x_a_artifact_parity_audit(
+            report,
+            py_canon,
+            web_canon,
+            workbooks,
+            artifact_summary,
+            text_status,
+            png_results,
+            py_text_cache,
+            web_text_cache,
+        )
         append_artifact_parity_summary(report, artifact_summary, png_results, text_status, workbook_status)
 
         append_score_centered_summary(
