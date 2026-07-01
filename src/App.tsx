@@ -1867,7 +1867,6 @@ function buildReportRawRows(
 
   return measurements.filter((measurement) => configByWell.get(measurement.wellId)?.role !== 'EMPTY').map((measurement) => {
     const config = configByWell.get(measurement.wellId);
-    const display = displayByWell.get(measurement.wellId) ?? measurement;
     const parsed = parseWellPosition(measurement.wellId);
     const cielab = cielabByWell.get(measurement.wellId);
     const wellLinear = linearizeRgb(measurement.rgbWell);
@@ -1878,17 +1877,16 @@ function buildReportRawRows(
     const auditFields = REPORT_RGB_CHANNELS.reduce<XlsxRow>((acc, channel) => {
       const suffix = channelFieldSuffix(channel);
       const rawValue = pabsChannelValue(measurement, channel);
-      const exportedValue = pabsChannelValue(display, channel);
-      const application = correctionForWellChannel(correctionLookup, measurement.wellId, channel);
+      const exportedValue = rawValue;
 
       acc[`PAbs_${suffix}_raw`] = finiteOrBlank(rawValue);
       acc[`PAbs_${suffix}_exported`] = finiteOrBlank(exportedValue);
       acc[`PAbs_${suffix}_correction_delta`] = Number.isFinite(rawValue) && Number.isFinite(exportedValue)
         ? exportedValue - rawValue
         : '';
-      acc[`S0_${suffix}_applied`] = application?.correctionApplied ? application.S0 : '';
-      acc[`ClipDelta_${suffix}_applied`] = application?.correctionApplied ? application.clipDelta : '';
-      acc[`TotalDelta_${suffix}_applied`] = application?.correctionApplied ? application.totalDelta : '';
+      acc[`S0_${suffix}_applied`] = '';
+      acc[`ClipDelta_${suffix}_applied`] = '';
+      acc[`TotalDelta_${suffix}_applied`] = '';
       return acc;
     }, {});
 
@@ -1909,9 +1907,9 @@ function buildReportRawRows(
       SignalT_Red: Number.isFinite(signalTRed) ? signalTRed : '',
       SignalT_Green: Number.isFinite(signalTGreen) ? signalTGreen : '',
       SignalT_Blue: Number.isFinite(signalTBlue) ? signalTBlue : '',
-      PAbs_Red: display.pabs.r,
-      PAbs_Green: display.pabs.g,
-      PAbs_Blue: display.pabs.b,
+      PAbs_Red: measurement.pabs.r,
+      PAbs_Green: measurement.pabs.g,
+      PAbs_Blue: measurement.pabs.b,
       L: finiteOrBlank(cielab?.l),
       a: finiteOrBlank(cielab?.a),
       b: finiteOrBlank(cielab?.b),
@@ -1970,9 +1968,9 @@ function buildReportReplicateRows(
     ))
     .map(({ config, measurements: groupMeasurements }) => {
       const rawGroupMeasurements = groupMeasurements.map((measurement) => measurementByWell.get(measurement.wellId) ?? measurement);
-      const pabsRed = groupMeasurements.map((measurement) => measurement.pabs.r);
-      const pabsGreen = groupMeasurements.map((measurement) => measurement.pabs.g);
-      const pabsBlue = groupMeasurements.map((measurement) => measurement.pabs.b);
+      const pabsRed = rawGroupMeasurements.map((measurement) => measurement.pabs.r);
+      const pabsGreen = rawGroupMeasurements.map((measurement) => measurement.pabs.g);
+      const pabsBlue = rawGroupMeasurements.map((measurement) => measurement.pabs.b);
       const rawPabsRed = rawGroupMeasurements.map((measurement) => measurement.pabs.r);
       const rawPabsGreen = rawGroupMeasurements.map((measurement) => measurement.pabs.g);
       const rawPabsBlue = rawGroupMeasurements.map((measurement) => measurement.pabs.b);
