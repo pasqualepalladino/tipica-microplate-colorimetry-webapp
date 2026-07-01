@@ -1409,7 +1409,7 @@ BG_STAT_MASK.png
 Current web export shows the accepted inter-well background sampling mask overlaid on the analyzed image. It supports auditability of background sampling and does not change calculations; the exact Python binary-mask rendering is not yet reproduced.
 
 FIGURE_CIELAB_DELTAE.png
-Diagnostic CIELAB and DeltaE plots derived from extracted well RGB values. DeltaE uses the zero-calibration wells as the reference when available; otherwise it uses the lowest calibration concentration available. These descriptors support method review and do not replace the primary RGB/PAbs results.
+Python-style CIELAB/DeltaE fitting/report figure with plate preview, descriptor fitting panels, reference values, C0/Score/Delta/Recovery tables, calibration and standard-addition summaries. It mirrors the Python composite report artifact for CIELAB/DeltaE descriptors.
 
 METHOD_COMPARISON.png
 Cross-method diagnostic comparison for currently available webapp methods. Score uses common fit-quality factors; external reference values and recovery checks are displayed as checks and do not affect ranking.
@@ -3692,11 +3692,492 @@ function drawSimpleAxis(
   return { xToPx, yToPx };
 }
 
+const CIELAB_COMPOSITE_CHANNELS = ['DeltaE_ab', 'DeltaE_ab_chroma', 'DeltaL', 'Deltaa', 'Deltab'] as const;
+
+type CielabCompositeChannel = (typeof CIELAB_COMPOSITE_CHANNELS)[number];
+
+interface CielabCompositePoint {
+  x: number;
+  y: number;
+  yerr: number;
+}
+
+interface CielabCompositeStdGroup {
+  sampleId: string;
+  dilutionFactor: number;
+  fit: XlsxRow | undefined;
+  points: CielabCompositePoint[];
+}
+
+function cielabCompositeDisplayName(channel: CielabCompositeChannel): string {
+  return channel;
+}
+
+function cielabCompositeColor(channel: CielabCompositeChannel): string {
+  const palette: Record<CielabCompositeChannel, string> = {
+    DeltaE_ab: '#2b3437',
+    DeltaE_ab_chroma: '#7a4d00',
+    DeltaL: '#405f0a',
+    Deltaa: '#5b2c83',
+    Deltab: '#0b6b76',
+  };
+
+  return palette[channel];
+}
+
+function cielabCompositeValueGetter(channel: CielabCompositeChannel): (point: CielabDiagnosticPoint) => number | '' {
+  const descriptor = CIELAB_REPORT_DESCRIPTORS.find((item) => item.channel === channel);
+
+  if (descriptor) {
+    return descriptor.getValue;
+  }
+
+  return (point: CielabDiagnosticPoint) => point.deltaE;
+}
+
+function collectCielabCompositeCalibrationPoints(
+  channel: CielabCompositeChannel,
+  points: CielabDiagnosticPoint[],
+): CielabCompositePoint[] {
+  const calibrationPoints = diagnosticCielabPointsForRole(points, 'C');
+  const grouped = groupedMedianCielabFitRows(calibrationPoints, cielabCompositeValueGetter(channel));
+  const yerrByX = new Map<number, number>();
+
+  grouped.forEach((groupedPoint) => {
+    const values = calibrationPoints
+      .filter((point) => Number.isFinite(point.conc) && Math.abs((point.conc as number) - groupedPoint.x) <= 1e-12)
+      .map((point) => cielabValueAsNumber(cielabCompositeValueGetter(channel)(point)))
+      .filter(Number.isFinite);
+    yerrByX.set(groupedPoint.x, sampleStandardDeviation(values));
+  });
+
+  return grouped.map((point) => ({
+    x: point.x,
+    y: point.y,
+    yerr: yerrByX.get(point.x) ?? 0,
+  }));
+}
+
+function collectCielabCompositeStdGroups(
+  channel: CielabCompositeChannel,
+  points: CielabDiagnosticPoint[],
+  fitRows: XlsxRow[],
+): CielabCompositeStdGroup[] {
+  const stdRows = fitRows.filter((row) => row.FitType === 'StdAdd' && String(row.Channel) === channel);
+  const groups: CielabCompositeStdGroup[] = [];
+
+  stdRows.forEach((fitRow) => {
+    const sampleId = String(fitRow.ID ?? '');
+    const dilutionFactor = numericRowValue(fitRow, 'DF');
+    const stdPointsRaw = diagnosticCielabPointsForRole(points, 'A', sampleId, dilutionFactor);
+    const grouped = groupedMedianCielabFitRows(stdPointsRaw, cielabCompositeValueGetter(channel));
+    const yerrByX = new Map<number, number>();
+
+    grouped.forEach((groupedPoint) => {
+      const values = stdPointsRaw
+        .filter((point) => Number.isFinite(point.conc) && Math.abs((point.conc as number) - groupedPoint.x) <= 1e-12)
+        .map((point) => cielabValueAsNumber(cielabCompositeValueGetter(channel)(point)))
+        .filter(Number.isFinite);
+      yerrByX.set(groupedPoint.x, sampleStandardDeviation(values));
+    });
+
+    groups.push({
+      sampleId,
+      dilutionFactor,
+      fit: fitRow,
+      points: grouped.map((point) => ({ x: point.x, y: point.y, yerr: yerrByX.get(point.x) ?? 0 })),
+    });
+  });
+
+  return groups;
+}
+
+function buildCielabCompositeScientificLines({
+  unitLabel,
+  measurements,
+  plateMap,
+  expectedRefs,
+  fitRows,
+  comparisonRows,
+  selectedDescriptor,
+}: {
+  unitLabel: string;
+  measurements: WellMeasurement[];
+  plateMap: WellConfig[];
+  expectedRefs: ExpectedRef[];
+  fitRows: XlsxRow[];
+  comparisonRows: XlsxRow[];
+  selectedDescriptor: string;
+}): Array<{ text: string; emphasize?: boolean }> {
+  const lines: Array<{ text: string; emphasize?: boolean }> = [];
+  const comparisonByMethod = new Map(comparisonRows.map((row) => [String(row.Method ?? ''), row]));
+  const selectedLabel = selectedDescriptor.trim();
+  const pushText = (text: string, emphasize = false) => lines.push({ text, emphasize });
+  const pushTable = (tableLines: string[]) => {
+    tableLines.forEach((line, index) => {
+      const isDataRow = index >= 2;
+      const selectedRow = isDataRow && line.trimStart().startsWith(selectedLabel);
+      pushText(line, selectedRow);
+    });
+  };
+  const stdRows = fitRows.filter((row) => row.FitType === 'StdAdd');
+  const calRows = fitRows.filter((row) => row.FitType === 'Calibration');
+  const hasStd = stdRows.length > 0;
+  const hasCal = calRows.length > 0;
+  const modeLabel = hasCal && hasStd
+    ? 'calibration + standard addition'
+    : hasCal
+      ? 'calibration only'
+      : hasStd
+        ? 'standard addition only'
+        : 'no valid analytical fit available';
+  const flagged = measurements.filter((measurement) => measurement.warnings.length > 0 || Boolean(measurement.roiStatisticsWarning || measurement.geometryAlignmentWarning)).length;
+  const critical = measurements.filter((measurement) => (
+    [...measurement.warnings, measurement.roiStatisticsWarning ?? '', measurement.geometryAlignmentWarning ?? '']
+      .some((warning) => warning.toLowerCase().includes('critical'))
+  )).length;
+  const total = measurements.length;
+  const plateStatus = critical === 0 && flagged <= Math.max(1, Math.floor(total * 0.2)) ? 'Passed' : 'Warning';
+
+  pushText('DeltaE_ab = sqrt((L-Lref)^2 + (a-aref)^2 + (b-bref)^2)');
+  pushText('DeltaE_ab,chroma = sqrt((a-aref)^2 + (b-bref)^2)');
+  pushText('');
+  pushText(`Mode: ${modeLabel}`);
+  pushText('Fit: robust IRLS');
+  pushText(`Plate: ${plateMap.length}-well | QC: ${plateStatus}`);
+  pushText(`Plate QC: wells flagged ${flagged}/${total} | wells critical ${critical}/${total}`);
+  pushText('');
+  pushText('REFERENCE VALUES', true);
+  if (expectedRefs.length === 0) {
+    pushText('NA');
+  } else {
+    expectedRefs.forEach((ref, index) => {
+      const label = ref.label.trim() || ref.refId.trim() || `Reference ${index + 1}`;
+      const valueText = formatFigureScientificNumber(ref.value);
+      const sdText = ref.sd !== null && Number.isFinite(ref.sd) ? ` +/- ${formatFigureScientificNumber(ref.sd)}` : '';
+      pushText(`${label}: ${valueText}${sdText} ${unitLabel}`);
+    });
+  }
+
+  const groups = new Map<string, XlsxRow[]>();
+  stdRows.forEach((row) => {
+    const key = `${stringRowValue(row, 'ID')}|${numericRowValue(row, 'DF')}`;
+    const items = groups.get(key) ?? [];
+    items.push(row);
+    groups.set(key, items);
+  });
+
+  for (const [groupKey, rows] of groups.entries()) {
+    const [sampleId, dilutionFactorRaw] = groupKey.split('|');
+    const dilutionFactor = Number(dilutionFactorRaw);
+    pushText('');
+    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureScientificNumber(dilutionFactor)}`, true);
+
+    const resultRows = CIELAB_COMPOSITE_CHANNELS.map((channel) => {
+      const fitRow = rows.find((row) => String(row.Channel) === channel);
+      const methodRow = comparisonByMethod.get(channel);
+      const c0 = numericRowValue(fitRow, 'C0');
+      const score = numericRowValue(methodRow, 'Score');
+      const matchedRef = expectedRefs.find((ref) => referenceMatchesSample(ref, sampleId));
+      const refValue = matchedRef?.value ?? Number.NaN;
+      const delta = Number.isFinite(c0) && Number.isFinite(refValue) ? c0 - refValue : Number.NaN;
+      const recovery = Number.isFinite(c0) && Number.isFinite(refValue) && Math.abs(refValue) > 1e-15
+        ? (100 * c0) / refValue
+        : Number.NaN;
+      return [
+        cielabCompositeDisplayName(channel),
+        formatFigureScientificNumber(c0),
+        formatFigureScientificNumber(score),
+        formatFigureScientificNumber(delta),
+        Number.isFinite(recovery) ? recovery.toFixed(1) : 'NA',
+      ];
+    });
+    pushTable(formatFigureRgbTable(
+      ['Channel', `C0 (${unitLabel})`, 'Score', `Delta (${unitLabel})`, 'Recovery (%)'],
+      resultRows,
+    ));
+
+    pushText('');
+    pushText('Calibration', true);
+    const calibrationRows = CIELAB_COMPOSITE_CHANNELS.map((channel) => {
+      const calRow = calRows.find((row) => String(row.Channel) === channel);
+      const methodRow = comparisonByMethod.get(channel);
+      return [
+        cielabCompositeDisplayName(channel),
+        formatFigureScientificNumber(numericRowValue(calRow, 'm')),
+        formatFigureScientificNumber(numericRowValue(calRow, 'q')),
+        formatFigureScientificNumber(numericRowValue(calRow, 'R2')),
+        formatFigureScientificNumber(numericRowValue(methodRow, 'LOD')),
+        formatFigureScientificNumber(numericRowValue(methodRow, 'LOQ')),
+      ];
+    });
+    pushTable(formatFigureRgbTable(
+      ['Channel', 'Slope', 'Intercept', 'R2', `LOD (${unitLabel})`, `LOQ (${unitLabel})`],
+      calibrationRows,
+    ));
+
+    pushText('');
+    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureScientificNumber(dilutionFactor)}`, true);
+    const stdFitRows = CIELAB_COMPOSITE_CHANNELS.map((channel) => {
+      const fitRow = rows.find((row) => String(row.Channel) === channel);
+      return [
+        cielabCompositeDisplayName(channel),
+        formatFigureScientificNumber(numericRowValue(fitRow, 'm')),
+        formatFigureScientificNumber(numericRowValue(fitRow, 'q')),
+        formatFigureScientificNumber(numericRowValue(fitRow, 'R2')),
+      ];
+    });
+    pushTable(formatFigureRgbTable(['Channel', 'Slope', 'Intercept', 'R2'], stdFitRows));
+  }
+
+  return lines;
+}
+
+function drawPythonStyleCielabCompositePanel(
+  ctx: CanvasRenderingContext2D,
+  bounds: { x: number; y: number; width: number; height: number },
+  channel: CielabCompositeChannel,
+  calibrationFit: XlsxRow | undefined,
+  standardGroups: CielabCompositeStdGroup[],
+  calibrationPoints: CielabCompositePoint[],
+  methodRow: XlsxRow | undefined,
+  unitLabel: string,
+  expectedRefs: ExpectedRef[],
+): void {
+  const color = cielabCompositeColor(channel);
+  const margin = { left: 84, right: 24, top: 62, bottom: 78 };
+  const plot = {
+    x: bounds.x + margin.left,
+    y: bounds.y + margin.top,
+    width: bounds.width - margin.left - margin.right,
+    height: bounds.height - margin.top - margin.bottom,
+  };
+
+  const stdFits = standardGroups.map((group) => group.fit).filter((fit): fit is XlsxRow => Boolean(fit));
+  const stdPoints = standardGroups.flatMap((group) => group.points);
+  const refXValues = standardGroups.flatMap((group) => expectedRefs.flatMap((ref) => {
+    if (!referenceMatchesSample(ref, group.sampleId)) {
+      return [];
+    }
+
+    const x = -ref.value / Math.max(group.dilutionFactor, 1e-12);
+    const xSd = ref.sd !== null && Number.isFinite(ref.sd)
+      ? Math.abs(ref.sd / Math.max(group.dilutionFactor, 1e-12))
+      : Number.NaN;
+    return Number.isFinite(x)
+      ? [x, Number.isFinite(xSd) ? x - xSd : Number.NaN, Number.isFinite(xSd) ? x + xSd : Number.NaN]
+      : [];
+  }));
+
+  const calibrationSlope = numericRowValue(calibrationFit, 'm');
+  const calibrationIntercept = numericRowValue(calibrationFit, 'q');
+  const xRange = rangeWithPadding([
+    ...calibrationPoints.map((point) => point.x),
+    ...stdPoints.map((point) => point.x),
+    ...refXValues,
+    ...stdFits.flatMap((fit) => {
+      const slope = numericRowValue(fit, 'm');
+      const intercept = numericRowValue(fit, 'q');
+      if (!Number.isFinite(slope) || Math.abs(slope) <= 1e-15 || !Number.isFinite(intercept)) {
+        return [];
+      }
+
+      return [-intercept / slope];
+    }),
+  ], 0, 1);
+  const yFromFits = [
+    Number.isFinite(calibrationSlope) && Number.isFinite(calibrationIntercept)
+      ? calibrationSlope * xRange.min + calibrationIntercept
+      : Number.NaN,
+    Number.isFinite(calibrationSlope) && Number.isFinite(calibrationIntercept)
+      ? calibrationSlope * xRange.max + calibrationIntercept
+      : Number.NaN,
+    ...stdFits.flatMap((fit) => {
+      const slope = numericRowValue(fit, 'm');
+      const intercept = numericRowValue(fit, 'q');
+      return Number.isFinite(slope) && Number.isFinite(intercept)
+        ? [slope * xRange.min + intercept, slope * xRange.max + intercept]
+        : [];
+    }),
+  ];
+  const yRange = rangeWithPadding([
+    ...calibrationPoints.map((point) => point.y),
+    ...calibrationPoints.flatMap((point) => Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []),
+    ...stdPoints.map((point) => point.y),
+    ...stdPoints.flatMap((point) => Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []),
+    ...yFromFits,
+    ...(refXValues.length > 0 ? [0] : []),
+  ], 0, 1, 0.10);
+  const xToPx = (value: number) => plot.x + ((value - xRange.min) / (xRange.max - xRange.min)) * plot.width;
+  const yToPx = (value: number) => plot.y + plot.height - ((value - yRange.min) / (yRange.max - yRange.min)) * plot.height;
+  const xTicks = niceTicks(xRange.min, xRange.max, 5);
+  const yTicks = niceTicks(yRange.min, yRange.max, 5);
+
+  ctx.save();
+  ctx.fillStyle = '#1d2628';
+  ctx.font = '700 24px "Courier New", Consolas, monospace';
+  ctx.fillText(cielabCompositeDisplayName(channel), bounds.x + 12, bounds.y + 34);
+  if (methodRow) {
+    const rankText = [
+      `Score ${formatFitCell(numericRowValue(methodRow, 'Score'))}`,
+      `R2cal ${formatFitCell(numericRowValue(methodRow, 'R2_cal'))}`,
+      `R2std ${formatFitCell(numericRowValue(methodRow, 'R2_std_mean'))}`,
+      `LOQ ${formatFitCell(numericRowValue(methodRow, 'LOQ'))}`,
+    ].join('  ');
+    ctx.font = '600 13px "Courier New", Consolas, monospace';
+    ctx.fillStyle = '#465255';
+    ctx.fillText(rankText, plot.x + Math.max(0, plot.width - ctx.measureText(rankText).width - 4), bounds.y + 34);
+  }
+
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(plot.x, plot.y);
+  ctx.lineTo(plot.x, plot.y + plot.height);
+  ctx.lineTo(plot.x + plot.width, plot.y + plot.height);
+  ctx.stroke();
+
+  ctx.fillStyle = '#000000';
+  ctx.font = '600 13px "Courier New", Consolas, monospace';
+  xTicks.forEach((tick) => {
+    const px = xToPx(tick);
+    ctx.beginPath();
+    ctx.moveTo(px, plot.y + plot.height);
+    ctx.lineTo(px, plot.y + plot.height + 8);
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.fillText(formatFitCell(tick), px - 14, plot.y + plot.height + 24);
+  });
+  yTicks.forEach((tick) => {
+    const py = yToPx(tick);
+    ctx.beginPath();
+    ctx.moveTo(plot.x - 8, py);
+    ctx.lineTo(plot.x, py);
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.fillText(formatPAbsCell(tick), bounds.x + 10, py + 5);
+  });
+
+  ctx.fillStyle = '#000000';
+  ctx.font = '700 16px "Courier New", Consolas, monospace';
+  ctx.fillText(`Added concentration (${unitLabel})`, plot.x + plot.width / 2 - 150, bounds.y + bounds.height - 14);
+  ctx.save();
+  ctx.translate(bounds.x + 20, plot.y + plot.height / 2 + 62);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText(cielabCompositeDisplayName(channel), 0, 0);
+  ctx.restore();
+
+  if (Number.isFinite(calibrationSlope) && Number.isFinite(calibrationIntercept)) {
+    ctx.save();
+    ctx.setLineDash([8, 6]);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.6;
+    ctx.beginPath();
+    ctx.moveTo(xToPx(xRange.min), yToPx(calibrationSlope * xRange.min + calibrationIntercept));
+    ctx.lineTo(xToPx(xRange.max), yToPx(calibrationSlope * xRange.max + calibrationIntercept));
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  calibrationPoints.forEach((point) => {
+    const px = xToPx(point.x);
+    const py = yToPx(point.y);
+    if (Number.isFinite(point.yerr) && point.yerr > 0) {
+      drawVerticalErrorBar(ctx, px, yToPx(point.y - point.yerr), yToPx(point.y + point.yerr), 10, color);
+    }
+    ctx.beginPath();
+    ctx.arc(px, py, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.4;
+    ctx.stroke();
+  });
+
+  standardGroups.forEach((group) => {
+    const slope = numericRowValue(group.fit, 'm');
+    const intercept = numericRowValue(group.fit, 'q');
+    if (Number.isFinite(slope) && Number.isFinite(intercept)) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.8;
+      ctx.beginPath();
+      ctx.moveTo(xToPx(xRange.min), yToPx(slope * xRange.min + intercept));
+      ctx.lineTo(xToPx(xRange.max), yToPx(slope * xRange.max + intercept));
+      ctx.stroke();
+    }
+
+    group.points.forEach((point) => {
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+        return;
+      }
+
+      const px = xToPx(point.x);
+      const py = yToPx(point.y);
+      if (Number.isFinite(point.yerr) && point.yerr > 0) {
+        drawVerticalErrorBar(ctx, px, yToPx(point.y - point.yerr), yToPx(point.y + point.yerr), 10, color);
+      }
+
+      ctx.fillStyle = color;
+      ctx.fillRect(px - 5, py - 5, 10, 10);
+    });
+
+    expectedRefs.forEach((ref) => {
+      if (!referenceMatchesSample(ref, group.sampleId)) {
+        return;
+      }
+
+      const x = -ref.value / Math.max(group.dilutionFactor, 1e-12);
+      if (!Number.isFinite(x)) {
+        return;
+      }
+
+      const px = xToPx(x);
+      const py = yToPx(0);
+      const xSd = ref.sd !== null && Number.isFinite(ref.sd)
+        ? Math.abs(ref.sd / Math.max(group.dilutionFactor, 1e-12))
+        : Number.NaN;
+      ctx.save();
+      ctx.strokeStyle = '#8a3ffc';
+      ctx.lineWidth = 1.9;
+      if (Number.isFinite(xSd) && xSd > 0) {
+        drawHorizontalErrorBar(ctx, xToPx(x - xSd), xToPx(x + xSd), py, 10, '#8a3ffc');
+      }
+      ctx.beginPath();
+      ctx.moveTo(px, py - 6);
+      ctx.lineTo(px + 6, py);
+      ctx.lineTo(px, py + 6);
+      ctx.lineTo(px - 6, py);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.restore();
+    });
+  });
+
+  const legendX = plot.x + 10;
+  let legendY = plot.y + 18;
+  ctx.fillStyle = '#000000';
+  ctx.font = '600 14px "Courier New", Consolas, monospace';
+  ctx.fillText('o calibration (dashed)', legendX, legendY);
+  legendY += 18;
+  ctx.fillText('s standard addition (solid)', legendX, legendY);
+  if (expectedRefs.length > 0) {
+    legendY += 18;
+    ctx.fillStyle = '#6d36c9';
+    ctx.fillText('d reference +/- SD', legendX, legendY);
+  }
+
+  ctx.restore();
+}
+
 function buildPythonStyleCielabDeltaECanvas(
   imageBase: string,
+  overlayCanvas: HTMLCanvasElement,
   measurements: WellMeasurement[],
   plateMap: WellConfig[],
   unitLabel: string,
+  expectedRefs: ExpectedRef[],
 ): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   const width = 2481;
@@ -3709,75 +4190,61 @@ function buildPythonStyleCielabDeltaECanvas(
     throw new Error('Could not create CIELAB/DeltaE diagnostic canvas.');
   }
 
-  const { points, referenceSource } = buildCielabDiagnosticPoints(measurements, plateMap);
-  const descriptors = [
-    { key: 'l', label: 'L*' },
-    { key: 'a', label: 'a*' },
-    { key: 'b', label: 'b*' },
-    { key: 'deltaE', label: 'DeltaE_ab' },
-    { key: 'deltaEChroma', label: 'DeltaE_ab_chroma' },
-  ] as const;
-  const xValues = points.map((point) => (typeof point.conc === 'number' ? point.conc : Number.NaN)).filter(Number.isFinite);
-  const xRange = rangeWithPadding(xValues, 0, 1);
+  const { points } = buildCielabDiagnosticPoints(measurements, plateMap);
+  const compositeDescriptors = CIELAB_REPORT_DESCRIPTORS.filter((descriptor) =>
+    CIELAB_COMPOSITE_CHANNELS.includes(descriptor.channel as CielabCompositeChannel),
+  );
+  const fitRows = buildCielabFittingRows(points, compositeDescriptors);
+  const comparisonRows = buildMethodComparisonRowsFromFitRows(fitRows, expectedRefs, true);
+  const selectedDescriptor = String(comparisonRows[0]?.Method ?? CIELAB_COMPOSITE_CHANNELS[0]);
+  const scientificLines = buildCielabCompositeScientificLines({
+    unitLabel,
+    measurements,
+    plateMap,
+    expectedRefs,
+    fitRows,
+    comparisonRows,
+    selectedDescriptor,
+  });
 
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
+  drawImageCover(ctx, overlayCanvas, overlayCanvas.width, overlayCanvas.height, 110, 70, 940, 650);
   ctx.fillStyle = '#172026';
-  ctx.font = '700 40px Inter, Arial, sans-serif';
-  ctx.fillText(`${imageBase} CIELAB / DeltaE diagnostics`, 110, 75);
-  ctx.font = '22px Inter, Arial, sans-serif';
-  ctx.fillStyle = '#344044';
-  ctx.fillText(`Reference source: ${referenceSource}. Derived from extracted well RGB values; diagnostic only.`, 110, 112);
+  ctx.font = '700 34px Inter, Arial, sans-serif';
+  ctx.fillText(`${imageBase} CIELAB / DeltaE report`, 110, 760);
 
-  const plotX = 210;
-  const plotWidth = 2100;
-  const plotHeight = 470;
-  const plotGap = 92;
-  const top = 175;
+  ctx.fillStyle = '#253033';
+  drawPreformattedLines(
+    ctx,
+    scientificLines,
+    110,
+    812,
+    24,
+    height - 95,
+    '18px Consolas, "Courier New", monospace',
+    '700 18px Consolas, "Courier New", monospace',
+  );
 
-  descriptors.forEach((descriptor, index) => {
-    const plot = { x: plotX, y: top + index * (plotHeight + plotGap), width: plotWidth, height: plotHeight };
-    const values = points.map((point) => point[descriptor.key]).filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-    const yRange = rangeWithPadding(values, 0, 1, 0.12);
-    const { xToPx, yToPx } = drawSimpleAxis(ctx, plot, xRange, yRange, `Concentration (${unitLabel})`, descriptor.label);
+  const comparisonByMethod = new Map(comparisonRows.map((row) => [String(row.Method ?? ''), row]));
+  const panelX = 1190;
+  const panelWidth = 1160;
+  const panelHeight = 520;
+  const panelGap = 40;
 
-    points.forEach((point) => {
-      if (typeof point.conc !== 'number') {
-        return;
-      }
-      const value = point[descriptor.key];
-      if (typeof value !== 'number' || !Number.isFinite(value)) {
-        return;
-      }
-
-      const x = xToPx(point.conc);
-      const y = yToPx(value);
-      ctx.fillStyle = pointColorForRole(point.type);
-      if (point.type === 'C') {
-        ctx.beginPath();
-        ctx.arc(x, y, 7, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (point.type === 'A') {
-        ctx.fillRect(x - 6, y - 6, 12, 12);
-      } else {
-        ctx.beginPath();
-        ctx.moveTo(x, y - 8);
-        ctx.lineTo(x + 8, y);
-        ctx.lineTo(x, y + 8);
-        ctx.lineTo(x - 8, y);
-        ctx.closePath();
-        ctx.fill();
-      }
-    });
+  CIELAB_COMPOSITE_CHANNELS.forEach((channel, index) => {
+    drawPythonStyleCielabCompositePanel(
+      ctx,
+      { x: panelX, y: 70 + index * (panelHeight + panelGap), width: panelWidth, height: panelHeight },
+      channel,
+      fitRows.find((row) => row.FitType === 'Calibration' && String(row.Channel) === channel),
+      collectCielabCompositeStdGroups(channel, points, fitRows),
+      collectCielabCompositeCalibrationPoints(channel, points),
+      comparisonByMethod.get(channel),
+      unitLabel,
+      expectedRefs,
+    );
   });
-
-  ctx.font = '22px Inter, Arial, sans-serif';
-  ctx.fillStyle = '#2563c7';
-  ctx.fillText('? calibration', 210, height - 80);
-  ctx.fillStyle = '#1f8a4c';
-  ctx.fillText('� standard addition', 420, height - 80);
-  ctx.fillStyle = '#cf2e2e';
-  ctx.fillText('? unknown', 700, height - 80);
 
   return canvas;
 }
@@ -7024,13 +7491,14 @@ function App() {
       const methodComparisonRows = buildMethodComparisonRowsFromFitRows(methodComparisonFitRows, expectedRefs, true);
       const bestChannel = rankings[0]?.channel ?? 'R';
       let backgroundVisualDiagnostics: BackgroundVisualDiagnostics | null = null;
+      let pythonPlateOverlayCanvas: HTMLCanvasElement | null = null;
 
       if (image && measurements.length > 0 && wells.length === 96) {
         const exportWells = sharedGeometryOverride ? effectiveWells : wells;
         const exportFloorCircles = sharedGeometryOverride ? effectiveFloorCircles : floorCircles;
         const exportFloorGeometryAvailable = sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable;
         const imageData = createAnalysisImageData(image, exportWells);
-        const pythonPlateOverlayCanvas = buildPythonStylePlateRoiOverlayCanvas(
+        pythonPlateOverlayCanvas = buildPythonStylePlateRoiOverlayCanvas(
           imageData,
           exportWells,
           measurements,
@@ -7162,15 +7630,17 @@ function App() {
             : null,
         }),
       );
-      if (measurements.length > 0) {
+      if (measurements.length > 0 && pythonPlateOverlayCanvas) {
         addZipBlob(
           files,
           `${pythonRawDataDetailsPrefix}_FIGURE_CIELAB_DELTAE.png`,
           await canvasToPngBlob(buildPythonStyleCielabDeltaECanvas(
             pythonResultsBase,
+            pythonPlateOverlayCanvas,
             measurements,
             plateMap,
             plateMapUnit,
+            expectedRefs,
           )),
         );
       }
