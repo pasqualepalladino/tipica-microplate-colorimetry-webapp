@@ -4254,6 +4254,88 @@ function xlsxNumber(row: XlsxRow, key: string): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
 }
 
+function xlsxString(row: XlsxRow, key: string): string {
+  const value = row[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function methodComparisonRefPayload(ref: ExpectedRef, index: number): { label: string; value: number; sd: number } {
+  return {
+    label: ref.label.trim() || `Reference ${index + 1}`,
+    value: ref.value,
+    sd: ref.sd !== null && Number.isFinite(ref.sd) ? ref.sd : Number.NaN,
+  };
+}
+
+function methodComparisonNearestReference(value: number, expectedRefs: ExpectedRef[]): {
+  label: string;
+  value: number;
+  sd: number;
+  delta: number;
+  absDelta: number;
+} | null {
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  let best: {
+    label: string;
+    value: number;
+    sd: number;
+    delta: number;
+    absDelta: number;
+  } | null = null;
+
+  expectedRefs.forEach((ref, index) => {
+    const payload = methodComparisonRefPayload(ref, index);
+    if (!Number.isFinite(payload.value)) {
+      return;
+    }
+
+    const delta = value - payload.value;
+    const absDelta = Math.abs(delta);
+    if (!best || absDelta < best.absDelta) {
+      best = {
+        label: payload.label,
+        value: payload.value,
+        sd: payload.sd,
+        delta,
+        absDelta,
+      };
+    }
+  });
+
+  return best;
+}
+
+function isLowReliabilityMethodComparisonRow(row: XlsxRow, expectedRefs: ExpectedRef[]): boolean {
+  const agreement = xlsxNumber(row, 'SlopeAgreement');
+  const r2Cal = xlsxNumber(row, 'R2_cal');
+  const r2Std = xlsxNumber(row, 'R2_std_mean');
+  if (Number.isFinite(agreement) && agreement < 0.5) {
+    return true;
+  }
+  if (Number.isFinite(r2Cal) && r2Cal < 0.8) {
+    return true;
+  }
+  if (Number.isFinite(r2Std) && r2Std < 0.8) {
+    return true;
+  }
+
+  const estimate = xlsxNumber(row, 'Estimate_value');
+  const nearestRef = methodComparisonNearestReference(estimate, expectedRefs);
+  if (!nearestRef) {
+    return false;
+  }
+
+  const sdThreshold = Number.isFinite(nearestRef.sd) && nearestRef.sd > 0 ? 3 * nearestRef.sd : Number.NaN;
+  const relativeThreshold = 0.5 * Math.abs(nearestRef.value);
+  const threshold = Number.isFinite(sdThreshold)
+    ? Math.max(sdThreshold, relativeThreshold)
+    : relativeThreshold;
+  return Number.isFinite(threshold) && Math.abs(nearestRef.delta) > threshold;
+}
+
 function buildPythonStyleMethodComparisonCanvas(
   imageBase: string,
   comparisonRows: XlsxRow[],
@@ -4307,9 +4389,25 @@ function buildPythonStyleMethodComparisonCanvas(
   const agreementValues = rows.flatMap((row) => [xlsxNumber(row, 'SlopeAgreement'), xlsxNumber(row, 'bias_index_mean')]).filter(Number.isFinite);
   const agreementPlot = { x: panelLeft, y: top, width: panelWidth, height: panelHeight };
   const agreementAxis = drawSimpleAxis(ctx, agreementPlot, xRange, rangeWithPadding([...agreementValues, 0, 1], 0, 1, 0.10), 'Method', 'agreement / bias');
+  ctx.save();
+  ctx.setLineDash([8, 6]);
+  ctx.strokeStyle = '#2563c7';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(agreementPlot.x, agreementAxis.yToPx(1));
+  ctx.lineTo(agreementPlot.x + agreementPlot.width, agreementAxis.yToPx(1));
+  ctx.stroke();
+  ctx.strokeStyle = '#cf2e2e';
+  ctx.beginPath();
+  ctx.moveTo(agreementPlot.x, agreementAxis.yToPx(0));
+  ctx.lineTo(agreementPlot.x + agreementPlot.width, agreementAxis.yToPx(0));
+  ctx.stroke();
+  ctx.restore();
+
   ctx.strokeStyle = '#2563c7';
   ctx.lineWidth = 3;
   ctx.beginPath();
+  let firstSlopePoint = true;
   rows.forEach((row, index) => {
     const value = xlsxNumber(row, 'SlopeAgreement');
     if (!Number.isFinite(value)) {
@@ -4317,13 +4415,38 @@ function buildPythonStyleMethodComparisonCanvas(
     }
     const x = agreementAxis.xToPx(index);
     const y = agreementAxis.yToPx(value);
-    if (index === 0) {
+    if (firstSlopePoint) {
       ctx.moveTo(x, y);
+      firstSlopePoint = false;
     } else {
       ctx.lineTo(x, y);
     }
   });
   ctx.stroke();
+
+  ctx.save();
+  ctx.setLineDash([10, 6]);
+  ctx.strokeStyle = '#cf2e2e';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  let firstBiasPoint = true;
+  rows.forEach((row, index) => {
+    const value = xlsxNumber(row, 'bias_index_mean');
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    const x = agreementAxis.xToPx(index);
+    const y = agreementAxis.yToPx(value);
+    if (firstBiasPoint) {
+      ctx.moveTo(x, y);
+      firstBiasPoint = false;
+    } else {
+      ctx.lineTo(x, y);
+    }
+  });
+  ctx.stroke();
+  ctx.restore();
+
   rows.forEach((row, index) => {
     const slope = xlsxNumber(row, 'SlopeAgreement');
     const bias = xlsxNumber(row, 'bias_index_mean');
@@ -4342,10 +4465,43 @@ function buildPythonStyleMethodComparisonCanvas(
   const estimateValues = rows.map((row) => xlsxNumber(row, 'Estimate_value')).filter(Number.isFinite);
   const refValues = expectedRefs.map((ref) => ref.value).filter(Number.isFinite);
   const referencePlot = { x: panelLeft, y: top + panelHeight + panelGap, width: panelWidth, height: panelHeight };
-  const referenceAxis = drawSimpleAxis(ctx, referencePlot, xRange, rangeWithPadding([...estimateValues, ...refValues], 0, 1, 0.16), 'Method', `Reference value (${unitLabel})`);
-  expectedRefs.forEach((ref, index) => {
+  let yLo = 0;
+  let yHi = 1;
+  const refPayloads = expectedRefs
+    .map((ref, index) => methodComparisonRefPayload(ref, index))
+    .filter((payload) => Number.isFinite(payload.value));
+  if (refPayloads.length > 0) {
+    const refCenter = medianFinite(refPayloads.map((payload) => payload.value));
+    const refRange = Math.max(...refPayloads.map((payload) => payload.value)) - Math.min(...refPayloads.map((payload) => payload.value));
+    const maxSd = Math.max(...refPayloads.map((payload) => Number.isFinite(payload.sd) ? payload.sd : Number.NaN).filter(Number.isFinite), Math.max(1, 0.03 * Math.max(Math.abs(refCenter), 1)));
+    const robustWindow = Math.max(20, 0.75 * Math.max(Math.abs(refCenter), 1), 6 * maxSd, 2 * refRange);
+    const axisValues: number[] = [];
+    refPayloads.forEach((payload) => {
+      const sd = Number.isFinite(payload.sd) && payload.sd > 0 ? payload.sd : maxSd;
+      axisValues.push(payload.value - sd, payload.value, payload.value + sd);
+    });
+    rows.forEach((row) => {
+      const estimate = xlsxNumber(row, 'Estimate_value');
+      const estimateSd = xlsxNumber(row, 'Estimate_sd');
+      if (!Number.isFinite(estimate) || isLowReliabilityMethodComparisonRow(row, expectedRefs)) {
+        return;
+      }
+      if (Math.abs(estimate - refCenter) <= robustWindow) {
+        axisValues.push(estimate - (Number.isFinite(estimateSd) ? estimateSd : 0), estimate, estimate + (Number.isFinite(estimateSd) ? estimateSd : 0));
+      }
+    });
+    const axisRange = rangeWithPadding(axisValues.length >= 2 ? axisValues : [refCenter - robustWindow, refCenter + robustWindow], 0, 1, 0.16);
+    yLo = axisRange.min;
+    yHi = axisRange.max;
+  } else if (estimateValues.length > 0) {
+    const estimateRange = rangeWithPadding(estimateValues, 0, 1, 0.25);
+    yLo = estimateRange.min;
+    yHi = estimateRange.max;
+  }
+  const referenceAxis = drawSimpleAxis(ctx, referencePlot, xRange, { min: yLo, max: yHi }, 'Method', `Reference value(s) (${unitLabel})`);
+  refPayloads.forEach((payload, index) => {
     const color = index === 0 ? '#8a3ffc' : '#0f766e';
-    const y = referenceAxis.yToPx(ref.value);
+    const y = referenceAxis.yToPx(payload.value);
     ctx.save();
     ctx.setLineDash([8, 6]);
     ctx.strokeStyle = color;
@@ -4355,27 +4511,97 @@ function buildPythonStyleMethodComparisonCanvas(
     ctx.lineTo(referencePlot.x + referencePlot.width, y);
     ctx.stroke();
     ctx.restore();
-    if (ref.sd !== null && Number.isFinite(ref.sd) && ref.sd > 0) {
+    if (Number.isFinite(payload.sd) && payload.sd > 0) {
+      const yTop = referenceAxis.yToPx(payload.value + payload.sd);
+      const yBottom = referenceAxis.yToPx(payload.value - payload.sd);
       ctx.fillStyle = index === 0 ? 'rgba(138, 63, 252, 0.10)' : 'rgba(15, 118, 110, 0.10)';
-      ctx.fillRect(referencePlot.x, referenceAxis.yToPx(ref.value + ref.sd), referencePlot.width, Math.abs(referenceAxis.yToPx(ref.value - ref.sd) - referenceAxis.yToPx(ref.value + ref.sd)));
+      ctx.fillRect(referencePlot.x, Math.min(yTop, yBottom), referencePlot.width, Math.abs(yBottom - yTop));
     }
   });
+
+  const referenceLegendDrawn = new Set<string>();
+  const referenceYRange = Math.max(yHi - yLo, 1);
   rows.forEach((row, index) => {
     const estimate = xlsxNumber(row, 'Estimate_value');
     if (!Number.isFinite(estimate)) {
       return;
     }
+    const estimateSd = xlsxNumber(row, 'Estimate_sd');
+    const isReliable = !isLowReliabilityMethodComparisonRow(row, expectedRefs);
+    const color = isReliable ? '#2563c7' : '#cf2e2e';
     const x = referenceAxis.xToPx(index);
-    const y = referenceAxis.yToPx(estimate);
-    ctx.fillStyle = '#2563c7';
+    const clipped = estimate > yHi || estimate < yLo;
+    const plotY = referenceAxis.yToPx(Math.min(Math.max(estimate, yLo), yHi));
+    if (Number.isFinite(estimateSd) && estimateSd > 0 && !clipped) {
+      drawVerticalErrorBar(
+        ctx,
+        x,
+        referenceAxis.yToPx(Math.max(yLo, estimate - estimateSd)),
+        referenceAxis.yToPx(Math.min(yHi, estimate + estimateSd)),
+        10,
+        color,
+      );
+    }
+    ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.arc(x, y, 8, 0, Math.PI * 2);
+    ctx.arc(x, plotY, 8, 0, Math.PI * 2);
     ctx.fill();
+
+    const nearestRef = methodComparisonNearestReference(estimate, expectedRefs);
+    if (nearestRef && !clipped) {
+      ctx.fillStyle = color;
+      ctx.font = '16px Inter, Arial, sans-serif';
+      ctx.fillText(
+        `${nearestRef.delta >= 0 ? '+' : ''}${nearestRef.delta.toFixed(Math.abs(nearestRef.delta) >= 10 ? 1 : 2)}`,
+        x - 18,
+        Math.max(referencePlot.y + 18, plotY - 14),
+      );
+    }
+
+    if (clipped) {
+      ctx.fillStyle = color;
+      ctx.font = '14px Inter, Arial, sans-serif';
+      const edgeY = estimate > yHi ? referenceAxis.yToPx(yHi) + 14 : referenceAxis.yToPx(yLo) - 8;
+      const markerY = estimate > yHi ? referenceAxis.yToPx(yHi) + 2 : referenceAxis.yToPx(yLo) - 2;
+      ctx.beginPath();
+      if (estimate > yHi) {
+        ctx.moveTo(x, markerY - 10);
+        ctx.lineTo(x + 8, markerY + 2);
+        ctx.lineTo(x - 8, markerY + 2);
+      } else {
+        ctx.moveTo(x, markerY + 10);
+        ctx.lineTo(x + 8, markerY - 2);
+        ctx.lineTo(x - 8, markerY - 2);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillText('out of scale', x - 28, estimate > yHi ? edgeY + 12 : edgeY - 8);
+    }
+
+    const source = xlsxString(row, 'Estimate_source');
+    const sourceLabel = source === 'unknown_from_calibration'
+      ? 'unknown'
+      : source === 'standard_addition'
+        ? 'std add'
+        : 'estimated value';
+    const legendKey = `${sourceLabel}|${isReliable ? 'reliable scale' : 'low reliability'}`;
+    if (!referenceLegendDrawn.has(legendKey)) {
+      referenceLegendDrawn.add(legendKey);
+    }
   });
 
   const r2Values = rows.flatMap((row) => [xlsxNumber(row, 'R2_cal'), xlsxNumber(row, 'R2_std_mean')]).filter(Number.isFinite);
   const r2Plot = { x: panelLeft, y: top + 2 * (panelHeight + panelGap), width: panelWidth, height: panelHeight };
   const r2Axis = drawSimpleAxis(ctx, r2Plot, xRange, rangeWithPadding([...r2Values, 0, 1], 0, 1, 0.05), 'Method', 'R2');
+  ctx.save();
+  ctx.setLineDash([8, 6]);
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(r2Plot.x, r2Axis.yToPx(1));
+  ctx.lineTo(r2Plot.x + r2Plot.width, r2Axis.yToPx(1));
+  ctx.stroke();
+  ctx.restore();
   rows.forEach((row, index) => {
     const r2Cal = xlsxNumber(row, 'R2_cal');
     const r2Std = xlsxNumber(row, 'R2_std_mean');
@@ -4394,13 +4620,13 @@ function buildPythonStyleMethodComparisonCanvas(
 
   ctx.font = '20px Inter, Arial, sans-serif';
   ctx.fillStyle = '#2563c7';
-  ctx.fillText('? slope agreement / estimate / R2 calibration', 170, height - 72);
+  ctx.fillText('o slope agreement / reliable estimate / R2 calibration', 170, height - 72);
   ctx.fillStyle = '#cf2e2e';
-  ctx.fillText('� bias index', 650, height - 72);
+  ctx.fillText('s bias index / low reliability / out of scale', 780, height - 72);
   ctx.fillStyle = '#1f8a4c';
-  ctx.fillText('� R2 standard addition', 850, height - 72);
+  ctx.fillText('s R2 standard addition', 1360, height - 72);
   ctx.fillStyle = '#8a3ffc';
-  ctx.fillText('dashed bands: external reference � SD when available', 1180, height - 72);
+  ctx.fillText('dashed line and band: external reference +/- SD when available', 1630, height - 72);
 
   return canvas;
 }
