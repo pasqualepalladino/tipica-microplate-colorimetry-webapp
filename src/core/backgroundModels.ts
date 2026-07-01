@@ -139,6 +139,7 @@ export interface BackgroundVisualDiagnostics {
   diagnostics: BackgroundDiagnostics;
   warning?: string;
   predictedRgbMap?: BackgroundRgbMapCell[];
+  physicalModelProof?: PhysicalModelProofDiagnostics;
 }
 
 export type WellExclusionRadiusMap = Map<string, number>;
@@ -197,6 +198,52 @@ interface PhysicalCellSample {
   area: number;
 }
 
+export interface PhysicalModelFitInputRow {
+  cellRow: number;
+  cellColumn: number;
+  x: number;
+  y: number;
+  area: number;
+  redMedianRaw: number;
+  greenMedianRaw: number;
+  blueMedianRaw: number;
+}
+
+export interface PhysicalModelChannelFitDiagnostic {
+  channel: 'red' | 'green' | 'blue';
+  basisOrder: string;
+  x0: number;
+  y0: number;
+  sx: number;
+  sy: number;
+  coefficients: number[];
+  samplesTotal: number;
+  samplesRetained: number;
+  samplesRejected: number;
+  residualMedian: number;
+  residualMad: number;
+  residualSigma: number;
+  residualMaxAbs: number;
+}
+
+export interface PhysicalModelWellPredictionRow {
+  row: number;
+  col: number;
+  wellId: string;
+  x: number;
+  y: number;
+  bgRedRawModel: number;
+  bgGreenRawModel: number;
+  bgBlueRawModel: number;
+}
+
+export interface PhysicalModelProofDiagnostics {
+  basisOrder: string;
+  fitInputs: PhysicalModelFitInputRow[];
+  channelFits: PhysicalModelChannelFitDiagnostic[];
+  wellPredictions: PhysicalModelWellPredictionRow[];
+}
+
 interface Poly2Model {
   coef: number[];
   x0: number;
@@ -204,6 +251,19 @@ interface Poly2Model {
   sx: number;
   sy: number;
 }
+
+interface Poly2FitTrace {
+  model: Poly2Model | null;
+  samplesTotal: number;
+  samplesRetained: number;
+  samplesRejected: number;
+  residualMedian: number;
+  residualMad: number;
+  residualSigma: number;
+  residualMaxAbs: number;
+}
+
+const PHYSICAL_POLY_BASIS_ORDER = '1, x, y, x^2, x*y, y^2';
 
 function median(values: number[]): number {
   if (values.length === 0) {
@@ -1380,6 +1440,210 @@ function fitPoly2Robust(samples: PhysicalCellSample[], channel: 'r' | 'g' | 'b')
   return coef ? { ...seed, coef } : null;
 }
 
+function fitPoly2RobustTrace(samples: PhysicalCellSample[], channel: 'r' | 'g' | 'b'): Poly2FitTrace {
+  const finiteSamples = samples.filter((sample) => Number.isFinite(sample[channel]));
+
+  if (finiteSamples.length < PHYSICAL_MIN_POLY_SAMPLES) {
+    return {
+      model: null,
+      samplesTotal: finiteSamples.length,
+      samplesRetained: 0,
+      samplesRejected: finiteSamples.length,
+      residualMedian: Number.NaN,
+      residualMad: Number.NaN,
+      residualSigma: Number.NaN,
+      residualMaxAbs: Number.NaN,
+    };
+  }
+
+  const seed = {
+    x0: mean(finiteSamples.map((sample) => sample.x)),
+    y0: mean(finiteSamples.map((sample) => sample.y)),
+    sx: standardDeviation(finiteSamples.map((sample) => sample.x)),
+    sy: standardDeviation(finiteSamples.map((sample) => sample.y)),
+  };
+
+  let keep = finiteSamples.map(() => true);
+  let coef: number[] | null = null;
+
+  for (let iteration = 0; iteration < PHYSICAL_POLY_MAX_ITERATIONS; iteration += 1) {
+    const selected = finiteSamples.filter((_, index) => keep[index]);
+
+    if (selected.length < PHYSICAL_POLY_COEFFICIENTS) {
+      break;
+    }
+
+    const nextCoef = fitLeastSquares(selected, channel, seed);
+
+    if (!nextCoef) {
+      return {
+        model: null,
+        samplesTotal: finiteSamples.length,
+        samplesRetained: 0,
+        samplesRejected: finiteSamples.length,
+        residualMedian: Number.NaN,
+        residualMad: Number.NaN,
+        residualSigma: Number.NaN,
+        residualMaxAbs: Number.NaN,
+      };
+    }
+
+    coef = nextCoef;
+
+    const model = { ...seed, coef };
+    const residuals = selected.map((sample) => sample[channel] - evaluatePoly2(model, sample.x, sample.y));
+    const residualMedian = median(residuals);
+    const residualMad = median(residuals.map((residual) => Math.abs(residual - residualMedian)));
+
+    if (residualMad <= 1e-6) {
+      break;
+    }
+
+    const sigma = Math.max(1.4826 * residualMad, 1e-6);
+    const selectedIndexes = keep
+      .map((isKept, index) => (isKept ? index : -1))
+      .filter((index) => index >= 0);
+    const nextKeep = [...keep];
+
+    selectedIndexes.forEach((sampleIndex, residualIndex) => {
+      nextKeep[sampleIndex] = Math.abs(residuals[residualIndex] - residualMedian) <= PHYSICAL_POLY_CLIP_K * sigma;
+    });
+
+    if (nextKeep.filter(Boolean).length < PHYSICAL_POLY_COEFFICIENTS) {
+      break;
+    }
+
+    if (nextKeep.every((value, index) => value === keep[index])) {
+      break;
+    }
+
+    keep = nextKeep;
+  }
+
+  if (!coef) {
+    return {
+      model: null,
+      samplesTotal: finiteSamples.length,
+      samplesRetained: 0,
+      samplesRejected: finiteSamples.length,
+      residualMedian: Number.NaN,
+      residualMad: Number.NaN,
+      residualSigma: Number.NaN,
+      residualMaxAbs: Number.NaN,
+    };
+  }
+
+  const model = { ...seed, coef };
+  const selected = finiteSamples.filter((_, index) => keep[index]);
+  const residuals = selected.map((sample) => sample[channel] - evaluatePoly2(model, sample.x, sample.y));
+  const residualMedian = residuals.length > 0 ? median(residuals) : Number.NaN;
+  const residualMad = residuals.length > 0 ? median(residuals.map((residual) => Math.abs(residual - residualMedian))) : Number.NaN;
+  const residualSigma = Number.isFinite(residualMad) ? Math.max(1.4826 * residualMad, 1e-6) : Number.NaN;
+  const residualMaxAbs = residuals.length > 0 ? Math.max(...residuals.map((residual) => Math.abs(residual))) : Number.NaN;
+
+  return {
+    model,
+    samplesTotal: finiteSamples.length,
+    samplesRetained: selected.length,
+    samplesRejected: finiteSamples.length - selected.length,
+    residualMedian,
+    residualMad,
+    residualSigma,
+    residualMaxAbs,
+  };
+}
+
+function buildPhysicalModelProofDiagnostics(
+  wells: WellCenter[],
+  samples: PhysicalCellSample[],
+  modelR: Poly2Model,
+  modelG: Poly2Model,
+  modelB: Poly2Model,
+): PhysicalModelProofDiagnostics {
+  const traceR = fitPoly2RobustTrace(samples, 'r');
+  const traceG = fitPoly2RobustTrace(samples, 'g');
+  const traceB = fitPoly2RobustTrace(samples, 'b');
+  const fitInputs: PhysicalModelFitInputRow[] = samples.map((sample) => ({
+    cellRow: sample.cellRow,
+    cellColumn: sample.cellColumn,
+    x: sample.x,
+    y: sample.y,
+    area: sample.area,
+    redMedianRaw: sample.r,
+    greenMedianRaw: sample.g,
+    blueMedianRaw: sample.b,
+  }));
+
+  const channelFits: PhysicalModelChannelFitDiagnostic[] = [
+    {
+      channel: 'red',
+      basisOrder: PHYSICAL_POLY_BASIS_ORDER,
+      x0: modelR.x0,
+      y0: modelR.y0,
+      sx: modelR.sx,
+      sy: modelR.sy,
+      coefficients: [...modelR.coef],
+      samplesTotal: traceR.samplesTotal,
+      samplesRetained: traceR.samplesRetained,
+      samplesRejected: traceR.samplesRejected,
+      residualMedian: traceR.residualMedian,
+      residualMad: traceR.residualMad,
+      residualSigma: traceR.residualSigma,
+      residualMaxAbs: traceR.residualMaxAbs,
+    },
+    {
+      channel: 'green',
+      basisOrder: PHYSICAL_POLY_BASIS_ORDER,
+      x0: modelG.x0,
+      y0: modelG.y0,
+      sx: modelG.sx,
+      sy: modelG.sy,
+      coefficients: [...modelG.coef],
+      samplesTotal: traceG.samplesTotal,
+      samplesRetained: traceG.samplesRetained,
+      samplesRejected: traceG.samplesRejected,
+      residualMedian: traceG.residualMedian,
+      residualMad: traceG.residualMad,
+      residualSigma: traceG.residualSigma,
+      residualMaxAbs: traceG.residualMaxAbs,
+    },
+    {
+      channel: 'blue',
+      basisOrder: PHYSICAL_POLY_BASIS_ORDER,
+      x0: modelB.x0,
+      y0: modelB.y0,
+      sx: modelB.sx,
+      sy: modelB.sy,
+      coefficients: [...modelB.coef],
+      samplesTotal: traceB.samplesTotal,
+      samplesRetained: traceB.samplesRetained,
+      samplesRejected: traceB.samplesRejected,
+      residualMedian: traceB.residualMedian,
+      residualMad: traceB.residualMad,
+      residualSigma: traceB.residualSigma,
+      residualMaxAbs: traceB.residualMaxAbs,
+    },
+  ];
+
+  const wellPredictions: PhysicalModelWellPredictionRow[] = wells.map((well) => ({
+    row: well.row,
+    col: well.col,
+    wellId: well.wellId,
+    x: well.x,
+    y: well.y,
+    bgRedRawModel: evaluatePoly2(modelR, well.x, well.y),
+    bgGreenRawModel: evaluatePoly2(modelG, well.x, well.y),
+    bgBlueRawModel: evaluatePoly2(modelB, well.x, well.y),
+  }));
+
+  return {
+    basisOrder: PHYSICAL_POLY_BASIS_ORDER,
+    fitInputs,
+    channelFits,
+    wellPredictions,
+  };
+}
+
 function diagnosticPointsFromCandidates(pixels: CandidatePixel[]): BackgroundDiagnosticPoint[] {
   return pixels.map((pixel) => ({ x: pixel.x, y: pixel.y }));
 }
@@ -1863,6 +2127,9 @@ export function buildBackgroundVisualDiagnostics(
     const warning = !fitSuccess
       ? `Physical inter-well polynomial background visual diagnostic could not fit an RGB surface; ${summarizeCellDiagnosticsFailure(finalDiagnostics.cellDiagnostics)}.`
       : filteredResult.warning;
+    const physicalModelProof = modelR && modelG && modelB
+      ? buildPhysicalModelProofDiagnostics(wells, samples, modelR, modelG, modelB)
+      : undefined;
 
     return {
       selectedModel: backgroundModel,
@@ -1876,6 +2143,7 @@ export function buildBackgroundVisualDiagnostics(
       predictedRgbMap: modelR && modelG && modelB
         ? buildPredictedRgbMap(finalDiagnostics, modelR, modelG, modelB)
         : undefined,
+      physicalModelProof,
     };
   }
 
