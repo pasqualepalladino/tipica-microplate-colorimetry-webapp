@@ -582,6 +582,10 @@ def is_finite_number(value: object) -> bool:
         return False
 
 
+def has_nonzero_delta(value: object, tol: float = 1e-12) -> bool:
+    return is_finite_number(value) and abs(float(value)) > tol
+
+
 def parse_well_position(well: str) -> tuple[int, int] | None:
     match = re.fullmatch(r"\s*([A-Ha-h])(\d{1,2})\s*", str(well))
     if not match:
@@ -2516,17 +2520,32 @@ def append_shared_geometry_residual_source_audit(
     roi_used_fraction = field_diff_stats(py_stats, web_stats, ["Well"], "used_fraction")
     roi_rgb = [field_diff_stats(py_stats, web_stats, ["Well"], field) for field in ["Red_median", "Green_median", "Blue_median"]]
     max_rgb = max((float(item["max_abs"]) for item in roi_rgb if math.isfinite(float(item["max_abs"]))), default=math.nan)
+    roi_has_residual = any([
+        has_nonzero_delta(roi_n_used["max_abs"]),
+        has_nonzero_delta(roi_used_fraction["max_abs"]),
+        has_nonzero_delta(max_rgb),
+    ])
     report.append(f"- ROI summary: n_used max_abs={stats_cell(roi_n_used['max_abs'])}, used_fraction max_abs={stats_cell(roi_used_fraction['max_abs'])}, RGB_median max_abs={stats_cell(max_rgb)}")
     append_top_differences_table(report, "- worst ROI wells by `n_used` difference:", top_numeric_differences(py_stats, web_stats, ["Well"], "n_used", 5))
-    report.append("- interpretation: once shared geometry is matched, nonzero ROI counts and retained-fraction deltas still point to mask-selection or filtering differences rather than geometric placement itself.")
+    if roi_has_residual:
+        report.append("- interpretation: once shared geometry is matched, nonzero ROI counts and retained-fraction deltas still point to mask-selection or filtering differences rather than geometric placement itself.")
+    else:
+        report.append("- interpretation: ROI counts/fractions/medians match for this comparison; no runtime correction is indicated from ROI inclusion evidence.")
 
     report.extend(["### BG mask/model residuals under matched geometry"])
     bg_area = field_diff_stats(py_bg, web_bg, ["BG_Cell_Row", "BG_Cell_Col"], "area")
     bg_rgb = [field_diff_stats(py_bg, web_bg, ["BG_Cell_Row", "BG_Cell_Col"], field) for field in ["Red_median_raw", "Green_median_raw", "Blue_median_raw"]]
     max_bg_rgb = max((float(item["max_abs"]) for item in bg_rgb if math.isfinite(float(item["max_abs"]))), default=math.nan)
+    bg_has_residual = any([
+        has_nonzero_delta(bg_area["max_abs"]),
+        has_nonzero_delta(max_bg_rgb),
+    ])
     report.append(f"- BG summary: area max_abs={stats_cell(bg_area['max_abs'])}, RGB_median max_abs={stats_cell(max_bg_rgb)}")
     append_top_differences_table(report, "- worst BG samples by area difference:", top_numeric_differences(py_bg, web_bg, ["BG_Cell_Row", "BG_Cell_Col"], "area", 5))
-    report.append("- interpretation: the remaining BG residuals are consistent with mask-area or sampled-pixel selection differences rather than a shared-geometry placement issue.")
+    if bg_has_residual:
+        report.append("- interpretation: the remaining BG residuals are consistent with mask-area or sampled-pixel selection differences rather than a shared-geometry placement issue.")
+    else:
+        report.append("- interpretation: BG area and sampled medians match for this comparison; no BG mask/model correction is indicated from current evidence.")
 
     report.extend(["### MeanW / MeanBG / PAbs causality bridge"])
     for label in CHANNEL_LABELS:
@@ -2536,9 +2555,19 @@ def append_shared_geometry_residual_source_audit(
         report.append(f"- {label}: MeanW max_abs={stats_cell(meanw_stats['max_abs'])}, MeanBG max_abs={stats_cell(meanbg_stats['max_abs'])}, PAbs max_abs={stats_cell(pabs_stats['max_abs'])}")
     py_pabs_summaries = {label: pabs_formula_summary(py_raw, label) for label in CHANNEL_LABELS}
     web_pabs_summaries = {label: pabs_formula_summary(web_raw, label) for label in CHANNEL_LABELS}
+    meanbg_chain_has_residual = False
+    for label in CHANNEL_LABELS:
+        meanw_stats = field_diff_stats(py_raw, web_raw, ["Well"], f"MeanW_{label}")
+        meanbg_stats = field_diff_stats(py_raw, web_raw, ["Well"], f"MeanBG_{label}")
+        pabs_stats = field_diff_stats(py_raw, web_raw, ["Well"], f"PAbs_{label}")
+        if has_nonzero_delta(meanw_stats["max_abs"]) or has_nonzero_delta(meanbg_stats["max_abs"]) or has_nonzero_delta(pabs_stats["max_abs"]):
+            meanbg_chain_has_residual = True
     for label in CHANNEL_LABELS:
         report.append(f"- PAbs_{label}: python_formula={py_pabs_summaries[label].status}, web_formula={web_pabs_summaries[label].status}, max_abs_residual={stats_cell(web_pabs_summaries[label].max_abs_residual)}")
-    report.append("- interpretation: when MeanW/MeanBG differ and PAbs residuals remain, the residual chain is upstream extraction -> PAbs reconstruction -> fit-input y, not a pure geometry parity issue.")
+    if meanbg_chain_has_residual:
+        report.append("- interpretation: when MeanW/MeanBG differ and PAbs residuals remain, the residual chain is upstream extraction -> PAbs reconstruction -> fit-input y, not a pure geometry parity issue.")
+    else:
+        report.append("- interpretation: MeanW/MeanBG/PAbs maxima are zero for this comparison; no runtime correction is indicated from the current causality bridge evidence.")
 
     report.extend(["### PAbs correction traceability"])
     correction_values = {"S0_applied": [], "ClipDelta": []}
@@ -2549,7 +2578,10 @@ def append_shared_geometry_residual_source_audit(
                 if math.isfinite(value) and abs(value) > 1e-12:
                     correction_values[field].append(value)
     report.append(f"- low-signal correction evidence in web fit rows: S0_applied count={len(correction_values['S0_applied'])}, ClipDelta count={len(correction_values['ClipDelta'])}; examples={correction_values['S0_applied'][:3]} / {correction_values['ClipDelta'][:3]}")
-    report.append("- interpretation: exported raw MeanW/MeanBG are insufficient to prove corrected PAbs values end-to-end, so the remaining residual can be a correction-traceability gap as well as a raw-input mismatch.")
+    if correction_values['S0_applied'] or correction_values['ClipDelta']:
+        report.append("- interpretation: exported raw MeanW/MeanBG are insufficient to prove corrected PAbs values end-to-end, so the remaining residual can be a correction-traceability gap as well as a raw-input mismatch.")
+    else:
+        report.append("- interpretation: no low-signal correction deltas are present in the compared fit rows; correction-traceability is not a blocker in this ZIP pair.")
 
     report.extend(["### CIELAB residual interpretation"])
     for field in ["L", "a", "b", "DeltaE_ab", "DeltaE_ab_chroma"]:
@@ -2560,7 +2592,10 @@ def append_shared_geometry_residual_source_audit(
     report.extend(["### Fit-input residual chain"])
     fit_summary = shared_geometry_fit_input_summary(py_report, web_report)
     report.append(f"- fit rows common={fit_summary['common_fit_rows']}, missing_in_web={fit_summary['missing_in_web']}, extra_in_web={fit_summary['extra_in_web']}, x_match_count={fit_summary['x_match_count']}, y_diff_max_abs={stats_cell(float(fit_summary['y_diff_max_abs']))}, y_diff_mean_abs={stats_cell(float(fit_summary['y_diff_mean_abs']))}")
-    report.append("- interpretation: fit-input y-values still differ even when row keys match, so the remaining ranking residual is plausibly downstream of upstream extracted values rather than a regression-formula mismatch.")
+    if has_nonzero_delta(float(fit_summary['y_diff_max_abs'])):
+        report.append("- interpretation: fit-input y-values still differ even when row keys match, so the remaining ranking residual is plausibly downstream of upstream extracted values rather than a regression-formula mismatch.")
+    else:
+        report.append("- interpretation: fit-input y-values match for the compared rows; no fit-input residual is detected in this comparison.")
 
     report.extend(["### Source-Code Residual Hypotheses"])
     report.append("- Python source hypothesis: `_compute_well_robust_statistics`/`_extract_bg_samples` and `_build_raw_report_rows` establish the ROI/BG/PAbs pipeline, while the web path uses display/corrected values and low-signal correction metadata before fitting and ranking.")
@@ -2595,21 +2630,42 @@ def append_next_corrective_target_decision(
     pabs_summaries = {label: pabs_formula_summary(web_raw, label) for label in CHANNEL_LABELS}
     pabs_warn_count = sum(1 for summary in pabs_summaries.values() if summary.status == "WARN")
     pabs_pass_count = sum(1 for summary in pabs_summaries.values() if summary.status == "PASS")
+    roi_bg_has_residual = any([
+        has_nonzero_delta(roi_n_used["max_abs"]),
+        has_nonzero_delta(roi_used_fraction["max_abs"]),
+        has_nonzero_delta(roi_rgb_max),
+        has_nonzero_delta(bg_area["max_abs"]),
+        has_nonzero_delta(bg_rgb_max),
+    ])
+    fit_y_has_residual = has_nonzero_delta(float(fit_summary['y_diff_max_abs']))
 
     report.extend(["", "## Next Corrective Target Decision"])
-    report.append("- first corrective target: ROI mask/inclusion parity under shared geometry.")
-    report.append("- second corrective target: BG mask/model parity under shared geometry.")
-    report.append("- diagnostic-only target: PAbs correction traceability/export and CIELAB conversion/reference parity.")
-    report.append("- not currently first cause: fit regression/score formula, geometry/radii override behavior, and selected-method naming.")
-    report.append("- reason: shared-geometry geometry/radii now match exactly, so the next scientific correction should attack the pixel-inclusion path that still changes ROI/BG inputs before MeanW/MeanBG/PAbs/fit-input y-values are formed.")
+    if roi_bg_has_residual or fit_y_has_residual or pabs_warn_count > 0:
+        report.append("- first corrective target: ROI mask/inclusion parity under shared geometry.")
+        report.append("- second corrective target: BG mask/model parity under shared geometry.")
+        report.append("- diagnostic-only target: PAbs correction traceability/export and CIELAB conversion/reference parity.")
+        report.append("- not currently first cause: fit regression/score formula, geometry/radii override behavior, and selected-method naming.")
+        report.append("- reason: shared-geometry geometry/radii now match exactly, so the next scientific correction should attack the pixel-inclusion path that still changes ROI/BG inputs before MeanW/MeanBG/PAbs/fit-input y-values are formed.")
+    else:
+        report.append("- corrective target status: no runtime correction indicated from current comparison.")
+        report.append("- reason: ROI/BG/PAbs and fit-input y maxima are zero in this ZIP pair, with no correction-trace WARN evidence.")
     report.append(f"- evidence: ROI n_used max_abs={stats_cell(roi_n_used['max_abs'])}, used_fraction max_abs={stats_cell(roi_used_fraction['max_abs'])}, RGB_median max_abs={stats_cell(roi_rgb_max)}; BG area max_abs={stats_cell(bg_area['max_abs'])}, RGB_median max_abs={stats_cell(bg_rgb_max)}")
-    report.append("- evidence: MeanW/MeanBG/PAbs remain nonzero after shared geometry, and the current report shows PAbs reconstruction PASS/WARN rather than a clean pass across all channels.")
-    report.append(f"- evidence: fit-input y residuals remain present with common rows={fit_summary['common_fit_rows']}, x_match_count={fit_summary['x_match_count']}, y_diff_max_abs={stats_cell(float(fit_summary['y_diff_max_abs']))}, y_diff_mean_abs={stats_cell(float(fit_summary['y_diff_mean_abs']))}")
+    if roi_bg_has_residual or pabs_warn_count > 0:
+        report.append("- evidence: MeanW/MeanBG/PAbs remain nonzero after shared geometry, and the current report shows PAbs reconstruction PASS/WARN rather than a clean pass across all channels.")
+    else:
+        report.append("- evidence: MeanW/MeanBG/PAbs maxima are zero after shared geometry for this comparison.")
+    if fit_y_has_residual:
+        report.append(f"- evidence: fit-input y residuals remain present with common rows={fit_summary['common_fit_rows']}, x_match_count={fit_summary['x_match_count']}, y_diff_max_abs={stats_cell(float(fit_summary['y_diff_max_abs']))}, y_diff_mean_abs={stats_cell(float(fit_summary['y_diff_mean_abs']))}")
+    else:
+        report.append(f"- evidence: fit-input y-values match for common rows={fit_summary['common_fit_rows']}, x_match_count={fit_summary['x_match_count']}, y_diff_max_abs={stats_cell(float(fit_summary['y_diff_max_abs']))}, y_diff_mean_abs={stats_cell(float(fit_summary['y_diff_mean_abs']))}")
     report.append(f"- evidence: PAbs reconstruction status counts are pass={pabs_pass_count}, warn={pabs_warn_count}; CIELAB residuals remain downstream of extraction/conversion and are not the first target.")
     report.append("- what not to change yet: no runtime app logic, no score/fitting/PAbs formula/C0/dilution/geometry override/workbook schema changes.")
     report.extend(["### Proposed Next Milestone"])
-    report.append("- 36W-N — ROI mask/inclusion parity under shared geometry")
-    report.append("- follow-up: 36W-O — BG mask/model parity under shared geometry")
+    if roi_bg_has_residual or fit_y_has_residual or pabs_warn_count > 0:
+        report.append("- 36W-N — ROI mask/inclusion parity under shared geometry")
+        report.append("- follow-up: 36W-O — BG mask/model parity under shared geometry")
+    else:
+        report.append("- no runtime-scientific correction milestone is indicated from this ZIP pair; keep current behavior and continue proof-only monitoring.")
 
 
 def append_shared_geometry_override_residual_audit(
@@ -3385,7 +3441,11 @@ def append_upstream_cause_chain(
     report.append(f"- selected/best method: Python=`{py_best}`, Web=`{web_best}`, canonical_match={canonical_method_name(py_best) == canonical_method_name(web_best)}")
     report.append("- score formula status: already reconstructs internally where required inputs are finite; the ranking difference is therefore treated as downstream of fit-input y differences, not a score-formula mismatch.")
     report.append(f"- largest PAbs well-level differences by channel: { {key: stats_cell(value) for key, value in pabs_metrics.items()} }")
-    report.append("- impact classification: upstream fit inputs are large enough to change slope/intercept/R2/C0 and therefore method ranking.")
+    pabs_has_residual = any(has_nonzero_delta(value) for value in pabs_metrics.values())
+    if pabs_has_residual or canonical_method_name(py_best) != canonical_method_name(web_best):
+        report.append("- impact classification: upstream fit inputs are large enough to change slope/intercept/R2/C0 and therefore method ranking.")
+    else:
+        report.append("- impact classification: no score/ranking blocker is detected in this ZIP pair.")
     report.extend(["", "## Upstream Cause Chain"])
     report.append("1. First detected structural mismatch: geometry provenance/reporting (`floor_source` manual_D_projection versus JSON/JSON-derived), plus workbook/reporting differences in diagnostic details.")
     report.append("2. First detected numeric mismatch: geometry radius/background-radius fields before ROI/BG extraction.")
