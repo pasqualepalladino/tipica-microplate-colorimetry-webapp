@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, ReactNode } from 'react';
 import { ImageGeometryLoader } from './components/ImageGeometryLoader';
 import { PlateCanvas } from './components/PlateCanvas';
@@ -11,6 +11,7 @@ import {
   applyRgbLowSignalCorrections,
   computeRgbLowSignalCorrections,
 } from './core/lowSignalCorrection';
+import type { WellChannelCorrectionApplication } from './core/lowSignalCorrection';
 import { computePAbs, linearizeRgb } from './core/pabs';
 import {
   computeGeometryAlignmentDiagnostics,
@@ -1429,6 +1430,8 @@ interface XlsxSheet {
   rows: XlsxCellValue[][];
 }
 
+const REPORT_RGB_CHANNELS: FitChannel[] = ['R', 'G', 'B'];
+
 interface PythonReportWorkbookOptions {
   imageBase: string;
   imageName: string | null;
@@ -1448,6 +1451,8 @@ interface PythonReportWorkbookOptions {
   geometrySource: string;
   floorGeometryAvailable: boolean;
   correctionApplied: boolean;
+  lowSignalCorrections: RgbLowSignalCorrection[];
+  correctionApplications: WellChannelCorrectionApplication[];
   sharedGeometryOverride: SharedGeometryOverrideState | null;
 }
 
@@ -1579,6 +1584,168 @@ function reportChannelName(channel: FitChannel): string {
   return PYTHON_RESULTS_CHANNEL_LABELS[channel];
 }
 
+function reportFitSignalSourceLabel(channel: FitChannel, corrected: boolean): string {
+  return `PAbs_${channel}${corrected ? '_corrected' : ''}`;
+}
+
+function channelFieldSuffix(channel: FitChannel): 'Red' | 'Green' | 'Blue' {
+  if (channel === 'R') {
+    return 'Red';
+  }
+
+  if (channel === 'G') {
+    return 'Green';
+  }
+
+  return 'Blue';
+}
+
+function buildCorrectionApplicationLookup(
+  applications: WellChannelCorrectionApplication[],
+): Map<string, Map<FitChannel, WellChannelCorrectionApplication>> {
+  const lookup = new Map<string, Map<FitChannel, WellChannelCorrectionApplication>>();
+
+  for (const application of applications) {
+    const byChannel = lookup.get(application.wellId) ?? new Map<FitChannel, WellChannelCorrectionApplication>();
+    byChannel.set(application.channel, application);
+    lookup.set(application.wellId, byChannel);
+  }
+
+  return lookup;
+}
+
+function correctionForWellChannel(
+  lookup: Map<string, Map<FitChannel, WellChannelCorrectionApplication>>,
+  wellId: string,
+  channel: FitChannel,
+): WellChannelCorrectionApplication | null {
+  return lookup.get(wellId)?.get(channel) ?? null;
+}
+
+function correctionForChannel(
+  corrections: RgbLowSignalCorrection[],
+  channel: FitChannel,
+): RgbLowSignalCorrection | null {
+  return corrections.find((correction) => correction.channel === channel) ?? null;
+}
+
+function joinedNumberCell(values: Array<number | '' | null | undefined>): string {
+  if (values.length === 0) {
+    return '';
+  }
+
+  return values.map((value) => (typeof value === 'number' && Number.isFinite(value) ? String(value) : '')).join(',');
+}
+
+function groupedMedianPoints(points: { x: number; y: number }[]): { x: number; y: number }[] {
+  return groupedMedianRows(points)
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+    .sort((a, b) => a.x - b.x);
+}
+
+function collectCalibrationMedianPointsForChannel(
+  channel: FitChannel,
+  measurements: WellMeasurement[],
+  plateMap: WellConfig[],
+): { x: number; y: number }[] {
+  const measurementByWell = new Map(measurements.map((measurement) => [measurement.wellId, measurement]));
+  const points: { x: number; y: number }[] = [];
+
+  plateMap.forEach((well) => {
+    if (well.role !== 'C' || well.concentration === null || !Number.isFinite(well.concentration)) {
+      return;
+    }
+
+    const measurement = measurementByWell.get(well.wellId);
+    const y = measurement ? pabsChannelValue(measurement, channel) : Number.NaN;
+
+    if (!Number.isFinite(y)) {
+      return;
+    }
+
+    points.push({ x: well.concentration, y });
+  });
+
+  return groupedMedianPoints(points);
+}
+
+function collectStandardAdditionMedianPointsForChannel(
+  fit: StandardAdditionFit,
+  channel: FitChannel,
+  measurements: WellMeasurement[],
+  plateMap: WellConfig[],
+): { x: number; y: number }[] {
+  const measurementByWell = new Map(measurements.map((measurement) => [measurement.wellId, measurement]));
+  const sampleId = fit.sampleId.trim();
+  const points: { x: number; y: number }[] = [];
+
+  plateMap.forEach((well) => {
+    if (
+      well.role !== 'A' ||
+      well.sampleId.trim() !== sampleId ||
+      well.concentration === null ||
+      !Number.isFinite(well.concentration)
+    ) {
+      return;
+    }
+
+    const dilutionFactor = Number.isFinite(well.dilutionFactor) ? well.dilutionFactor : 1;
+    if (Math.abs(dilutionFactor - fit.dilutionFactor) > 1e-12) {
+      return;
+    }
+
+    const measurement = measurementByWell.get(well.wellId);
+    const y = measurement ? pabsChannelValue(measurement, channel) : Number.NaN;
+
+    if (!Number.isFinite(y)) {
+      return;
+    }
+
+    points.push({ x: well.concentration, y });
+  });
+
+  return groupedMedianPoints(points);
+}
+
+function alignedYValues(points: { x: number; y: number }[], xValues: number[]): Array<number | ''> {
+  const pointByX = new Map(points.map((point) => [point.x, point.y]));
+  return xValues.map((x) => (Number.isFinite(x) && Number.isFinite(pointByX.get(x) ?? Number.NaN) ? pointByX.get(x) ?? '' : ''));
+}
+
+function alignedClipValues(correction: RgbLowSignalCorrection | null, xValues: number[]): {
+  clipDelta: Array<number | ''>;
+  yObserved: Array<number | ''>;
+  yShifted: Array<number | ''>;
+  yExpected: Array<number | ''>;
+  yCorrected: Array<number | ''>;
+  threshold: Array<number | ''>;
+} {
+  if (!correction) {
+    return {
+      clipDelta: xValues.map(() => ''),
+      yObserved: xValues.map(() => ''),
+      yShifted: xValues.map(() => ''),
+      yExpected: xValues.map(() => ''),
+      yCorrected: xValues.map(() => ''),
+      threshold: xValues.map(() => ''),
+    };
+  }
+
+  const clipPointByX = new Map(correction.clipPoints.map((point) => [point.concentration, point]));
+
+  return {
+    clipDelta: xValues.map((x) => clipPointByX.get(x)?.clipDelta ?? ''),
+    yObserved: xValues.map((x) => clipPointByX.get(x)?.yRaw ?? ''),
+    yShifted: xValues.map((x) => clipPointByX.get(x)?.yShifted ?? ''),
+    yExpected: xValues.map((x) => clipPointByX.get(x)?.yExpected ?? ''),
+    yCorrected: xValues.map((x) => {
+      const point = clipPointByX.get(x);
+      return point ? point.yShifted + point.clipDelta : '';
+    }),
+    threshold: xValues.map((x) => clipPointByX.get(x)?.threshold ?? ''),
+  };
+}
+
 function sampleSdOrBlank(values: number[]): number | '' {
   const finiteValues = values.filter(Number.isFinite);
   return finiteValues.length >= 2 ? sampleStandardDeviation(finiteValues) : '';
@@ -1690,9 +1857,11 @@ function buildReportRawRows(
   measurements: WellMeasurement[],
   displayMeasurements: WellMeasurement[],
   plateMap: WellConfig[],
+  correctionApplications: WellChannelCorrectionApplication[],
 ): XlsxRow[] {
   const configByWell = new Map(plateMap.map((well) => [well.wellId, well]));
   const displayByWell = new Map(displayMeasurements.map((measurement) => [measurement.wellId, measurement]));
+  const correctionLookup = buildCorrectionApplicationLookup(correctionApplications);
   const { points: cielabPoints, referenceSource } = buildCielabDiagnosticPoints(displayMeasurements, plateMap);
   const cielabByWell = new Map(cielabPoints.map((point) => [point.wellId, point]));
 
@@ -1706,6 +1875,22 @@ function buildReportRawRows(
     const signalTRed = backgroundLinear.r > 0 ? wellLinear.r / backgroundLinear.r : Number.NaN;
     const signalTGreen = backgroundLinear.g > 0 ? wellLinear.g / backgroundLinear.g : Number.NaN;
     const signalTBlue = backgroundLinear.b > 0 ? wellLinear.b / backgroundLinear.b : Number.NaN;
+    const auditFields = REPORT_RGB_CHANNELS.reduce<XlsxRow>((acc, channel) => {
+      const suffix = channelFieldSuffix(channel);
+      const rawValue = pabsChannelValue(measurement, channel);
+      const exportedValue = pabsChannelValue(display, channel);
+      const application = correctionForWellChannel(correctionLookup, measurement.wellId, channel);
+
+      acc[`PAbs_${suffix}_raw`] = finiteOrBlank(rawValue);
+      acc[`PAbs_${suffix}_exported`] = finiteOrBlank(exportedValue);
+      acc[`PAbs_${suffix}_correction_delta`] = Number.isFinite(rawValue) && Number.isFinite(exportedValue)
+        ? exportedValue - rawValue
+        : '';
+      acc[`S0_${suffix}_applied`] = application?.correctionApplied ? application.S0 : '';
+      acc[`ClipDelta_${suffix}_applied`] = application?.correctionApplied ? application.clipDelta : '';
+      acc[`TotalDelta_${suffix}_applied`] = application?.correctionApplied ? application.totalDelta : '';
+      return acc;
+    }, {});
 
     return {
       Row: parsed ? rowLabel(parsed.row) : rowLabel(measurement.row),
@@ -1737,15 +1922,20 @@ function buildReportRawRows(
       DeltaE_ab_chroma: finiteOrBlank(typeof cielab?.deltaEChroma === 'number' ? cielab.deltaEChroma : Number.NaN),
       CIELAB_ref_source: referenceSource,
       ImageWarning: measurement.warnings.length > 0 || Boolean(measurement.roiStatisticsWarning || measurement.geometryAlignmentWarning) ? 1 : 0,
+      ...auditFields,
     };
   });
 }
 
 function buildReportReplicateRows(
+  measurements: WellMeasurement[],
   displayMeasurements: WellMeasurement[],
   plateMap: WellConfig[],
+  correctionApplications: WellChannelCorrectionApplication[],
 ): XlsxRow[] {
   const configByWell = new Map(plateMap.map((well) => [well.wellId, well]));
+  const measurementByWell = new Map(measurements.map((measurement) => [measurement.wellId, measurement]));
+  const correctionLookup = buildCorrectionApplicationLookup(correctionApplications);
   const { points: cielabPoints, referenceSource } = buildCielabDiagnosticPoints(displayMeasurements, plateMap);
   const cielabByWell = new Map(cielabPoints.map((point) => [point.wellId, point]));
   const groups = new Map<string, { config: WellConfig; measurements: WellMeasurement[] }>();
@@ -1779,9 +1969,13 @@ function buildReportReplicateRows(
       a.config.dilutionFactor - b.config.dilutionFactor
     ))
     .map(({ config, measurements: groupMeasurements }) => {
+      const rawGroupMeasurements = groupMeasurements.map((measurement) => measurementByWell.get(measurement.wellId) ?? measurement);
       const pabsRed = groupMeasurements.map((measurement) => measurement.pabs.r);
       const pabsGreen = groupMeasurements.map((measurement) => measurement.pabs.g);
       const pabsBlue = groupMeasurements.map((measurement) => measurement.pabs.b);
+      const rawPabsRed = rawGroupMeasurements.map((measurement) => measurement.pabs.r);
+      const rawPabsGreen = rawGroupMeasurements.map((measurement) => measurement.pabs.g);
+      const rawPabsBlue = rawGroupMeasurements.map((measurement) => measurement.pabs.b);
       const groupCielab = groupMeasurements.map((measurement) => cielabByWell.get(measurement.wellId)).filter((point): point is CielabDiagnosticPoint => Boolean(point));
       const labValues = {
         l: groupCielab.map((point) => point.l),
@@ -1798,6 +1992,33 @@ function buildReportReplicateRows(
         [...measurement.warnings, measurement.roiStatisticsWarning ?? '', measurement.geometryAlignmentWarning ?? '']
           .some((warning) => warning.toLowerCase().includes('critical'))
       )).length;
+      const fitInputApplies = config.role === 'C' || config.role === 'A';
+      const auditFields = REPORT_RGB_CHANNELS.reduce<XlsxRow>((acc, channel) => {
+        const suffix = channelFieldSuffix(channel);
+        const displayValues = groupMeasurements.map((measurement) => pabsChannelValue(measurement, channel));
+        const rawValues = rawGroupMeasurements.map((measurement) => pabsChannelValue(measurement, channel));
+        const applicationValues = groupMeasurements
+          .map((measurement) => correctionForWellChannel(correctionLookup, measurement.wellId, channel))
+          .filter((application): application is WellChannelCorrectionApplication => Boolean(application?.correctionApplied));
+        const rawMedian = medianOrBlank(rawValues);
+        const rawSd = robustSdOrBlank(rawValues);
+        const fitInputMedian = fitInputApplies ? medianOrBlank(displayValues) : '';
+        const fitInputSd = fitInputApplies ? robustSdOrBlank(displayValues) : '';
+        const numericRawMedian = typeof rawMedian === 'number' ? rawMedian : Number.NaN;
+        const numericFitInputMedian = typeof fitInputMedian === 'number' ? fitInputMedian : Number.NaN;
+
+        acc[`PAbs_${suffix}_raw_median`] = rawMedian;
+        acc[`PAbs_${suffix}_raw_sd`] = rawSd;
+        acc[`PAbs_${suffix}_fit_input_median`] = fitInputMedian;
+        acc[`PAbs_${suffix}_fit_input_sd`] = fitInputSd;
+        acc[`PAbs_${suffix}_fit_input_delta`] = Number.isFinite(numericRawMedian) && Number.isFinite(numericFitInputMedian)
+          ? numericFitInputMedian - numericRawMedian
+          : '';
+        acc[`S0_${suffix}_fit_input`] = applicationValues.length > 0 ? medianOrBlank(applicationValues.map((application) => application.S0)) : '';
+        acc[`ClipDelta_${suffix}_fit_input`] = applicationValues.length > 0 ? medianOrBlank(applicationValues.map((application) => application.clipDelta)) : '';
+        acc[`TotalDelta_${suffix}_fit_input`] = applicationValues.length > 0 ? medianOrBlank(applicationValues.map((application) => application.totalDelta)) : '';
+        return acc;
+      }, {});
 
       return {
         ID: config.sampleId,
@@ -1830,26 +2051,34 @@ function buildReportReplicateRows(
         NReplicates: groupMeasurements.length,
         QCFlagged: warningCount > 0 ? 1 : 0,
         QCCritical: criticalCount > 0 ? 1 : 0,
+        ...auditFields,
       };
     });
 }
 
 function buildReportFitRows(
+  measurements: WellMeasurement[],
   calibrationFits: CalibrationFit[],
   standardAdditionFits: StandardAdditionFit[],
   unknownResults: UnknownConcentrationResult[],
   displayMeasurements: WellMeasurement[],
   plateMap: WellConfig[],
   rankings: PythonResultsChannelRank[],
+  lowSignalCorrections: RgbLowSignalCorrection[],
 ): XlsxRow[] {
   const rows: XlsxRow[] = [];
   const rankingByChannel = new Map(rankings.map((ranking) => [ranking.channel, ranking]));
 
   calibrationFits.forEach((fit) => {
-    const points = collectCalibrationPointsForChannel(fit.channel, displayMeasurements, plateMap);
-    const pointRows = groupedMedianRows(points.map((point) => ({ x: point.x, y: point.y })));
+    const pointRows = collectCalibrationMedianPointsForChannel(fit.channel, displayMeasurements, plateMap);
+    const rawPointRows = collectCalibrationMedianPointsForChannel(fit.channel, measurements, plateMap);
     const ranking = rankingByChannel.get(fit.channel);
     const sigmaCal = ranking?.sigmaCal ?? Number.NaN;
+    const correction = correctionForChannel(lowSignalCorrections, fit.channel);
+    const fitX = pointRows.map((point) => point.x);
+    const rawY = alignedYValues(rawPointRows, fitX);
+    const fitY = pointRows.map((point) => point.y);
+    const clipAudit = alignedClipValues(correction, fitX);
 
     rows.push({
       Channel: reportChannelName(fit.channel),
@@ -1866,9 +2095,23 @@ function buildReportFitRows(
       LOQ: ranking && Number.isFinite(ranking.loq) ? ranking.loq : '',
       S0_calibration: fit.S0 ?? '',
       S0_applied: fit.S0 ?? '',
-      NClipPoints: '',
-      ClipX: '',
+      NClipPoints: correction?.nClipPoints ?? '',
+      ClipX: correction ? joinedNumberCell(correction.clipPoints.map((point) => point.concentration)) : '',
       ClipDelta: fit.meanClipDelta ?? '',
+      FitSignalSource: reportFitSignalSourceLabel(fit.channel, Boolean(fit.correctionApplied)),
+      FitX_points: joinedNumberCell(fitX),
+      FitY_raw_points: joinedNumberCell(rawY),
+      FitY_input_points: joinedNumberCell(fitY),
+      FitY_input_delta_points: joinedNumberCell(fitY.map((value, index) => {
+        const rawValue = rawY[index];
+        return typeof rawValue === 'number' && Number.isFinite(rawValue) ? value - rawValue : '';
+      })),
+      ClipDelta_points: joinedNumberCell(clipAudit.clipDelta),
+      ClipY_observed_points: joinedNumberCell(clipAudit.yObserved),
+      ClipY_shifted_points: joinedNumberCell(clipAudit.yShifted),
+      ClipY_expected_points: joinedNumberCell(clipAudit.yExpected),
+      ClipY_corrected_points: joinedNumberCell(clipAudit.yCorrected),
+      ClipSDThreshold_points: joinedNumberCell(clipAudit.threshold),
     });
   });
 
@@ -1877,10 +2120,13 @@ function buildReportFitRows(
     const beta = cal && Number.isFinite(cal.slope) && Math.abs(cal.slope) > 1e-15
       ? fit.slope / cal.slope
       : Number.NaN;
-    const points = (fit.addedConcentrationsUsed ?? []).map((x, index) => ({
-      x,
-      y: fit.meanSignalValuesUsed?.[index] ?? Number.NaN,
-    }));
+    const fitX = fit.addedConcentrationsUsed ?? [];
+    const fitY = fit.meanSignalValuesUsed ?? [];
+    const points = fitX.map((x, index) => ({ x, y: fitY[index] ?? Number.NaN }));
+    const rawPointRows = collectStandardAdditionMedianPointsForChannel(fit, fit.channel, measurements, plateMap);
+    const rawY = alignedYValues(rawPointRows, fitX);
+    const correction = correctionForChannel(lowSignalCorrections, fit.channel);
+    const clipAudit = alignedClipValues(correction, fitX);
     const c0Sd = c0SdFromFitRows(points, fit.slope, fit.intercept, fit.dilutionFactor);
 
     rows.push({
@@ -1907,6 +2153,15 @@ function buildReportFitRows(
       NClipPoints: '',
       ClipX: '',
       ClipDelta: fit.meanClipDelta ?? '',
+      FitSignalSource: fit.signalSourceUsedForFit ?? '',
+      FitX_points: joinedNumberCell(fitX),
+      FitY_raw_points: joinedNumberCell(rawY),
+      FitY_input_points: joinedNumberCell(fitY),
+      FitY_input_delta_points: joinedNumberCell(fitY.map((value, index) => {
+        const rawValue = rawY[index];
+        return typeof rawValue === 'number' && Number.isFinite(rawValue) ? value - rawValue : '';
+      })),
+      ClipDelta_points: joinedNumberCell(clipAudit.clipDelta),
     });
   });
 
@@ -1935,6 +2190,14 @@ function buildReportFitRows(
       NClipPoints: '',
       ClipX: '',
       ClipDelta: result.correctionApplied ? result.clipDelta : '',
+      FitSignalSource: reportFitSignalSourceLabel(result.channel, result.correctionApplied),
+      FitX_points: '',
+      FitY_raw_points: Number.isFinite(result.pabsRaw) ? String(result.pabsRaw) : '',
+      FitY_input_points: Number.isFinite(result.pabs) ? String(result.pabs) : '',
+      FitY_input_delta_points: Number.isFinite(result.pabsRaw) && Number.isFinite(result.pabs)
+        ? String(result.pabs - result.pabsRaw)
+        : '',
+      ClipDelta_points: result.correctionApplied ? String(result.clipDelta) : '',
     });
   });
 
@@ -2243,6 +2506,8 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: 'Score/BaseScore', Meaning: 'Common method-ranking score', Formula: 'slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ) when LOQ is available', Unit: `1/${unitLabel}`, 'Where used': '03_OVERVIEW, 07_METHOD_COMPARISON', 'Shown when': 'method comparison present', Notes: 'Expected/reference values and recovery are external checks only.' },
     { Term: 'C0/C0_sd', Meaning: 'Estimated original-sample concentration and fit-derived uncertainty', Formula: 'standard addition: C0 = DF x q/m; C0_sd is propagated from the linear-fit covariance when available', Unit: unitLabel, 'Where used': '06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'standard addition or unknown rows present', Notes: 'Uses the current web least-squares fit covariance; robust IRLS weighting parity remains separate.' },
     { Term: 'Replicate medians and SD', Meaning: 'Replicate-group summary by ID, DF, type and concentration', Formula: 'median(PAbs) and sample SD over finite replicate wells', Unit: 'dimensionless', 'Where used': '05_REPLICATES_MEAN', 'Shown when': 'replicate groups present', Notes: '' },
+    { Term: 'PAbs_*_raw / PAbs_*_exported / PAbs_*_fit_input_*', Meaning: 'Audit columns distinguishing raw extracted PAbs, exported display PAbs and grouped fit-input values', Formula: 'raw from original measurements; exported/fit-input from corrected display pipeline when enabled', Unit: 'dimensionless', 'Where used': '04_RAW, 05_REPLICATES_MEAN, 06_FITTING', 'Shown when': 'RGB rows present', Notes: 'These columns are diagnostic only and do not change the underlying calculations.' },
+    { Term: 'S0_*/ClipDelta_*/TotalDelta_* and ClipY_* audit fields', Meaning: 'Low-signal correction intermediates traced from the current RGB correction payload', Formula: 'diagnostic values are reported as stored in the current correction payload; calibration payload also exposes observed, shifted, expected and corrected y arrays when available', Unit: 'dimensionless', 'Where used': '04_RAW, 05_REPLICATES_MEAN, 06_FITTING', 'Shown when': 'low-signal correction payload available', Notes: 'Added for Python-parity audit of calibration-transfer intermediates.' },
     { Term: 'ImageWarning/QCFlagged/QCCritical', Meaning: 'Available webapp warning indicators', Formula: '1 when warnings are present; critical when warning text contains critical', Unit: '0/1', 'Where used': '04_RAW, 05_REPLICATES_MEAN', 'Shown when': 'always', Notes: 'Python optical QC critical scoring is not fully implemented in the webapp report.' },
     { Term: 'Expected/reference values', Meaning: 'External reference metadata configured by the user', Formula: 'user/configurator input', Unit: unitLabel, 'Where used': '03_OVERVIEW, 07_METHOD_COMPARISON', 'Shown when': 'reference values configured', Notes: 'External references are not used in Score.' },
     { Term: 'Blank cells', Meaning: 'Unavailable fields', Formula: 'left blank when the webapp does not currently compute the Python field', Unit: 'mixed', 'Where used': 'all sheets', 'Shown when': 'as needed', Notes: 'No placeholder or fake values are generated.' },
@@ -2273,15 +2538,17 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     { Sheet: '08_LEGENDS', Purpose: 'Definitions for fields reported in this workbook and primary RGB figure.' },
   ];
   const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap);
-  const rawRows = buildReportRawRows(options.measurements, options.displayMeasurements, options.plateMap);
-  const replicateRows = buildReportReplicateRows(options.displayMeasurements, options.plateMap);
+  const rawRows = buildReportRawRows(options.measurements, options.displayMeasurements, options.plateMap, options.correctionApplications);
+  const replicateRows = buildReportReplicateRows(options.measurements, options.displayMeasurements, options.plateMap, options.correctionApplications);
   const rgbFitRows = buildReportFitRows(
+    options.measurements,
     options.calibrationFits,
     options.standardAdditionFits,
     options.unknownResults,
     options.displayMeasurements,
     options.plateMap,
     options.rankings,
+    options.lowSignalCorrections,
   );
   const fitRows = [...rgbFitRows, ...buildCielabFittingRows(cielabPoints)];
   const methodComparisonRows = buildMethodComparisonRowsFromFitRows(fitRows, options.expectedRefs, true);
@@ -2329,21 +2596,21 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     {
       name: '04_RAW',
       rows: tableRows(
-        ['Row', 'Col', 'Well', 'ID', 'Type', 'Conc', 'DF', 'MeanW_Red', 'MeanW_Green', 'MeanW_Blue', 'MeanBG_Red', 'MeanBG_Green', 'MeanBG_Blue', 'SignalT_Red', 'SignalT_Green', 'SignalT_Blue', 'PAbs_Red', 'PAbs_Green', 'PAbs_Blue', 'L', 'a', 'b', 'DeltaL', 'Deltaa', 'Deltab', 'DeltaE_ab', 'DeltaE_ab_chroma', 'CIELAB_ref_source', 'ImageWarning'],
+        uniqueHeaders(['Row', 'Col', 'Well', 'ID', 'Type', 'Conc', 'DF', 'MeanW_Red', 'MeanW_Green', 'MeanW_Blue', 'MeanBG_Red', 'MeanBG_Green', 'MeanBG_Blue', 'SignalT_Red', 'SignalT_Green', 'SignalT_Blue', 'PAbs_Red', 'PAbs_Green', 'PAbs_Blue', 'L', 'a', 'b', 'DeltaL', 'Deltaa', 'Deltab', 'DeltaE_ab', 'DeltaE_ab_chroma', 'CIELAB_ref_source', 'ImageWarning'], rawRows),
         rawRows,
       ),
     },
     {
       name: '05_REPLICATES_MEAN',
       rows: tableRows(
-        ['ID', 'DF', 'Type', 'Conc', 'PAbs_Red_median', 'PAbs_Red_sd', 'PAbs_Green_median', 'PAbs_Green_sd', 'PAbs_Blue_median', 'PAbs_Blue_sd', 'L_median', 'L_sd', 'a_median', 'a_sd', 'b_median', 'b_sd', 'DeltaL_median', 'DeltaL_sd', 'Deltaa_median', 'Deltaa_sd', 'Deltab_median', 'Deltab_sd', 'DeltaE_ab_median', 'DeltaE_ab_sd', 'DeltaE_ab_chroma_median', 'DeltaE_ab_chroma_sd', 'CIELAB_ref_source', 'NReplicates', 'QCFlagged', 'QCCritical'],
+        uniqueHeaders(['ID', 'DF', 'Type', 'Conc', 'PAbs_Red_median', 'PAbs_Red_sd', 'PAbs_Green_median', 'PAbs_Green_sd', 'PAbs_Blue_median', 'PAbs_Blue_sd', 'L_median', 'L_sd', 'a_median', 'a_sd', 'b_median', 'b_sd', 'DeltaL_median', 'DeltaL_sd', 'Deltaa_median', 'Deltaa_sd', 'Deltab_median', 'Deltab_sd', 'DeltaE_ab_median', 'DeltaE_ab_sd', 'DeltaE_ab_chroma_median', 'DeltaE_ab_chroma_sd', 'CIELAB_ref_source', 'NReplicates', 'QCFlagged', 'QCCritical'], replicateRows),
         replicateRows,
       ),
     },
     {
       name: '06_FITTING',
       rows: tableRows(
-        ['Channel', 'FitType', 'n_points', 'm', 'q', 'R2', 'RMSE', 'sigma_cal', 'sigma_source', 'SNR', 'LOD', 'LOQ', 'ID', 'DF', 'C0', 'C0_sd', 'beta_k', 'bias_index_k', 'S0_calibration', 'S0_applied', 'NClipPoints', 'ClipX', 'ClipDelta'],
+        uniqueHeaders(['Channel', 'FitType', 'n_points', 'm', 'q', 'R2', 'RMSE', 'sigma_cal', 'sigma_source', 'SNR', 'LOD', 'LOQ', 'ID', 'DF', 'C0', 'C0_sd', 'beta_k', 'bias_index_k', 'S0_calibration', 'S0_applied', 'NClipPoints', 'ClipX', 'ClipDelta'], fitRows),
         fitRows,
       ),
     },
@@ -3056,12 +3323,14 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
 async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWorkbookOptions): Promise<Blob> {
   const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap);
   const rgbFitRows = buildReportFitRows(
+    options.measurements,
     options.calibrationFits,
     options.standardAdditionFits,
     options.unknownResults,
     options.displayMeasurements,
     options.plateMap,
     options.rankings,
+    options.lowSignalCorrections,
   );
   const methodComparisonRows = buildMethodComparisonRowsFromFitRows([...rgbFitRows, ...buildCielabFittingRows(cielabPoints)], options.expectedRefs, false);
   const methodComparisonPreferred = [
@@ -3418,11 +3687,11 @@ function buildPythonStyleCielabDeltaECanvas(
 
   ctx.font = '22px Inter, Arial, sans-serif';
   ctx.fillStyle = '#2563c7';
-  ctx.fillText('● calibration', 210, height - 80);
+  ctx.fillText('? calibration', 210, height - 80);
   ctx.fillStyle = '#1f8a4c';
-  ctx.fillText('■ standard addition', 420, height - 80);
+  ctx.fillText('� standard addition', 420, height - 80);
   ctx.fillStyle = '#cf2e2e';
-  ctx.fillText('◆ unknown', 700, height - 80);
+  ctx.fillText('? unknown', 700, height - 80);
 
   return canvas;
 }
@@ -3572,13 +3841,13 @@ function buildPythonStyleMethodComparisonCanvas(
 
   ctx.font = '20px Inter, Arial, sans-serif';
   ctx.fillStyle = '#2563c7';
-  ctx.fillText('● slope agreement / estimate / R2 calibration', 170, height - 72);
+  ctx.fillText('? slope agreement / estimate / R2 calibration', 170, height - 72);
   ctx.fillStyle = '#cf2e2e';
-  ctx.fillText('■ bias index', 650, height - 72);
+  ctx.fillText('� bias index', 650, height - 72);
   ctx.fillStyle = '#1f8a4c';
-  ctx.fillText('■ R2 standard addition', 850, height - 72);
+  ctx.fillText('� R2 standard addition', 850, height - 72);
   ctx.fillStyle = '#8a3ffc';
-  ctx.fillText('dashed bands: external reference ± SD when available', 1180, height - 72);
+  ctx.fillText('dashed bands: external reference � SD when available', 1180, height - 72);
 
   return canvas;
 }
@@ -5432,7 +5701,7 @@ function App() {
     wells.length === 96 ? 'Geometry ready' : 'Geometry waiting',
     measurements.length > 0 ? 'Results ready' : 'Results waiting',
     error ? 'Error' : null,
-  ].filter((item): item is string => item !== null).join(' · ');
+  ].filter((item): item is string => item !== null).join(' � ');
 
   const clearFits = useCallback(() => {
     setCalibrationFits([]);
@@ -6382,12 +6651,14 @@ function App() {
       );
       const methodComparisonFitRows = [
         ...buildReportFitRows(
+          measurements,
           calibrationFits,
           standardAdditionFitsWithSlopeContext,
           unknownResults,
           displayMeasurements,
           plateMap,
           rankings,
+          activeLowSignalCorrections,
         ),
         ...buildCielabFittingRows(buildCielabDiagnosticPoints(measurements, plateMap).points),
       ];
@@ -6492,6 +6763,8 @@ function App() {
           geometrySource: currentMethodMetadata.geometrySource ?? 'unknown',
           floorGeometryAvailable: sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable,
           correctionApplied: lowSignalCorrectionEffective,
+          lowSignalCorrections: activeLowSignalCorrections,
+          correctionApplications: correctedMeasurementSet.applications,
           sharedGeometryOverride,
         }),
       );
@@ -6517,6 +6790,8 @@ function App() {
           geometrySource: currentMethodMetadata.geometrySource ?? 'unknown',
           floorGeometryAvailable: sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable,
           correctionApplied: lowSignalCorrectionEffective,
+          lowSignalCorrections: activeLowSignalCorrections,
+          correctionApplications: correctedMeasurementSet.applications,
           sharedGeometryOverride,
           wells: sharedGeometryOverride ? effectiveWells : wells,
           geometry,
@@ -7080,7 +7355,7 @@ function App() {
 
         <details className="control-section compact-status-section">
           <summary id="status-heading">
-            <span>Status — {compactStatusSummary}</span>
+            <span>Status � {compactStatusSummary}</span>
           </summary>
           <dl className="status-list">
             <div>
