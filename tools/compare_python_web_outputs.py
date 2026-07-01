@@ -196,6 +196,18 @@ AUDIT_36W_O_COLUMNS = {
 AUDIT_MATERIAL_THRESHOLD = 1e-6
 AUDIT_DOMINANCE_RATIO = 3.0
 
+PY_BG_BASIS_FALLBACK = ["constant", "x", "y", "x*y", "x^2", "y^2"]
+WEB_BG_BASIS_FALLBACK = ["constant", "x", "y", "x^2", "x*y", "y^2"]
+BG_COEF_TERM_ORDER = ["constant", "x", "y", "x^2", "x*y", "y^2"]
+BG_COEF_TERM_LABELS = {
+    "constant": "constant",
+    "x": "x",
+    "y": "y",
+    "x^2": "x^2",
+    "x*y": "x*y",
+    "y^2": "y^2",
+}
+
 
 @dataclass
 class Workbook:
@@ -617,6 +629,74 @@ def parse_number_list(value: str) -> list[float]:
         parsed = as_float(item.strip())
         if math.isfinite(parsed):
             out.append(parsed)
+    return out
+
+
+def normalize_bg_basis_term(term: str) -> str | None:
+    token = str(term).strip().lower().replace(" ", "")
+    if not token:
+        return None
+    if token in {"1", "const", "constant", "c0", "bias", "intercept"}:
+        return "constant"
+    if token in {"x", "xn", "xnorm"}:
+        return "x"
+    if token in {"y", "yn", "ynorm"}:
+        return "y"
+    if token in {"x2", "x^2", "xx", "x*x", "xn2", "xn^2"}:
+        return "x^2"
+    if token in {"y2", "y^2", "yy", "y*y", "yn2", "yn^2"}:
+        return "y^2"
+    if token in {"xy", "x*y", "y*x", "xyn", "ynx", "xn*yn", "yn*xn"}:
+        return "x*y"
+    return None
+
+
+def parse_bg_basis_order(value: str, fallback_terms: list[str]) -> list[str]:
+    text = str(value).strip()
+    if not text:
+        return list(fallback_terms)
+    stripped = text.strip("[]")
+    parts = [part.strip() for part in stripped.split(",") if part.strip()]
+    if not parts:
+        return list(fallback_terms)
+    parsed: list[str] = []
+    for part in parts:
+        norm = normalize_bg_basis_term(part)
+        if norm is None:
+            return list(fallback_terms)
+        parsed.append(norm)
+    if len(parsed) < 6:
+        return list(fallback_terms)
+    return parsed[:6]
+
+
+def pretty_bg_basis_order(terms: list[str]) -> str:
+    shown = ["1" if term == "constant" else term for term in terms]
+    return "[" + ", ".join(shown) + "]"
+
+
+def basis_order_summary(rows: list[dict[str, str]], fallback_terms: list[str]) -> str:
+    orders = {
+        pretty_bg_basis_order(parse_bg_basis_order(str(row.get("Basis_Order", "")), fallback_terms))
+        for row in rows
+    }
+    if not orders:
+        return pretty_bg_basis_order(fallback_terms) + " (fallback)"
+    if len(orders) == 1:
+        return next(iter(orders))
+    return " | ".join(sorted(orders))
+
+
+def coefficient_rows_by_semantic_term(rows: list[dict[str, str]], fallback_terms: list[str]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for row in rows:
+        mapped = dict(row)
+        terms = parse_bg_basis_order(str(row.get("Basis_Order", "")), fallback_terms)
+        for idx, term in enumerate(terms):
+            coef_key = f"coef_{idx}"
+            if coef_key in row:
+                mapped[f"coef_term_{term}"] = row.get(coef_key, "")
+        out.append(mapped)
     return out
 
 
@@ -2833,80 +2913,183 @@ def append_bg_pixel_stat_audit(report: list[str], py_diag: Workbook, web_diag: W
 
 
 def append_bg_model_proof_audit(report: list[str], py_diag: Workbook, web_diag: Workbook) -> None:
-        py_bg_samples = rows_as_dicts(py_diag.sheets.get("02_BG_SAMPLES", []))
-        py_bg_fit = rows_as_dicts(py_diag.sheets.get("03_BG_WELL_FIT", []))
-        web_bg_inputs = rows_as_dicts(web_diag.sheets.get("13_BG_MODEL_INPUTS", []))
-        web_bg_coefs = rows_as_dicts(web_diag.sheets.get("14_BG_MODEL_COEFFICIENTS", []))
-        web_bg_model_preds = rows_as_dicts(web_diag.sheets.get("15_BG_MODEL_PREDICTIONS", []))
-        web_bg_fit = rows_as_dicts(web_diag.sheets.get("03_BG_WELL_FIT", []))
+    py_bg_samples = rows_as_dicts(py_diag.sheets.get("02_BG_SAMPLES", []))
+    py_bg_fit = rows_as_dicts(py_diag.sheets.get("03_BG_WELL_FIT", []))
+    py_bg_inputs = rows_as_dicts(py_diag.sheets.get("13_BG_MODEL_INPUTS", []))
+    py_bg_coefs = rows_as_dicts(py_diag.sheets.get("14_BG_MODEL_COEFFICIENTS", []))
+    py_bg_model_preds = rows_as_dicts(py_diag.sheets.get("15_BG_MODEL_PREDICTIONS", []))
 
-        report.extend(["### 3B. BG model proof audit (inputs, coefficients, predictions)"])
-        report.append("- objective: identify the first divergence in BG model/interpolation via exported numerical state, without changing runtime behavior.")
-        report.append("- Python workbook export availability: `02_BG_SAMPLES` and `03_BG_WELL_FIT` are present; coefficient vectors and robust retained/rejected sample state are not exported in REPORT/DIAGNOSTICS workbooks.")
+    web_bg_inputs = rows_as_dicts(web_diag.sheets.get("13_BG_MODEL_INPUTS", []))
+    web_bg_coefs = rows_as_dicts(web_diag.sheets.get("14_BG_MODEL_COEFFICIENTS", []))
+    web_bg_model_preds = rows_as_dicts(web_diag.sheets.get("15_BG_MODEL_PREDICTIONS", []))
+    web_bg_fit = rows_as_dicts(web_diag.sheets.get("03_BG_WELL_FIT", []))
 
-        if not web_bg_inputs:
-            report.append("- web proof sheet `13_BG_MODEL_INPUTS` missing; cannot prove whether fit input rows/coordinates/medians match Python BG sample exports.")
-        else:
-            report.append("- web proof sheet `13_BG_MODEL_INPUTS` present; comparing against Python `02_BG_SAMPLES` by BG cell keys.")
-            for label, field in [
-                    ("fit-input x", "x"),
-                    ("fit-input y", "y"),
-                    ("fit-input area", "area"),
-                    ("fit-input Red median raw", "Red_median_raw"),
-                    ("fit-input Green median raw", "Green_median_raw"),
-                    ("fit-input Blue median raw", "Blue_median_raw"),
-            ]:
-                    stats = field_diff_stats(py_bg_samples, web_bg_inputs, ["BG_Cell_Row", "BG_Cell_Col"], field)
-                    report.append(f"- {label}: paired={stats_cell(stats['paired'])}, mean_abs={stats_cell(stats['mean_abs'])}, max_abs={stats_cell(stats['max_abs'])}, signed_mean={stats_cell(stats['signed_mean'])}")
+    report.extend(["### 3B. BG model proof audit (inputs, coefficients, predictions)"])
+    report.append("- objective: identify the first proven divergence in BG model/interpolation via exported numerical state, without changing runtime behavior.")
 
-        if not web_bg_coefs:
-            report.append("- web proof sheet `14_BG_MODEL_COEFFICIENTS` missing; cannot export coefficient-level BG proof from web run.")
-        else:
-            report.append("- web proof sheet `14_BG_MODEL_COEFFICIENTS` present.")
-            report.append("- Python workbook gap: BG polynomial coefficients and robust retained/rejected states are not exported in workbook sheets; direct Python-vs-web coefficient equality cannot be proven from current ZIPs.")
-            report.append("| channel | basis order (web) | samples total | samples retained | samples rejected | residual median | residual MAD | residual sigma | residual max abs |")
-            report.append("|---|---|---:|---:|---:|---:|---:|---:|---:|")
-            for row in web_bg_coefs:
-                    report.append(
-                            f"| {markdown_cell_text(str(row.get('Channel', '')))} | {markdown_cell_text(str(row.get('Basis_Order', '')))} | "
-                            f"{fmt_number(as_float(row.get('samples_total', '')))} | {fmt_number(as_float(row.get('samples_retained', '')))} | "
-                            f"{fmt_number(as_float(row.get('samples_rejected', '')))} | {fmt_number(as_float(row.get('residual_median', '')))} | "
-                            f"{fmt_number(as_float(row.get('residual_mad', '')))} | {fmt_number(as_float(row.get('residual_sigma', '')))} | "
-                            f"{fmt_number(as_float(row.get('residual_max_abs', '')))} |"
-                    )
+    py_inputs_ref = py_bg_inputs if py_bg_inputs else py_bg_samples
+    if py_bg_inputs:
+        report.append("- Python proof sheet `13_BG_MODEL_INPUTS` present.")
+    else:
+        report.append("- Python proof sheet `13_BG_MODEL_INPUTS` missing; fallback comparison uses Python `02_BG_SAMPLES`.")
 
-        if not web_bg_model_preds:
-            report.append("- web proof sheet `15_BG_MODEL_PREDICTIONS` missing; cannot prove per-well pre-transformation model predictions.")
-        else:
-            report.append("- web proof sheet `15_BG_MODEL_PREDICTIONS` present; comparing with Python `03_BG_WELL_FIT` and with web `03_BG_WELL_FIT`.")
-            web_bg_model_preds_mapped = []
-            for row in web_bg_model_preds:
-                mapped = dict(row)
-                mapped["BG_Red_raw"] = row.get("BG_Red_raw_model", "")
-                mapped["BG_Green_raw"] = row.get("BG_Green_raw_model", "")
-                mapped["BG_Blue_raw"] = row.get("BG_Blue_raw_model", "")
-                web_bg_model_preds_mapped.append(mapped)
-
-            for label, field in [
-                ("model Red prediction", "BG_Red_raw"),
-                ("model Green prediction", "BG_Green_raw"),
-                ("model Blue prediction", "BG_Blue_raw"),
-            ]:
-                stats_py_vs_web_model = field_diff_stats(py_bg_fit, web_bg_model_preds_mapped, ["Well"], field)
-                stats_web_fit_vs_model = field_diff_stats(web_bg_fit, web_bg_model_preds_mapped, ["Well"], field)
-                report.append(
-                    f"- {label}: python03-vs-web15 paired={stats_cell(stats_py_vs_web_model['paired'])}, "
-                    f"mean_abs={stats_cell(stats_py_vs_web_model['mean_abs'])}, max_abs={stats_cell(stats_py_vs_web_model['max_abs'])}; "
-                    f"web03-vs-web15 mean_abs={stats_cell(stats_web_fit_vs_model['mean_abs'])}, max_abs={stats_cell(stats_web_fit_vs_model['max_abs'])}"
-                )
-
-            append_top_differences_table(
-                    report,
-                    "- top 10 wells by absolute BG_Red_raw model prediction difference (python03 vs web15):",
-                    top_numeric_differences(py_bg_fit, web_bg_model_preds_mapped, ["Well"], "BG_Red_raw", 10),
+    input_fields = [
+        ("fit-input x", "x"),
+        ("fit-input y", "y"),
+        ("fit-input area", "area"),
+        ("fit-input Red median raw", "Red_median_raw"),
+        ("fit-input Green median raw", "Green_median_raw"),
+        ("fit-input Blue median raw", "Blue_median_raw"),
+    ]
+    input_max_abs_values: list[float] = []
+    if not web_bg_inputs:
+        report.append("- web proof sheet `13_BG_MODEL_INPUTS` missing; fit-input parity is unprovable for this ZIP pair.")
+    else:
+        for label, field in input_fields:
+            stats = field_diff_stats(py_inputs_ref, web_bg_inputs, ["BG_Cell_Row", "BG_Cell_Col"], field)
+            max_abs = float(stats["max_abs"])
+            if math.isfinite(max_abs):
+                input_max_abs_values.append(max_abs)
+            report.append(
+                f"- {label}: paired={stats_cell(stats['paired'])}, mean_abs={stats_cell(stats['mean_abs'])}, "
+                f"max_abs={stats_cell(stats['max_abs'])}, signed_mean={stats_cell(stats['signed_mean'])}"
             )
 
-        report.append("- proof status: current ZIPs can prove fit-input and prediction-level deltas where exported; they cannot yet prove coefficient parity directly because Python workbook exports omit coefficient vectors and robust retained/rejected masks for BG polynomial fitting.")
+    py_coefs_available = bool(py_bg_coefs)
+    web_coefs_available = bool(web_bg_coefs)
+    if not py_coefs_available:
+        report.append("- Python proof sheet `14_BG_MODEL_COEFFICIENTS` missing; coefficient and robust-trace parity cannot be proven from this Python ZIP.")
+    if not web_coefs_available:
+        report.append("- web proof sheet `14_BG_MODEL_COEFFICIENTS` missing; coefficient and robust-trace parity cannot be proven from this web ZIP.")
+
+    norm_max_abs_values: list[float] = []
+    coef_max_abs_values: list[float] = []
+    trace_max_abs_values: list[float] = []
+    trace_ids_mismatch = 0
+    if py_coefs_available and web_coefs_available:
+        report.append("- coefficient audit by `Channel` (Python 14 vs web 14):")
+        report.append(f"- Python basis order: {basis_order_summary(py_bg_coefs, PY_BG_BASIS_FALLBACK)}")
+        report.append(f"- web basis order: {basis_order_summary(web_bg_coefs, WEB_BG_BASIS_FALLBACK)}")
+        report.append("- coefficient comparison mode: term-aligned semantic comparison (constant, x, y, x^2, x*y, y^2), not raw index-to-index.")
+
+        py_bg_coefs_term = coefficient_rows_by_semantic_term(py_bg_coefs, PY_BG_BASIS_FALLBACK)
+        web_bg_coefs_term = coefficient_rows_by_semantic_term(web_bg_coefs, WEB_BG_BASIS_FALLBACK)
+
+        for label, field in [
+            ("normalization x0", "x0"),
+            ("normalization y0", "y0"),
+            ("normalization sx", "sx"),
+            ("normalization sy", "sy"),
+        ]:
+            stats = field_diff_stats(py_bg_coefs, web_bg_coefs, ["Channel"], field)
+            max_abs = float(stats["max_abs"])
+            if math.isfinite(max_abs):
+                norm_max_abs_values.append(max_abs)
+            report.append(f"- {label}: paired={stats_cell(stats['paired'])}, mean_abs={stats_cell(stats['mean_abs'])}, max_abs={stats_cell(stats['max_abs'])}")
+
+        for term in BG_COEF_TERM_ORDER:
+            field = f"coef_term_{term}"
+            stats = field_diff_stats(py_bg_coefs_term, web_bg_coefs_term, ["Channel"], field)
+            max_abs = float(stats["max_abs"])
+            if math.isfinite(max_abs):
+                coef_max_abs_values.append(max_abs)
+            report.append(
+                f"- coefficient term {BG_COEF_TERM_LABELS.get(term, term)}: "
+                f"paired={stats_cell(stats['paired'])}, mean_abs={stats_cell(stats['mean_abs'])}, max_abs={stats_cell(stats['max_abs'])}"
+            )
+
+        for label, field in [
+            ("trace samples_total", "samples_total"),
+            ("trace samples_retained", "samples_retained"),
+            ("trace samples_rejected", "samples_rejected"),
+            ("trace residual_median", "residual_median"),
+            ("trace residual_mad", "residual_mad"),
+            ("trace residual_sigma", "residual_sigma"),
+            ("trace residual_max_abs", "residual_max_abs"),
+        ]:
+            stats = field_diff_stats(py_bg_coefs, web_bg_coefs, ["Channel"], field)
+            max_abs = float(stats["max_abs"])
+            if math.isfinite(max_abs):
+                trace_max_abs_values.append(max_abs)
+            report.append(f"- {label}: paired={stats_cell(stats['paired'])}, mean_abs={stats_cell(stats['mean_abs'])}, max_abs={stats_cell(stats['max_abs'])}")
+
+        py_by_key, web_by_key, common_channels = paired_by_keys(py_bg_coefs, web_bg_coefs, ["Channel"])
+        for key in common_channels:
+            py_row = py_by_key.get(key, {})
+            web_row = web_by_key.get(key, {})
+            if str(py_row.get("retained_ids", "")).strip() != str(web_row.get("retained_ids", "")).strip():
+                trace_ids_mismatch += 1
+            if str(py_row.get("rejected_ids", "")).strip() != str(web_row.get("rejected_ids", "")).strip():
+                trace_ids_mismatch += 1
+        report.append(f"- robust-trace id parity mismatches (retained_ids/rejected_ids by channel): {trace_ids_mismatch}")
+
+    py_preds_ref = py_bg_model_preds if py_bg_model_preds else py_bg_fit
+    if py_bg_model_preds:
+        report.append("- Python proof sheet `15_BG_MODEL_PREDICTIONS` present.")
+    else:
+        report.append("- Python proof sheet `15_BG_MODEL_PREDICTIONS` missing; fallback comparison uses Python `03_BG_WELL_FIT`.")
+
+    pred_max_abs_values: list[float] = []
+    if not web_bg_model_preds:
+        report.append("- web proof sheet `15_BG_MODEL_PREDICTIONS` missing; model-evaluation parity is unprovable for this ZIP pair.")
+    else:
+        web_bg_model_preds_mapped = []
+        for row in web_bg_model_preds:
+            mapped = dict(row)
+            mapped["BG_Red_raw"] = row.get("BG_Red_raw_model", "")
+            mapped["BG_Green_raw"] = row.get("BG_Green_raw_model", "")
+            mapped["BG_Blue_raw"] = row.get("BG_Blue_raw_model", "")
+            web_bg_model_preds_mapped.append(mapped)
+
+        for label, field in [
+            ("model Red prediction", "BG_Red_raw"),
+            ("model Green prediction", "BG_Green_raw"),
+            ("model Blue prediction", "BG_Blue_raw"),
+        ]:
+            stats_py_vs_web_model = field_diff_stats(py_preds_ref, web_bg_model_preds_mapped, ["Well"], field)
+            stats_web_fit_vs_model = field_diff_stats(web_bg_fit, web_bg_model_preds_mapped, ["Well"], field)
+            max_abs = float(stats_py_vs_web_model["max_abs"])
+            if math.isfinite(max_abs):
+                pred_max_abs_values.append(max_abs)
+            report.append(
+                f"- {label}: python-vs-web15 paired={stats_cell(stats_py_vs_web_model['paired'])}, "
+                f"mean_abs={stats_cell(stats_py_vs_web_model['mean_abs'])}, max_abs={stats_cell(stats_py_vs_web_model['max_abs'])}; "
+                f"web03-vs-web15 mean_abs={stats_cell(stats_web_fit_vs_model['mean_abs'])}, max_abs={stats_cell(stats_web_fit_vs_model['max_abs'])}"
+            )
+
+        append_top_differences_table(
+            report,
+            "- top 10 wells by absolute BG_Red_raw model prediction difference (python vs web15):",
+            top_numeric_differences(py_preds_ref, web_bg_model_preds_mapped, ["Well"], "BG_Red_raw", 10),
+        )
+
+    input_div = max(input_max_abs_values) if input_max_abs_values else math.nan
+    norm_div = max(norm_max_abs_values) if norm_max_abs_values else math.nan
+    coef_div = max(coef_max_abs_values) if coef_max_abs_values else math.nan
+    trace_div = max(trace_max_abs_values) if trace_max_abs_values else math.nan
+    pred_div = max(pred_max_abs_values) if pred_max_abs_values else math.nan
+
+    first_divergence = "unprovable_from_available_sheets"
+    if math.isfinite(input_div) and input_div > 0:
+        first_divergence = "fit input coordinates/areas/medians"
+    elif math.isfinite(norm_div) and norm_div > 0:
+        first_divergence = "coefficient normalization x0/y0/sx/sy"
+    elif math.isfinite(coef_div) and coef_div > 0:
+        first_divergence = "polynomial coefficients"
+    elif (math.isfinite(trace_div) and trace_div > 0) or trace_ids_mismatch > 0:
+        first_divergence = "robust sample retention/rejection"
+    elif math.isfinite(pred_div) and pred_div > 0:
+        first_divergence = "model evaluation/prediction"
+    else:
+        first_divergence = "no BG-model divergence proven in exported proof sheets; check downstream MeanBG/PAbs audit sections"
+
+    report.append(
+        "- first proven divergence classification: "
+        f"{first_divergence}. "
+        f"(input_max_abs={stats_cell(input_div)}, norm_max_abs={stats_cell(norm_div)}, "
+        f"coef_max_abs={stats_cell(coef_div)}, trace_max_abs={stats_cell(trace_div)}, "
+        f"trace_id_mismatch={trace_ids_mismatch}, pred_max_abs={stats_cell(pred_div)})"
+    )
 
 
 def approximate_pabs_contributions(py_row: dict[str, str], web_row: dict[str, str], label: str) -> tuple[float, float]:

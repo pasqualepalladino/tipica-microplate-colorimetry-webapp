@@ -650,7 +650,7 @@ def _poly2_design(xn, yn):
     return np.column_stack([np.ones_like(xn), xn, yn, xn * yn, xn * xn, yn * yn])
 
 
-def _fit_poly2_robust(x, y, z, max_iter=1, clip_k=2.5):
+def _fit_poly2_robust(x, y, z, max_iter=1, clip_k=2.5, sample_ids=None, return_trace=False):
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     z = np.asarray(z, dtype=np.float64)
@@ -659,6 +659,16 @@ def _fit_poly2_robust(x, y, z, max_iter=1, clip_k=2.5):
     x = x[order]
     y = y[order]
     z = z[order]
+    ids_arr = None
+    if sample_ids is not None:
+        try:
+            ids_arr = np.asarray(list(sample_ids), dtype=object)
+            if ids_arr.shape[0] != x.shape[0]:
+                ids_arr = None
+            else:
+                ids_arr = ids_arr[order]
+        except Exception:
+            ids_arr = None
 
     x0 = float(np.mean(x))
     y0 = float(np.mean(y))
@@ -676,6 +686,10 @@ def _fit_poly2_robust(x, y, z, max_iter=1, clip_k=2.5):
         raise RuntimeError("Not enough valid BG samples for quadratic fit.")
 
     coef = None
+    residual_median = np.nan
+    residual_mad = np.nan
+    residual_sigma = np.nan
+    residual_max_abs = np.nan
     for _ in range(max_iter):
         A = _poly2_design(xn[keep], yn[keep])
         zz = z[keep]
@@ -687,6 +701,10 @@ def _fit_poly2_robust(x, y, z, max_iter=1, clip_k=2.5):
         med = float(np.median(res))
         mad = float(np.median(np.abs(res - med)))
         sigma = max(1.4826 * mad, 1e-9)
+        residual_median = med
+        residual_mad = mad
+        residual_sigma = sigma
+        residual_max_abs = float(np.max(np.abs(res - med))) if res.size else np.nan
         keep_local = np.abs(res - med) <= clip_k * sigma
         if np.all(keep_local):
             break
@@ -700,8 +718,39 @@ def _fit_poly2_robust(x, y, z, max_iter=1, clip_k=2.5):
     if coef is None:
         A = _poly2_design(xn, yn)
         coef, _, _, _ = np.linalg.lstsq(A, z, rcond=None)
+        res = z - (A @ coef)
+        med = float(np.median(res)) if res.size else np.nan
+        mad = float(np.median(np.abs(res - med))) if res.size else np.nan
+        sigma = max(1.4826 * mad, 1e-9) if np.isfinite(mad) else np.nan
+        residual_median = med
+        residual_mad = mad
+        residual_sigma = sigma
+        residual_max_abs = float(np.max(np.abs(res - med))) if res.size else np.nan
 
-    return {"coef": coef, "x0": x0, "y0": y0, "sx": sx, "sy": sy}
+    model = {"coef": coef, "x0": x0, "y0": y0, "sx": sx, "sy": sy}
+    if not return_trace:
+        return model
+
+    retained_idx = np.where(keep)[0]
+    rejected_idx = np.where(~keep)[0]
+    retained_ids = []
+    rejected_ids = []
+    if ids_arr is not None:
+        retained_ids = [str(ids_arr[i]) for i in retained_idx]
+        rejected_ids = [str(ids_arr[i]) for i in rejected_idx]
+
+    trace = {
+        "samples_total": int(x.shape[0]),
+        "samples_retained": int(retained_idx.size),
+        "samples_rejected": int(rejected_idx.size),
+        "retained_ids": retained_ids,
+        "rejected_ids": rejected_ids,
+        "residual_median": float(residual_median) if np.isfinite(residual_median) else np.nan,
+        "residual_mad": float(residual_mad) if np.isfinite(residual_mad) else np.nan,
+        "residual_sigma": float(residual_sigma) if np.isfinite(residual_sigma) else np.nan,
+        "residual_max_abs": float(residual_max_abs) if np.isfinite(residual_max_abs) else np.nan,
+    }
+    return model, trace
 
 
 def _eval_poly2_model(model, x, y):
@@ -729,6 +778,88 @@ def _predict_bg_for_wells(centers, model_B, model_G, model_R):
                 "G_bg": float(_eval_poly2_model(model_G, [x], [y])[0]),
                 "R_bg": float(_eval_poly2_model(model_R, [x], [y])[0]),
             })
+    return rows
+
+
+def _bg_cell_id_string(cell_r, cell_c):
+    try:
+        return f"r{int(cell_r)}c{int(cell_c)}"
+    except Exception:
+        return ""
+
+
+def _build_bg_model_input_rows(bg_samples):
+    rows = []
+    for s in bg_samples or []:
+        cell_r = s.get("cell_r", "")
+        cell_c = s.get("cell_c", "")
+        rows.append({
+            "BG_Cell_Row": cell_r,
+            "BG_Cell_Col": cell_c,
+            "Associated_Wells": _associated_wells_from_bg_cell(cell_r, cell_c),
+            "x": s.get("x", ""),
+            "y": s.get("y", ""),
+            "area": s.get("area", ""),
+            "Red_median_raw": s.get("R", ""),
+            "Green_median_raw": s.get("G", ""),
+            "Blue_median_raw": s.get("B", ""),
+        })
+    return rows
+
+
+def _build_bg_model_coefficient_rows(model_B, model_G, model_R, trace_B=None, trace_G=None, trace_R=None):
+    rows = []
+    channels = [
+        ("Blue", model_B, trace_B),
+        ("Green", model_G, trace_G),
+        ("Red", model_R, trace_R),
+    ]
+    for channel_name, model, trace in channels:
+        coef = np.asarray((model or {}).get("coef", []), dtype=np.float64).ravel()
+        row = {
+            "Channel": channel_name,
+            "Basis_Order": "[1, x, y, x*y, x^2, y^2]",
+            "x0": (model or {}).get("x0", ""),
+            "y0": (model or {}).get("y0", ""),
+            "sx": (model or {}).get("sx", ""),
+            "sy": (model or {}).get("sy", ""),
+            "coef_0": float(coef[0]) if coef.size > 0 else np.nan,
+            "coef_1": float(coef[1]) if coef.size > 1 else np.nan,
+            "coef_2": float(coef[2]) if coef.size > 2 else np.nan,
+            "coef_3": float(coef[3]) if coef.size > 3 else np.nan,
+            "coef_4": float(coef[4]) if coef.size > 4 else np.nan,
+            "coef_5": float(coef[5]) if coef.size > 5 else np.nan,
+            "samples_total": (trace or {}).get("samples_total", ""),
+            "samples_retained": (trace or {}).get("samples_retained", ""),
+            "samples_rejected": (trace or {}).get("samples_rejected", ""),
+            "retained_ids": "|".join((trace or {}).get("retained_ids", []) or []),
+            "rejected_ids": "|".join((trace or {}).get("rejected_ids", []) or []),
+            "residual_median": (trace or {}).get("residual_median", ""),
+            "residual_mad": (trace or {}).get("residual_mad", ""),
+            "residual_sigma": (trace or {}).get("residual_sigma", ""),
+            "residual_max_abs": (trace or {}).get("residual_max_abs", ""),
+        }
+        rows.append(row)
+    return rows
+
+
+def _build_bg_model_prediction_rows(well_bg_rows):
+    rows = []
+    for s in well_bg_rows or []:
+        try:
+            col_value = int(float(s.get("well_c", ""))) + 1
+        except Exception:
+            col_value = ""
+        rows.append({
+            "Row": _row_label_from_zero_based(s.get("well_r", "")),
+            "Col": col_value,
+            "Well": _well_from_zero_based(s.get("well_r", ""), s.get("well_c", "")),
+            "x": s.get("x", ""),
+            "y": s.get("y", ""),
+            "BG_Red_raw_model": s.get("R_bg", ""),
+            "BG_Green_raw_model": s.get("G_bg", ""),
+            "BG_Blue_raw_model": s.get("B_bg", ""),
+        })
     return rows
 
 
@@ -6320,6 +6451,11 @@ def _diagnostics_legend_rows(unit_label, present_sheets=None):
     has_spatial = "09_SPATIAL_DIAGNOSTICS" in present_sheets
     has_method = "10_METHOD_COMPARISON" in present_sheets
     has_cielab_fit = "11_CIELAB_FITTING" in present_sheets
+    has_bg_model_proof = (
+        "13_BG_MODEL_INPUTS" in present_sheets
+        or "14_BG_MODEL_COEFFICIENTS" in present_sheets
+        or "15_BG_MODEL_PREDICTIONS" in present_sheets
+    )
     rows = [
         {"Field":"BG_STAT_MASK", "Meaning":"Binary diagnostic mask of accepted inter-well background pixels", "Formula":"white = used as BG sample; black = rejected", "Unit":"image", "Where used":"BG_STAT_MASK.png", "Notes":"Used to audit the background-sampling step."},
         {"Field":"BG_Cell_Row/BG_Cell_Col", "Meaning":"Inter-well background-cell row/column index", "Formula":"0-based grid index of the inter-well cell, not a well row/column", "Unit":"index", "Where used":"02_BG_SAMPLES", "Notes":"BG_Cell_Row=0 and BG_Cell_Col=0 identify the inter-well region surrounded by A1, A2, B1 and B2."},
@@ -6385,6 +6521,12 @@ def _diagnostics_legend_rows(unit_label, present_sheets=None):
             {"Field":"m/q/R2/RMSE", "Meaning":"Linear-fit parameters and fit quality", "Formula":"y = m x + q; R2 coefficient of determination; RMSE root-mean-square error", "Unit":"descriptor units", "Where used":"11_CIELAB_FITTING", "Notes":"Diagnostic CIELAB/DeltaE fitting only."},
             {"Field":"LOD/LOQ", "Meaning":"Detection and quantification limits", "Formula":"LOD = 3 sigma_cal / |m|; LOQ = 10 sigma_cal / |m|", "Unit":str(unit_label), "Where used":"11_CIELAB_FITTING", "Notes":"Diagnostic for CIELAB/DeltaE fits."},
             {"Field":"C0/C0_sd", "Meaning":"Estimated original concentration and SD", "Formula":"standard-addition intercept or calibration projection depending on FitType", "Unit":str(unit_label), "Where used":"11_CIELAB_FITTING", "Notes":"Diagnostic for CIELAB/DeltaE fits."},
+        ])
+    if has_bg_model_proof:
+        rows.extend([
+            {"Field":"13_BG_MODEL_INPUTS", "Meaning":"Proof-only BG polynomial fit inputs", "Formula":"per-cell x/y/area/raw RGB medians used by the BG model fit", "Unit":"mixed", "Where used":"13_BG_MODEL_INPUTS", "Notes":"Proof-only diagnostics; does not alter scientific outputs."},
+            {"Field":"14_BG_MODEL_COEFFICIENTS", "Meaning":"Proof-only BG polynomial normalization/coefficients and robust-fit trace summaries", "Formula":"basis order, x0/y0/sx/sy, coef_0..coef_5, retained/rejected counts, residual summaries", "Unit":"mixed", "Where used":"14_BG_MODEL_COEFFICIENTS", "Notes":"Proof-only diagnostics; does not alter scientific outputs."},
+            {"Field":"15_BG_MODEL_PREDICTIONS", "Meaning":"Proof-only per-well raw BG model predictions", "Formula":"evaluate fitted BG polynomial at well centers before downstream transformations", "Unit":"raw image intensity", "Where used":"15_BG_MODEL_PREDICTIONS", "Notes":"Proof-only diagnostics; used to localize divergence stage."},
         ])
     rows.extend([
         {"Term":"IRLS", "Meaning":"Iteratively reweighted least-squares robust linear regression with residual-based weights", "Formula":"minimize sum_i w_i (y_i - (m x_i + q))^2; w_i is updated iteratively from residual magnitude", "Unit":"dimensionless", "Where used":"10_METHOD_COMPARISON, 11_CIELAB_FITTING, METHOD_COMPARISON.png, FIGURE_CIELAB_DELTAE.png", "Notes":"Reference: Huber, P. J. (1964), Robust Estimation of a Location Parameter. Implementation: custom NumPy-based IRLS using repeated least-squares solves."},
@@ -6506,6 +6648,9 @@ def _write_diagnostics_workbook(path, image_basename, unit_label, csv_paths=None
         "09_SPATIAL_DIAGNOSTICS": "Spatial trends across row/column positions.",
         "10_METHOD_COMPARISON": "Cross-method diagnostic comparison using common score factors.",
         "11_CIELAB_FITTING": "CIELAB/DeltaE diagnostic fit rows.",
+        "13_BG_MODEL_INPUTS": "Proof-only BG polynomial fit inputs exported from the Python run.",
+        "14_BG_MODEL_COEFFICIENTS": "Proof-only BG polynomial normalization/coefficients and robust-fit summaries exported from the Python run.",
+        "15_BG_MODEL_PREDICTIONS": "Proof-only per-well raw BG predictions from the Python model before downstream transformations.",
         "12_LEGENDS": "Definitions for diagnostic workbook fields and figures.",
     }
 
@@ -6558,6 +6703,23 @@ def _write_diagnostics_workbook(path, image_basename, unit_label, csv_paths=None
             headers = [h for h in headers if h in rows[0]] + [h for h in rows[0].keys() if h not in headers and not h.startswith("__")]
             _write_table(wsx, 1, headers, rows)
             contents.append({"Sheet":"11_CIELAB_FITTING", "Purpose":sheet_purposes["11_CIELAB_FITTING"]})
+
+    proof_csv_sheet_map = [
+        ("13_BG_MODEL_INPUTS", "BG_MODEL_INPUTS"),
+        ("14_BG_MODEL_COEFFICIENTS", "BG_MODEL_COEFFICIENTS"),
+        ("15_BG_MODEL_PREDICTIONS", "BG_MODEL_PREDICTIONS"),
+    ]
+    for sheet_name, key in proof_csv_sheet_map:
+        rows = _csv_rows_to_dicts(csv_paths.get(key))
+        if not rows:
+            continue
+        wsx = wb.create_sheet(sheet_name)
+        rows = _diagnostic_display_rows(key, rows)
+        if not rows:
+            continue
+        headers = list(rows[0].keys())
+        _write_table(wsx, 1, headers, rows)
+        contents.append({"Sheet": sheet_name, "Purpose": sheet_purposes.get(sheet_name, "Proof-only diagnostic data.")})
 
     contents.append({"Sheet":"12_LEGENDS", "Purpose":sheet_purposes["12_LEGENDS"]})
     _write_table(ws_contents, 1, ["Sheet", "Purpose"], contents)
@@ -9414,10 +9576,14 @@ class Analyzer:
             g_s = np.array([s["G"] for s in bg_samples], dtype=np.float64)
             r_s = np.array([s["R"] for s in bg_samples], dtype=np.float64)
 
-            model_B = _fit_poly2_robust(x_s, y_s, b_s, max_iter=6, clip_k=2.5)
-            model_G = _fit_poly2_robust(x_s, y_s, g_s, max_iter=6, clip_k=2.5)
-            model_R = _fit_poly2_robust(x_s, y_s, r_s, max_iter=6, clip_k=2.5)
+            sample_ids = [_bg_cell_id_string(s.get("cell_r", ""), s.get("cell_c", "")) for s in bg_samples]
+            model_B, trace_B = _fit_poly2_robust(x_s, y_s, b_s, max_iter=6, clip_k=2.5, sample_ids=sample_ids, return_trace=True)
+            model_G, trace_G = _fit_poly2_robust(x_s, y_s, g_s, max_iter=6, clip_k=2.5, sample_ids=sample_ids, return_trace=True)
+            model_R, trace_R = _fit_poly2_robust(x_s, y_s, r_s, max_iter=6, clip_k=2.5, sample_ids=sample_ids, return_trace=True)
             well_bg_rows = _predict_bg_for_wells(centers, model_B, model_G, model_R)
+            bg_model_input_rows = _build_bg_model_input_rows(bg_samples)
+            bg_model_coef_rows = _build_bg_model_coefficient_rows(model_B, model_G, model_R, trace_B, trace_G, trace_R)
+            bg_model_prediction_rows = _build_bg_model_prediction_rows(well_bg_rows)
 
             union_mask_stat = np.zeros(self.img_bgr.shape[:2], dtype=np.uint8)
             for r in range(self.nrow - 1):
@@ -9431,6 +9597,9 @@ class Analyzer:
             union_mask_stat = np.zeros(self.img_bgr.shape[:2], dtype=np.uint8)
             bg_samples = []
             well_bg_rows = _empty_bg_rows_for_wells(centers)
+            bg_model_input_rows = []
+            bg_model_coef_rows = []
+            bg_model_prediction_rows = []
 
         well_bottom_masks, well_bottom_shapes, bg_cyl_dist = _build_well_bottom_masks_v12(
             centers=centers,
@@ -9672,6 +9841,9 @@ class Analyzer:
         out_excl = None
         out_bg_samples = os.path.join(diagnostics_dir, f"{base}_BG_SAMPLES.csv") if diagnostics_dir else None
         out_bg_wells = os.path.join(diagnostics_dir, f"{base}_BG_WELL_FIT.csv") if diagnostics_dir else None
+        out_bg_model_inputs = os.path.join(diagnostics_dir, f"{base}_BG_MODEL_INPUTS.csv") if diagnostics_dir else None
+        out_bg_model_coefficients = os.path.join(diagnostics_dir, f"{base}_BG_MODEL_COEFFICIENTS.csv") if diagnostics_dir else None
+        out_bg_model_predictions = os.path.join(diagnostics_dir, f"{base}_BG_MODEL_PREDICTIONS.csv") if diagnostics_dir else None
         out_well_bottom_csv = os.path.join(diagnostics_dir, f"{base}_WELL_BOTTOM.csv") if diagnostics_dir else None
         out_plate_geom_csv = os.path.join(diagnostics_dir, f"{base}_PLATE_GEOMETRY.csv") if diagnostics_dir else None
         out_well_stats_csv = os.path.join(diagnostics_dir, f"{base}_WELL_ROBUST_STATS.csv") if diagnostics_dir else None
@@ -9704,6 +9876,9 @@ class Analyzer:
             cv2.imwrite(out_mask_stat, union_mask_stat)
             _write_bg_samples_csv(out_bg_samples, bg_samples)
             _write_well_bg_csv(out_bg_wells, well_bg_rows)
+            _write_generic_csv(out_bg_model_inputs, bg_model_input_rows)
+            _write_generic_csv(out_bg_model_coefficients, bg_model_coef_rows)
+            _write_generic_csv(out_bg_model_predictions, bg_model_prediction_rows)
             _write_well_bottom_csv(out_well_bottom_csv, well_bottom_shapes)
             _write_plate_geometry_csv(out_plate_geom_csv, self.plate_geom)
             _write_well_statistics_csv(out_well_stats_csv, well_stats_rows)
@@ -9868,6 +10043,9 @@ class Analyzer:
             _diagnostic_csv_paths = {
                 "BG_SAMPLES": out_bg_samples,
                 "BG_WELL_FIT": out_bg_wells,
+                "BG_MODEL_INPUTS": out_bg_model_inputs,
+                "BG_MODEL_COEFFICIENTS": out_bg_model_coefficients,
+                "BG_MODEL_PREDICTIONS": out_bg_model_predictions,
                 "WELL_ROBUST_STATS": out_well_stats_csv,
                 "FLOOR_GEOMETRY_QC": out_floor_qc_csv,
                 "WELL_BOTTOM": out_well_bottom_csv,
