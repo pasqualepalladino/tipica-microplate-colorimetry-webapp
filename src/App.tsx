@@ -4487,6 +4487,226 @@ function drawWrappedText(
   return cursorY;
 }
 
+function drawPreformattedLines(
+  ctx: CanvasRenderingContext2D,
+  lines: Array<{ text: string; emphasize?: boolean }>,
+  x: number,
+  y: number,
+  lineHeight: number,
+  maxY: number,
+  baseFont: string,
+  emphasizedFont: string,
+): number {
+  let cursorY = y;
+  for (const line of lines) {
+    if (cursorY > maxY) {
+      return cursorY;
+    }
+    ctx.font = line.emphasize ? emphasizedFont : baseFont;
+    ctx.fillText(line.text, x, cursorY);
+    cursorY += lineHeight;
+  }
+  return cursorY;
+}
+
+function formatFigureRgbTable(headers: string[], rows: string[][]): string[] {
+  const widths = headers.map((header) => header.length);
+  rows.forEach((row) => {
+    row.forEach((cell, index) => {
+      widths[index] = Math.max(widths[index] ?? 0, cell.length);
+    });
+  });
+
+  const formatRow = (row: string[]) => row.map((cell, index) => {
+    if (index === 0) {
+      return cell.padEnd(widths[index], ' ');
+    }
+    return cell.padStart(widths[index], ' ');
+  }).join('  ');
+
+  const divider = widths.map((width) => '-'.repeat(width));
+  return [
+    formatRow(headers),
+    formatRow(divider),
+    ...rows.map((row) => formatRow(row)),
+  ];
+}
+
+function figureRgbChannelShort(channel: FitChannel): string {
+  if (channel === 'R') {
+    return 'Red';
+  }
+  if (channel === 'G') {
+    return 'Green';
+  }
+  return 'Blue';
+}
+
+function formatFigureScientificNumber(value: number, fallback = 'NA'): string {
+  return Number.isFinite(value) ? Number(value).toPrecision(6) : fallback;
+}
+
+function buildFigureRgbScientificLines({
+  unitLabel,
+  measurements,
+  plateMap,
+  calibrationFits,
+  standardAdditionFits,
+  expectedRefs,
+  rankingRows,
+  roiMode,
+  backgroundModel,
+  floorGeometryAvailable,
+  bestChannel,
+}: {
+  unitLabel: string;
+  measurements: WellMeasurement[];
+  plateMap: WellConfig[];
+  calibrationFits: CalibrationFit[];
+  standardAdditionFits: StandardAdditionFit[];
+  expectedRefs: ExpectedRef[];
+  rankingRows: PythonResultsChannelRank[];
+  roiMode: RoiMode;
+  backgroundModel: BackgroundModel;
+  floorGeometryAvailable: boolean;
+  bestChannel: FitChannel;
+}): Array<{ text: string; emphasize?: boolean }> {
+  const lines: Array<{ text: string; emphasize?: boolean }> = [];
+  const selectedLabel = figureRgbChannelShort(bestChannel);
+  const pushText = (text: string, emphasize = false) => {
+    lines.push({ text, emphasize });
+  };
+  const pushTable = (tableLines: string[]) => {
+    tableLines.forEach((line, index) => {
+      const isDataRow = index >= 2;
+      const selectedRow = isDataRow && line.trimStart().startsWith(selectedLabel);
+      pushText(line, selectedRow);
+    });
+  };
+  const rankingByChannel = new Map(rankingRows.map((row) => [row.channel, row]));
+  const flagged = measurements.filter((measurement) => measurement.warnings.length > 0 || Boolean(measurement.roiStatisticsWarning || measurement.geometryAlignmentWarning)).length;
+  const critical = measurements.filter((measurement) => (
+    [...measurement.warnings, measurement.roiStatisticsWarning ?? '', measurement.geometryAlignmentWarning ?? '']
+      .some((warning) => warning.toLowerCase().includes('critical'))
+  )).length;
+  const total = measurements.length;
+  const plateStatus = critical === 0 && flagged <= Math.max(1, Math.floor(total * 0.2)) ? 'Passed' : 'Warning';
+  const modeLabel = calibrationFits.length > 0 && standardAdditionFits.length > 0
+    ? 'calibration + standard addition'
+    : calibrationFits.length > 0
+      ? 'calibration only'
+      : standardAdditionFits.length > 0
+        ? 'standard addition only'
+        : 'no valid analytical fit available';
+
+  pushText('Pseudo-absorbance = log10(I_BG/I_well)');
+  pushText('');
+  pushText(`Mode: ${modeLabel}`);
+  pushText('Fit: robust IRLS');
+  pushText(`Background: ${formatBackgroundModel(backgroundModel)}`);
+  pushText(`ROI mode: ${formatRoiMode(roiMode)}`);
+  pushText(`Plate: ${plateMap.length}-well | QC: ${plateStatus}`);
+  pushText(`Plate QC: wells flagged ${flagged}/${total} | wells critical ${critical}/${total}`);
+  pushText(`Floor D QC: ${floorGeometryAvailable ? 'available' : 'missing'}`);
+  pushText('');
+  pushText('REFERENCE VALUES', true);
+  if (expectedRefs.length === 0) {
+    pushText('NA');
+  } else {
+    expectedRefs.forEach((ref, index) => {
+      const label = ref.label.trim() || ref.refId.trim() || `Reference ${index + 1}`;
+      const valueText = formatFigureScientificNumber(ref.value);
+      const sdText = ref.sd !== null && Number.isFinite(ref.sd) ? ` +/- ${formatFigureScientificNumber(ref.sd)}` : '';
+      pushText(`${label}: ${valueText}${sdText} ${unitLabel}`);
+    });
+  }
+
+  const groupedFits = new Map<string, StandardAdditionFit[]>();
+  standardAdditionFits.forEach((fit) => {
+    const key = `${fit.sampleId}|${fit.dilutionFactor}`;
+    const items = groupedFits.get(key) ?? [];
+    items.push(fit);
+    groupedFits.set(key, items);
+  });
+
+  for (const [groupKey, fits] of groupedFits.entries()) {
+    const [sampleId, dilutionFactorRaw] = groupKey.split('|');
+    const dilutionFactor = Number(dilutionFactorRaw);
+    pushText('');
+    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureScientificNumber(dilutionFactor)}`, true);
+
+    const resultRows: string[][] = [];
+    for (const channel of PYTHON_RESULTS_CHANNELS) {
+      const fit = fits.find((item) => item.channel === channel);
+      if (!fit) {
+        continue;
+      }
+      const ranking = rankingByChannel.get(channel);
+      const matchedRef = expectedRefs.find((ref) => {
+        const refId = ref.refId.trim();
+        if (!refId) {
+          return true;
+        }
+        return refId === fit.sampleId.trim();
+      });
+      const c0 = fit.concentrationInOriginalSample;
+      const refValue = matchedRef?.value ?? Number.NaN;
+      const delta = Number.isFinite(c0) && Number.isFinite(refValue) ? c0 - refValue : Number.NaN;
+      const recovery = Number.isFinite(c0) && Number.isFinite(refValue) && Math.abs(refValue) > 1e-15
+        ? (100 * c0) / refValue
+        : Number.NaN;
+      resultRows.push([
+        figureRgbChannelShort(channel),
+        formatFigureScientificNumber(c0),
+        formatFigureScientificNumber(ranking?.score ?? Number.NaN),
+        formatFigureScientificNumber(delta),
+        Number.isFinite(recovery) ? recovery.toFixed(1) : 'NA',
+      ]);
+    }
+    pushTable(formatFigureRgbTable(
+      ['Channel', `C0 (${unitLabel})`, 'Score', `Delta (${unitLabel})`, 'Recovery (%)'],
+      resultRows,
+    ));
+
+    pushText('');
+    pushText('Calibration', true);
+    const calibrationRows = PYTHON_RESULTS_CHANNELS.map((channel) => {
+      const fit = calibrationFits.find((item) => item.channel === channel);
+      const ranking = rankingByChannel.get(channel);
+      return [
+        figureRgbChannelShort(channel),
+        formatFigureScientificNumber(fit?.slope ?? Number.NaN),
+        formatFigureScientificNumber(fit?.intercept ?? Number.NaN),
+        formatFigureScientificNumber(fit?.r2 ?? Number.NaN),
+        formatFigureScientificNumber(ranking?.lod ?? Number.NaN),
+        formatFigureScientificNumber(ranking?.loq ?? Number.NaN),
+      ];
+    });
+    pushTable(formatFigureRgbTable(
+      ['Channel', 'Slope', 'Intercept', 'R2', `LOD (${unitLabel})`, `LOQ (${unitLabel})`],
+      calibrationRows,
+    ));
+
+    pushText('');
+    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureScientificNumber(dilutionFactor)}`, true);
+    const stdFitRows = PYTHON_RESULTS_CHANNELS.map((channel) => {
+      const fit = fits.find((item) => item.channel === channel);
+      return [
+        figureRgbChannelShort(channel),
+        formatFigureScientificNumber(fit?.slope ?? Number.NaN),
+        formatFigureScientificNumber(fit?.intercept ?? Number.NaN),
+        formatFigureScientificNumber(fit?.r2 ?? Number.NaN),
+      ];
+    });
+    pushTable(formatFigureRgbTable(
+      ['Channel', 'Slope', 'Intercept', 'R2'],
+      stdFitRows,
+    ));
+  }
+
+  return lines;
+}
+
 function drawPythonStyleChannelPanel(
   ctx: CanvasRenderingContext2D,
   bounds: { x: number; y: number; width: number; height: number },
@@ -4498,9 +4718,12 @@ function drawPythonStyleChannelPanel(
   unitLabel: string,
   expectedRefs: ExpectedRef[],
   monochrome = false,
+  pythonFigureStyle = false,
 ): void {
   const color = monochrome ? '#111111' : FIT_CHANNEL_COLORS[channel];
-  const margin = { left: 76, right: 20, top: 26, bottom: 56 };
+  const margin = pythonFigureStyle
+    ? { left: 84, right: 24, top: 62, bottom: 78 }
+    : { left: 76, right: 20, top: 26, bottom: 56 };
   const plot = {
     x: bounds.x + margin.left,
     y: bounds.y + margin.top,
@@ -4568,14 +4791,18 @@ function drawPythonStyleChannelPanel(
   const yTicks = niceTicks(yRange.min, yRange.max, 5);
 
   ctx.save();
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
-  ctx.strokeStyle = '#d6dedb';
-  ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+  if (!pythonFigureStyle) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
+    ctx.strokeStyle = '#d6dedb';
+    ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+  }
 
   ctx.fillStyle = '#1d2628';
-  ctx.font = '700 18px Inter, Arial, sans-serif';
-  ctx.fillText(channelDisplayName(channel), bounds.x + 12, bounds.y + 20);
+  ctx.font = pythonFigureStyle
+    ? '700 24px "Courier New", Consolas, monospace'
+    : '700 18px Inter, Arial, sans-serif';
+  ctx.fillText(channelDisplayName(channel), bounds.x + 12, pythonFigureStyle ? bounds.y + 34 : bounds.y + 20);
   if (rankInfo) {
     const rankText = [
       `Score ${formatFitCell(rankInfo.score)}`,
@@ -4583,48 +4810,82 @@ function drawPythonStyleChannelPanel(
       `R2std ${formatFitCell(rankInfo.r2Std)}`,
       `LOQ ${formatFitCell(rankInfo.loq)}`,
     ].join('  ');
-    ctx.font = '11px Inter, Arial, sans-serif';
+    ctx.font = pythonFigureStyle
+      ? '600 13px "Courier New", Consolas, monospace'
+      : '11px Inter, Arial, sans-serif';
     ctx.fillStyle = '#465255';
-    ctx.fillText(rankText, plot.x + Math.max(0, plot.width - ctx.measureText(rankText).width - 4), bounds.y + 20);
+    ctx.fillText(rankText, plot.x + Math.max(0, plot.width - ctx.measureText(rankText).width - 4), pythonFigureStyle ? bounds.y + 34 : bounds.y + 20);
   }
 
-  ctx.strokeStyle = '#dce4e1';
-  ctx.lineWidth = 1;
-  ctx.font = '12px Inter, Arial, sans-serif';
-  ctx.fillStyle = '#465255';
+  if (!pythonFigureStyle) {
+    ctx.strokeStyle = '#dce4e1';
+    ctx.lineWidth = 1;
+    ctx.font = '12px Inter, Arial, sans-serif';
+    ctx.fillStyle = '#465255';
+    xTicks.forEach((tick) => {
+      const tx = xToPx(tick);
+      ctx.beginPath();
+      ctx.moveTo(tx, plot.y);
+      ctx.lineTo(tx, plot.y + plot.height);
+      ctx.stroke();
+    });
+    yTicks.forEach((tick) => {
+      const ty = yToPx(tick);
+      ctx.beginPath();
+      ctx.moveTo(plot.x, ty);
+      ctx.lineTo(plot.x + plot.width, ty);
+      ctx.stroke();
+    });
+
+    ctx.strokeStyle = '#2b3437';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(plot.x, plot.y, plot.width, plot.height);
+  } else {
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(plot.x, plot.y);
+    ctx.lineTo(plot.x, plot.y + plot.height);
+    ctx.lineTo(plot.x + plot.width, plot.y + plot.height);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = pythonFigureStyle ? '#000000' : '#465255';
+  ctx.font = pythonFigureStyle
+    ? '600 13px "Courier New", Consolas, monospace'
+    : '11px Inter, Arial, sans-serif';
   xTicks.forEach((tick) => {
     const tx = xToPx(tick);
-    ctx.beginPath();
-    ctx.moveTo(tx, plot.y);
-    ctx.lineTo(tx, plot.y + plot.height);
-    ctx.stroke();
+    if (pythonFigureStyle) {
+      ctx.beginPath();
+      ctx.moveTo(tx, plot.y + plot.height);
+      ctx.lineTo(tx, plot.y + plot.height + 8);
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+    }
+    ctx.fillText(formatFitCell(tick), tx - 14, plot.y + plot.height + (pythonFigureStyle ? 24 : 18));
   });
   yTicks.forEach((tick) => {
     const ty = yToPx(tick);
-    ctx.beginPath();
-    ctx.moveTo(plot.x, ty);
-    ctx.lineTo(plot.x + plot.width, ty);
-    ctx.stroke();
+    if (pythonFigureStyle) {
+      ctx.beginPath();
+      ctx.moveTo(plot.x - 8, ty);
+      ctx.lineTo(plot.x, ty);
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+    }
+    ctx.fillText(formatPAbsCell(tick), bounds.x + 10, ty + 5);
   });
 
-  ctx.strokeStyle = '#2b3437';
-  ctx.lineWidth = 1.5;
-  ctx.strokeRect(plot.x, plot.y, plot.width, plot.height);
-
-  ctx.fillStyle = '#465255';
-  ctx.font = '11px Inter, Arial, sans-serif';
-  xTicks.forEach((tick) => {
-    ctx.fillText(formatFitCell(tick), xToPx(tick) - 14, plot.y + plot.height + 18);
-  });
-  yTicks.forEach((tick) => {
-    ctx.fillText(formatPAbsCell(tick), bounds.x + 8, yToPx(tick) + 4);
-  });
-
-  ctx.fillStyle = '#263238';
-  ctx.font = '700 12px Inter, Arial, sans-serif';
-  ctx.fillText(`Added concentration (${unitLabel})`, plot.x + plot.width / 2 - 86, bounds.y + bounds.height - 14);
+  ctx.fillStyle = pythonFigureStyle ? '#000000' : '#263238';
+  ctx.font = pythonFigureStyle
+    ? '700 16px "Courier New", Consolas, monospace'
+    : '700 12px Inter, Arial, sans-serif';
+  ctx.fillText(`Added concentration (${unitLabel})`, plot.x + plot.width / 2 - (pythonFigureStyle ? 150 : 86), bounds.y + bounds.height - 14);
   ctx.save();
-  ctx.translate(bounds.x + 18, plot.y + plot.height / 2 + 42);
+  ctx.translate(bounds.x + (pythonFigureStyle ? 20 : 18), plot.y + plot.height / 2 + (pythonFigureStyle ? 62 : 42));
   ctx.rotate(-Math.PI / 2);
   ctx.fillText(channelDisplayName(channel), 0, 0);
   ctx.restore();
@@ -4633,7 +4894,7 @@ function drawPythonStyleChannelPanel(
     ctx.save();
     ctx.setLineDash([8, 6]);
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = pythonFigureStyle ? 2.6 : 2;
     ctx.beginPath();
     ctx.moveTo(xToPx(xRange.min), yToPx(calibrationFit.slope * xRange.min + calibrationFit.intercept));
     ctx.lineTo(xToPx(xRange.max), yToPx(calibrationFit.slope * xRange.max + calibrationFit.intercept));
@@ -4649,11 +4910,11 @@ function drawPythonStyleChannelPanel(
     }
 
     ctx.beginPath();
-    ctx.arc(px, py, 5, 0, Math.PI * 2);
+    ctx.arc(px, py, pythonFigureStyle ? 6 : 5, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';
     ctx.fill();
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = pythonFigureStyle ? 2.4 : 2;
     ctx.stroke();
   });
 
@@ -4661,7 +4922,7 @@ function drawPythonStyleChannelPanel(
 
     if (Number.isFinite(fit.slope) && Number.isFinite(fit.intercept)) {
       ctx.strokeStyle = color;
-      ctx.lineWidth = 2.2;
+      ctx.lineWidth = pythonFigureStyle ? 2.8 : 2.2;
       ctx.beginPath();
       ctx.moveTo(xToPx(xRange.min), yToPx(fit.slope * xRange.min + fit.intercept));
       ctx.lineTo(xToPx(xRange.max), yToPx(fit.slope * xRange.max + fit.intercept));
@@ -4680,7 +4941,8 @@ function drawPythonStyleChannelPanel(
       }
 
       ctx.fillStyle = color;
-      ctx.fillRect(px - 4.5, py - 4.5, 9, 9);
+      const markerSize = pythonFigureStyle ? 10 : 9;
+      ctx.fillRect(px - markerSize / 2, py - markerSize / 2, markerSize, markerSize);
     });
 
     expectedRefs.forEach((ref) => {
@@ -4700,7 +4962,7 @@ function drawPythonStyleChannelPanel(
         : Number.NaN;
       ctx.save();
       ctx.strokeStyle = '#8a3ffc';
-      ctx.lineWidth = 1.4;
+      ctx.lineWidth = pythonFigureStyle ? 1.9 : 1.4;
       if (Number.isFinite(xSd) && xSd > 0) {
         drawHorizontalErrorBar(ctx, xToPx(x - xSd), xToPx(x + xSd), py, 10, '#8a3ffc');
       }
@@ -4715,13 +4977,28 @@ function drawPythonStyleChannelPanel(
     });
   });
 
-  ctx.fillStyle = '#344044';
-  ctx.font = '11px Inter, Arial, sans-serif';
-  ctx.fillText('open circles: calibration, dashed fit', plot.x + 4, bounds.y + bounds.height - 36);
-  ctx.fillText('filled squares: standard addition, solid fit', plot.x + 4, bounds.y + bounds.height - 22);
-  if (expectedRefs.length > 0) {
-    ctx.fillStyle = '#6d36c9';
-    ctx.fillText('purple open diamonds: reference at -ref/DF with SD', plot.x + 248, bounds.y + bounds.height - 22);
+  if (!pythonFigureStyle) {
+    ctx.fillStyle = '#344044';
+    ctx.font = '11px Inter, Arial, sans-serif';
+    ctx.fillText('open circles: calibration, dashed fit', plot.x + 4, bounds.y + bounds.height - 36);
+    ctx.fillText('filled squares: standard addition, solid fit', plot.x + 4, bounds.y + bounds.height - 22);
+    if (expectedRefs.length > 0) {
+      ctx.fillStyle = '#6d36c9';
+      ctx.fillText('purple open diamonds: reference at -ref/DF with SD', plot.x + 248, bounds.y + bounds.height - 22);
+    }
+  } else {
+    const legendX = plot.x + 10;
+    let legendY = plot.y + 18;
+    ctx.fillStyle = '#000000';
+    ctx.font = '600 14px "Courier New", Consolas, monospace';
+    ctx.fillText('o calibration (dashed)', legendX, legendY);
+    legendY += 18;
+    ctx.fillText('s standard addition (solid)', legendX, legendY);
+    if (expectedRefs.length > 0) {
+      legendY += 18;
+      ctx.fillStyle = '#6d36c9';
+      ctx.fillText('d reference +/- SD', legendX, legendY);
+    }
   }
 
   ctx.restore();
@@ -4797,37 +5074,31 @@ function buildPythonStyleFigureRgbCanvas({
     + `R2cal=${formatFitCell(row.r2Cal)} R2std=${formatFitCell(row.r2Std)} `
     + `slope=${formatFitCell(row.slopeAgreement)} LOQ=${formatFitCell(row.loq)}`
   )).join('\n');
-  const summaryText = [
-    `Mode: ${formatRoiMode(roiMode)}`,
-    `Background: ${formatBackgroundModel(backgroundModel)}`,
-    `Measurements: ${measurements.length} wells`,
-    `Floor geometry: ${floorGeometryAvailable ? 'available' : 'missing'}`,
-    `Selected display channel: ${channelDisplayName(bestChannel)}`,
-    `Ranking formula: ${bestRank?.scoreFormula ?? 'unavailable'}`,
-    `Sigma source: ${bestRank?.sigmaSource ?? 'unavailable'}`,
-    '',
-    'Calibration',
-    calSummary,
-    '',
-    'Standard addition',
-    stdSummary,
-    'C0 = DF x q/m from current webapp fit results.',
-    '',
-    'Reference values',
-    refSummary,
-    '',
-    'Method ranking',
-    rankingSummary || 'No ranked RGB method.',
-    '',
-    'Notes',
-    'PAbs = log10(I_BG / I_well).',
-    'PNG channel ranking uses Python GlobalScore when LOQ is available.',
-    'Workbook tables include available Python-style report and diagnostic fields; unavailable fields are left blank.',
-  ].join('\n');
+  const scientificLines = buildFigureRgbScientificLines({
+    unitLabel,
+    measurements,
+    plateMap,
+    calibrationFits,
+    standardAdditionFits,
+    expectedRefs,
+    rankingRows,
+    roiMode,
+    backgroundModel,
+    floorGeometryAvailable,
+    bestChannel,
+  });
 
   ctx.fillStyle = '#253033';
-  ctx.font = '23px Consolas, "Courier New", monospace';
-  drawWrappedText(ctx, summaryText, 110, 812, 940, 34, height - 95);
+  drawPreformattedLines(
+    ctx,
+    scientificLines,
+    110,
+    812,
+    24,
+    height - 95,
+    '18px Consolas, "Courier New", monospace',
+    '700 18px Consolas, "Courier New", monospace',
+  );
 
   const panelX = 1190;
   const panelWidth = 1160;
@@ -4844,6 +5115,8 @@ function buildPythonStyleFigureRgbCanvas({
       rankingRows.find((row) => row.channel === channel),
       unitLabel,
       expectedRefs,
+      false,
+      true,
     );
   });
 
