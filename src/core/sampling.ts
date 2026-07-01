@@ -6,7 +6,12 @@ const ROBUST_TRIM_BRIGHT_Q = 88;
 const ROBUST_EROSION_PX = 4;
 const MIN_ROBUST_CORE_PIXELS = 16;
 const MIN_ROBUST_USED_PIXELS = 20;
+const MIN_ROBUST_RESET_TO_CORE_PIXELS = 12;
 const MIN_ROBUST_USED_FRACTION = 0.35;
+const ROBUST_FUZZY_TOL_GRAY = 10;
+const ROBUST_FUZZY_TOL_SAT = 20;
+const ROBUST_FUZZY_MIN_COMPONENT_PIXELS = 20;
+const ROBUST_FUZZY_MIN_CORE_PIXELS = 30;
 const LOW_USED_FRACTION_WARNING_THRESHOLD = 0.55;
 const HIGHLIGHT_GRAY_THRESHOLD = 245;
 const HIGHLIGHT_FRACTION_WARNING_THRESHOLD = 0.05;
@@ -41,6 +46,7 @@ interface SampledPixel extends Rgb {
   x: number;
   y: number;
   gray: number;
+  sat: number;
 }
 
 function median(values: number[]): number {
@@ -80,17 +86,31 @@ function grayscale(rgb: Rgb): number {
   return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
 }
 
+function hsvSaturation(rgb: Rgb): number {
+  const maxChannel = Math.max(rgb.r, rgb.g, rgb.b);
+  const minChannel = Math.min(rgb.r, rgb.g, rgb.b);
+
+  if (maxChannel <= 0) {
+    return 0;
+  }
+
+  return ((maxChannel - minChannel) / maxChannel) * 255;
+}
+
 function pixelKey(x: number, y: number, width: number): number {
   return y * width + x;
 }
 
-function erosionOffsets(radius: number): { dx: number; dy: number }[] {
+function ellipseOffsets(radiusX: number, radiusY = radiusX): { dx: number; dy: number }[] {
   const offsets: { dx: number; dy: number }[] = [];
-  const radiusSquared = radius * radius;
+  const rx = Math.max(1, Math.floor(radiusX));
+  const ry = Math.max(1, Math.floor(radiusY));
 
-  for (let dy = -radius; dy <= radius; dy += 1) {
-    for (let dx = -radius; dx <= radius; dx += 1) {
-      if (dx * dx + dy * dy <= radiusSquared) {
+  for (let dy = -ry; dy <= ry; dy += 1) {
+    for (let dx = -rx; dx <= rx; dx += 1) {
+      const ellipseValue = ((dx * dx) / (rx * rx)) + ((dy * dy) / (ry * ry));
+
+      if (ellipseValue <= 1 + 1e-9) {
         offsets.push({ dx, dy });
       }
     }
@@ -99,7 +119,18 @@ function erosionOffsets(radius: number): { dx: number; dy: number }[] {
   return offsets;
 }
 
-const ROBUST_EROSION_OFFSETS = erosionOffsets(ROBUST_EROSION_PX);
+const ROBUST_EROSION_OFFSETS = ellipseOffsets(ROBUST_EROSION_PX);
+const MORPH_ELLIPSE_3X3_OFFSETS = ellipseOffsets(1);
+const CONNECTIVITY_8_OFFSETS = [
+  { dx: -1, dy: -1 },
+  { dx: 0, dy: -1 },
+  { dx: 1, dy: -1 },
+  { dx: -1, dy: 0 },
+  { dx: 1, dy: 0 },
+  { dx: -1, dy: 1 },
+  { dx: 0, dy: 1 },
+  { dx: 1, dy: 1 },
+];
 
 function medianRgbFromPixels(pixels: SampledPixel[]): Rgb {
   return {
@@ -109,12 +140,230 @@ function medianRgbFromPixels(pixels: SampledPixel[]): Rgb {
   };
 }
 
-function erodeRoiPixels(pixels: SampledPixel[], imageWidth: number): SampledPixel[] {
-  const pixelKeys = new Set(pixels.map((pixel) => pixelKey(pixel.x, pixel.y, imageWidth)));
+function keyToX(key: number, imageWidth: number): number {
+  return key % imageWidth;
+}
 
-  return pixels.filter((pixel) => ROBUST_EROSION_OFFSETS.every(({ dx, dy }) => (
-    pixelKeys.has(pixelKey(pixel.x + dx, pixel.y + dy, imageWidth))
-  )));
+function keyToY(key: number, imageWidth: number): number {
+  return Math.floor(key / imageWidth);
+}
+
+function erodeMask(maskKeys: Set<number>, offsets: { dx: number; dy: number }[], imageWidth: number, imageHeight: number): Set<number> {
+  const output = new Set<number>();
+
+  for (const key of maskKeys) {
+    const x = keyToX(key, imageWidth);
+    const y = keyToY(key, imageWidth);
+    let keep = true;
+
+    for (const { dx, dy } of offsets) {
+      const nx = x + dx;
+      const ny = y + dy;
+
+      if (nx < 0 || nx >= imageWidth || ny < 0 || ny >= imageHeight || !maskKeys.has(pixelKey(nx, ny, imageWidth))) {
+        keep = false;
+        break;
+      }
+    }
+
+    if (keep) {
+      output.add(key);
+    }
+  }
+
+  return output;
+}
+
+function dilateMask(maskKeys: Set<number>, offsets: { dx: number; dy: number }[], imageWidth: number, imageHeight: number): Set<number> {
+  const output = new Set<number>();
+
+  for (const key of maskKeys) {
+    const x = keyToX(key, imageWidth);
+    const y = keyToY(key, imageWidth);
+
+    for (const { dx, dy } of offsets) {
+      const nx = x + dx;
+      const ny = y + dy;
+
+      if (nx < 0 || nx >= imageWidth || ny < 0 || ny >= imageHeight) {
+        continue;
+      }
+
+      output.add(pixelKey(nx, ny, imageWidth));
+    }
+  }
+
+  return output;
+}
+
+function morphologicalOpenClose(maskKeys: Set<number>, imageWidth: number, imageHeight: number): Set<number> {
+  const opened = dilateMask(
+    erodeMask(maskKeys, MORPH_ELLIPSE_3X3_OFFSETS, imageWidth, imageHeight),
+    MORPH_ELLIPSE_3X3_OFFSETS,
+    imageWidth,
+    imageHeight,
+  );
+  return erodeMask(
+    dilateMask(opened, MORPH_ELLIPSE_3X3_OFFSETS, imageWidth, imageHeight),
+    MORPH_ELLIPSE_3X3_OFFSETS,
+    imageWidth,
+    imageHeight,
+  );
+}
+
+function connectedComponents8(maskKeys: Set<number>, imageWidth: number, imageHeight: number): number[][] {
+  const unvisited = new Set(maskKeys);
+  const components: number[][] = [];
+
+  while (unvisited.size > 0) {
+    const iter = unvisited.values().next();
+    const start = iter.value as number;
+    const queue: number[] = [start];
+    const component: number[] = [];
+    unvisited.delete(start);
+
+    while (queue.length > 0) {
+      const current = queue.pop() as number;
+      component.push(current);
+      const x = keyToX(current, imageWidth);
+      const y = keyToY(current, imageWidth);
+
+      for (const { dx, dy } of CONNECTIVITY_8_OFFSETS) {
+        const nx = x + dx;
+        const ny = y + dy;
+
+        if (nx < 0 || nx >= imageWidth || ny < 0 || ny >= imageHeight) {
+          continue;
+        }
+
+        const neighbor = pixelKey(nx, ny, imageWidth);
+
+        if (!unvisited.has(neighbor)) {
+          continue;
+        }
+
+        unvisited.delete(neighbor);
+        queue.push(neighbor);
+      }
+    }
+
+    components.push(component);
+  }
+
+  return components;
+}
+
+function centroidFromPixels(pixels: SampledPixel[]): { x: number; y: number } | null {
+  if (pixels.length === 0) {
+    return null;
+  }
+
+  const sum = pixels.reduce((acc, pixel) => ({
+    x: acc.x + pixel.x,
+    y: acc.y + pixel.y,
+  }), { x: 0, y: 0 });
+
+  return {
+    x: sum.x / pixels.length,
+    y: sum.y / pixels.length,
+  };
+}
+
+function robustInnerPixels(pixels: SampledPixel[], imageWidth: number, imageHeight: number): SampledPixel[] {
+  if (pixels.length === 0) {
+    return [];
+  }
+
+  const fullMaskKeys = new Set(pixels.map((pixel) => pixelKey(pixel.x, pixel.y, imageWidth)));
+  const eroded = erodeMask(fullMaskKeys, ROBUST_EROSION_OFFSETS, imageWidth, imageHeight);
+
+  if (eroded.size < MIN_ROBUST_CORE_PIXELS) {
+    return pixels;
+  }
+
+  return pixels.filter((pixel) => eroded.has(pixelKey(pixel.x, pixel.y, imageWidth)));
+}
+
+function fuzzyLiquidMaskWithinRoi(
+  roiPixels: SampledPixel[],
+  imageWidth: number,
+  imageHeight: number,
+  center: { x: number; y: number } | null,
+): SampledPixel[] {
+  if (roiPixels.length === 0) {
+    return [];
+  }
+
+  const seedGray = median(roiPixels.map((pixel) => pixel.gray));
+  const seedSat = median(roiPixels.map((pixel) => pixel.sat));
+  const roiByKey = new Map<number, SampledPixel>();
+
+  for (const pixel of roiPixels) {
+    roiByKey.set(pixelKey(pixel.x, pixel.y, imageWidth), pixel);
+  }
+
+  const candidateKeys = new Set<number>();
+
+  for (const pixel of roiPixels) {
+    if (Math.abs(pixel.gray - seedGray) <= ROBUST_FUZZY_TOL_GRAY && Math.abs(pixel.sat - seedSat) <= ROBUST_FUZZY_TOL_SAT) {
+      candidateKeys.add(pixelKey(pixel.x, pixel.y, imageWidth));
+    }
+  }
+
+  const filteredCandidates = morphologicalOpenClose(candidateKeys, imageWidth, imageHeight);
+  const constrainedCandidates = new Set<number>(
+    Array.from(filteredCandidates).filter((key) => roiByKey.has(key)),
+  );
+  const components = connectedComponents8(constrainedCandidates, imageWidth, imageHeight);
+
+  if (components.length === 0) {
+    return roiPixels;
+  }
+
+  const roiCentroid = centroidFromPixels(roiPixels);
+  const centerX = center ? Math.round(Math.min(imageWidth - 1, Math.max(0, center.x))) : (roiCentroid ? Math.round(roiCentroid.x) : 0);
+  const centerY = center ? Math.round(Math.min(imageHeight - 1, Math.max(0, center.y))) : (roiCentroid ? Math.round(roiCentroid.y) : 0);
+  const seedKey = pixelKey(centerX, centerY, imageWidth);
+  let selectedComponent = components.find((component) => component.includes(seedKey));
+
+  if (!selectedComponent && roiCentroid) {
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    for (const component of components) {
+      if (component.length < ROBUST_FUZZY_MIN_COMPONENT_PIXELS) {
+        continue;
+      }
+
+      let sumX = 0;
+      let sumY = 0;
+      for (const key of component) {
+        sumX += keyToX(key, imageWidth);
+        sumY += keyToY(key, imageWidth);
+      }
+
+      const centroidX = sumX / component.length;
+      const centroidY = sumY / component.length;
+      const distance = ((centroidX - roiCentroid.x) ** 2) + ((centroidY - roiCentroid.y) ** 2);
+
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        selectedComponent = component;
+      }
+    }
+  }
+
+  if (!selectedComponent) {
+    return roiPixels;
+  }
+
+  const minimumSelected = Math.max(ROBUST_FUZZY_MIN_COMPONENT_PIXELS, Math.floor(0.2 * roiPixels.length));
+  if (selectedComponent.length < minimumSelected) {
+    return roiPixels;
+  }
+
+  return selectedComponent
+    .map((key) => roiByKey.get(key))
+    .filter((pixel): pixel is SampledPixel => pixel !== undefined);
 }
 
 function simpleRoiStats(
@@ -149,6 +398,7 @@ function simpleRoiStats(
 function robustTrimmedRoiStats(
   pixels: SampledPixel[],
   imageWidth: number,
+  imageHeight: number,
   emptyWarning: string,
   includeDiagnosticPixels = false,
 ): RgbSampleStats {
@@ -162,12 +412,14 @@ function robustTrimmedRoiStats(
   }
 
   const statisticsWarnings: string[] = [];
-  let corePixels = erodeRoiPixels(pixels, imageWidth);
-  const minimumCorePixels = Math.max(MIN_ROBUST_CORE_PIXELS, Math.floor(MIN_ROBUST_USED_FRACTION * pixels.length));
+  const innerPixels = robustInnerPixels(pixels, imageWidth, imageHeight);
+  let corePixels = innerPixels.length > 0 ? innerPixels : pixels;
 
-  if (corePixels.length < minimumCorePixels) {
-    statisticsWarnings.push('Robust ROI erosion left too few pixels; using full ROI as core.');
-    corePixels = pixels;
+  const fuzzyCenter = centroidFromPixels(innerPixels);
+  const fuzzyPixels = fuzzyLiquidMaskWithinRoi(innerPixels, imageWidth, imageHeight, fuzzyCenter);
+
+  if (fuzzyPixels.length > ROBUST_FUZZY_MIN_CORE_PIXELS) {
+    corePixels = fuzzyPixels;
   }
 
   const highlightFraction = pixels.filter((pixel) => pixel.gray >= HIGHLIGHT_GRAY_THRESHOLD).length / pixels.length;
@@ -177,18 +429,19 @@ function robustTrimmedRoiStats(
   }
 
   const grayValues = corePixels.map((pixel) => pixel.gray);
-  const darkThreshold = percentile(grayValues, ROBUST_TRIM_DARK_Q);
-  const brightThreshold = percentile(grayValues, ROBUST_TRIM_BRIGHT_Q);
+  const brightThreshold = grayValues.length > 0 ? percentile(grayValues, ROBUST_TRIM_BRIGHT_Q) : 255;
+  const darkThreshold = grayValues.length > 0 ? percentile(grayValues, ROBUST_TRIM_DARK_Q) : 0;
+  void darkThreshold;
   const minimumUsedPixels = Math.max(MIN_ROBUST_USED_PIXELS, Math.floor(MIN_ROBUST_USED_FRACTION * corePixels.length));
-  let usedPixels = corePixels.filter((pixel) => pixel.gray >= darkThreshold && pixel.gray <= brightThreshold);
+  let usedPixels = [...corePixels];
 
   if (usedPixels.length < minimumUsedPixels) {
-    statisticsWarnings.push('Robust ROI trimming left too few pixels; relaxing dark trim.');
+    statisticsWarnings.push('Python-like robust fallback removed bright-tail pixels due to low usable count.');
     usedPixels = corePixels.filter((pixel) => pixel.gray <= brightThreshold);
   }
 
-  if (usedPixels.length < minimumUsedPixels) {
-    statisticsWarnings.push('Robust ROI trimming left too few pixels; using core ROI.');
+  if (usedPixels.length < MIN_ROBUST_RESET_TO_CORE_PIXELS) {
+    statisticsWarnings.push('Python-like robust fallback restored full core after low usable count.');
     usedPixels = corePixels;
   }
 
@@ -209,7 +462,6 @@ function robustTrimmedRoiStats(
   const coreDiagnosticPixels = includeDiagnosticPixels ? corePixels.map(({ x, y }) => ({ x, y })) : undefined;
   const usedDiagnosticPixels = includeDiagnosticPixels ? usedPixels.map(({ x, y }) => ({ x, y })) : undefined;
 
-  // TODO: add Python-like contiguous/fuzzy liquid-region masking after this trimmed path is validated.
   return {
     ...rgb,
     pixels: pixels.length,
@@ -233,11 +485,12 @@ function robustTrimmedRoiStats(
 function roiStatsFromPixels(
   pixels: SampledPixel[],
   imageWidth: number,
+  imageHeight: number,
   emptyWarning: string,
   options: RoiSampleOptions = {},
 ): RgbSampleStats {
   if (options.pixelStatisticsMode === 'robust-trimmed-v1') {
-    return robustTrimmedRoiStats(pixels, imageWidth, emptyWarning, Boolean(options.includeDiagnosticPixels));
+    return robustTrimmedRoiStats(pixels, imageWidth, imageHeight, emptyWarning, Boolean(options.includeDiagnosticPixels));
   }
 
   return simpleRoiStats(pixels, emptyWarning, Boolean(options.includeDiagnosticPixels));
@@ -346,11 +599,12 @@ export function sampleCircularRoi(
         pixels.push({
           ...pixel,
           gray: grayscale(pixel),
+          sat: hsvSaturation(pixel),
         });
       }
     }
 
-    return roiStatsFromPixels(pixels, width, 'ROI contains no sampled pixels', options);
+    return roiStatsFromPixels(pixels, width, height, 'ROI contains no sampled pixels', options);
   }
 
   const stats = sampleAnnulus(imageData, cx, cy, 0, radius);
@@ -447,11 +701,12 @@ export function sampleCircleIntersectionRoi(
       pixels.push({
         ...pixel,
         gray: grayscale(pixel),
+        sat: hsvSaturation(pixel),
       });
     }
   }
 
-  return roiStatsFromPixels(pixels, width, 'Intersection ROI contains no sampled pixels', options);
+  return roiStatsFromPixels(pixels, width, height, 'Intersection ROI contains no sampled pixels', options);
 }
 
 export function estimateLocalBackground(
