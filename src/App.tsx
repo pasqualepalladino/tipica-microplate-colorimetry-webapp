@@ -4470,7 +4470,6 @@ function buildPythonStylePlateRoiOverlayCanvas(
 
   wells.forEach((well) => {
     const measurement = measurementByWell.get(well.wellId);
-    const mode = measurement?.roiMode ?? 'simple';
     const mouthRadius = measurement?.mouthRadiusUsed && measurement.mouthRadiusUsed > 0
       ? measurement.mouthRadiusUsed
       : estimateRoiRadius(wells, well.row, well.col, radiusFactor);
@@ -4493,13 +4492,6 @@ function buildPythonStylePlateRoiOverlayCanvas(
       ctx.arc(floorCircle.x, floorCircle.y, floorRadius, 0, Math.PI * 2);
       ctx.strokeStyle = 'rgba(0, 210, 230, 0.95)';
       ctx.stroke();
-
-      if (mode === 'floor-aware' || mode === 'mouth-floor-intersection') {
-        ctx.beginPath();
-        ctx.arc(floorCircle.x, floorCircle.y, floorRadius, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255, 230, 40, 0.10)';
-        ctx.fill();
-      }
     }
   });
 
