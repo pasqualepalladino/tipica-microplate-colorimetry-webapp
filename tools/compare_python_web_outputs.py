@@ -575,6 +575,13 @@ def as_float(value: str) -> float:
         return math.nan
 
 
+def is_finite_number(value: object) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
 def parse_well_position(well: str) -> tuple[int, int] | None:
     match = re.fullmatch(r"\s*([A-Ha-h])(\d{1,2})\s*", str(well))
     if not match:
@@ -3218,8 +3225,8 @@ def append_meanw_meanbg_bridge_audit(
             "BG sample centroid mismatch": corr_centroid,
             "BG model interpolation mismatch": corr_model,
         }
-        finite_corr = {name: value for name, value in corr_candidates.items() if math.isfinite(value)}
-        dominant_tracking = max(finite_corr, key=lambda name: abs(finite_corr[name])) if finite_corr else "insufficient paired finite data"
+        finite_corr = {name: float(value) for name, value in corr_candidates.items() if is_finite_number(value)}
+        dominant_tracking = max(finite_corr, key=lambda name: abs(finite_corr[name])) if finite_corr else "unavailable"
         report.append(
             f"- MeanBG_{label} tracking correlations (abs deltas): "
             f"sample_median={stats_cell(corr_sample)}, centroid={stats_cell(corr_centroid)}, model={stats_cell(corr_model)}; "
