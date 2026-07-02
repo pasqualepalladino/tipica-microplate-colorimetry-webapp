@@ -3,13 +3,29 @@ import type { Rgb, WellMeasurement } from '../types/results';
 
 const CHANNELS: FitChannel[] = ['R', 'G', 'B'];
 const EPSILON = 1e-12;
+const COVARIANCE_EPSILON = 1e-15;
+const MIN_WEIGHT = 1e-6;
+const MAX_WEIGHT = 1.0;
+const ROBUST_FIT_METHOD = 'robust_irls_no_sd_weighting';
+
+export type CovarianceMatrix2x2 = [[number, number], [number, number]];
 
 interface LinearRegressionFit {
   slope: number;
   intercept: number;
   r2: number;
+  rmse: number;
   n: number;
   warnings: string[];
+}
+
+export interface RobustLineFit extends LinearRegressionFit {
+  covariance: CovarianceMatrix2x2;
+  x: number[];
+  y: number[];
+  weights: number[];
+  yhat: number[];
+  fitMethod: typeof ROBUST_FIT_METHOD;
 }
 
 interface StandardAdditionPoint {
@@ -40,13 +56,33 @@ function fitSignalSourceLabel(channel: FitChannel, correctedChannels: FitChannel
   return `PAbs_${channel}${correctedChannels.includes(channel) ? '_corrected' : ''}`;
 }
 
+function nanCovariance(): CovarianceMatrix2x2 {
+  return [
+    [Number.NaN, Number.NaN],
+    [Number.NaN, Number.NaN],
+  ];
+}
+
 function invalidRegression(n: number, warning: string): LinearRegressionFit {
   return {
     slope: Number.NaN,
     intercept: Number.NaN,
     r2: Number.NaN,
+    rmse: Number.NaN,
     n,
     warnings: [warning],
+  };
+}
+
+function invalidRobustFit(n: number, warning: string): RobustLineFit {
+  return {
+    ...invalidRegression(n, warning),
+    covariance: nanCovariance(),
+    x: [],
+    y: [],
+    weights: [],
+    yhat: [],
+    fitMethod: ROBUST_FIT_METHOD,
   };
 }
 
@@ -71,6 +107,232 @@ function median(values: number[]): number {
   }
 
   return (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function finiteSortedPairs(x: number[], y: number[]): { x: number; y: number }[] {
+  return x
+    .map((xValue, index) => ({ x: xValue, y: y[index] }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+    .sort((a, b) => (a.x - b.x) || (a.y - b.y));
+}
+
+function solveWeightedLeastSquares(
+  pairs: { x: number; y: number }[],
+  weights: number[],
+  forceZero: boolean,
+): { slope: number; intercept: number } {
+  let sw = 0;
+  let sx = 0;
+  let sy = 0;
+  let sxx = 0;
+  let sxy = 0;
+
+  pairs.forEach((point, index) => {
+    const weight = weights[index];
+    sw += weight;
+    sx += weight * point.x;
+    sy += weight * point.y;
+    sxx += weight * point.x * point.x;
+    sxy += weight * point.x * point.y;
+  });
+
+  if (forceZero) {
+    return {
+      slope: Math.abs(sxx) > EPSILON ? sxy / sxx : Number.NaN,
+      intercept: 0,
+    };
+  }
+
+  const determinant = sxx * sw - sx * sx;
+
+  if (Math.abs(determinant) <= COVARIANCE_EPSILON) {
+    return { slope: Number.NaN, intercept: Number.NaN };
+  }
+
+  return {
+    slope: (sxy * sw - sy * sx) / determinant,
+    intercept: (sxx * sy - sx * sxy) / determinant,
+  };
+}
+
+function residualsForFit(pairs: { x: number; y: number }[], slope: number, intercept: number): number[] {
+  return pairs.map((point) => point.y - (slope * point.x + intercept));
+}
+
+function weightedResidualSse(residuals: number[], weights: number[]): number {
+  return residuals.reduce((sum, residual, index) => sum + weights[index] * residual * residual, 0);
+}
+
+function clipWeight(value: number): number {
+  return Math.min(MAX_WEIGHT, Math.max(MIN_WEIGHT, value));
+}
+
+function weightsAllClose(nextWeights: number[], currentWeights: number[]): boolean {
+  if (nextWeights.length !== currentWeights.length) {
+    return false;
+  }
+
+  return nextWeights.every((weight, index) => (
+    Math.abs(weight - currentWeights[index]) <= 1e-7 + 1e-5 * Math.abs(currentWeights[index])
+  ));
+}
+
+function covarianceFromFit(
+  pairs: { x: number; y: number }[],
+  residuals: number[],
+  weights: number[],
+  forceZero: boolean,
+): CovarianceMatrix2x2 {
+  const n = pairs.length;
+
+  if (forceZero) {
+    const dof = Math.max(1, n - 1);
+    const sigma2 = weightedResidualSse(residuals, weights) / dof;
+    const xtwx = pairs.reduce((sum, point, index) => sum + weights[index] * point.x * point.x, 0);
+
+    return xtwx > COVARIANCE_EPSILON
+      ? [[sigma2 / xtwx, 0], [0, 0]]
+      : nanCovariance();
+  }
+
+  if (n <= 2) {
+    return nanCovariance();
+  }
+
+  const dof = Math.max(1, n - 2);
+  const sigma2 = weightedResidualSse(residuals, weights) / dof;
+  let sw = 0;
+  let sx = 0;
+  let sxx = 0;
+
+  pairs.forEach((point, index) => {
+    const weight = weights[index];
+    sw += weight;
+    sx += weight * point.x;
+    sxx += weight * point.x * point.x;
+  });
+
+  const determinant = sxx * sw - sx * sx;
+
+  if (Math.abs(determinant) <= COVARIANCE_EPSILON) {
+    return nanCovariance();
+  }
+
+  return [
+    [sigma2 * sw / determinant, -sigma2 * sx / determinant],
+    [-sigma2 * sx / determinant, sigma2 * sxx / determinant],
+  ];
+}
+
+export function fitLineWithCovariance(
+  x: number[],
+  y: number[],
+  _w?: number[],
+  forceZero = false,
+): RobustLineFit {
+  const pairs = finiteSortedPairs(x, y);
+  const n = pairs.length;
+
+  if (n < 2) {
+    return invalidRobustFit(n, 'At least 2 finite points are required');
+  }
+
+  let weights = Array.from({ length: n }, () => 1);
+
+  for (let iteration = 0; iteration < 12; iteration += 1) {
+    const { slope, intercept } = solveWeightedLeastSquares(pairs, weights, forceZero);
+
+    if (!Number.isFinite(slope) || !Number.isFinite(intercept)) {
+      return invalidRobustFit(n, 'Weighted least-squares fit is singular');
+    }
+
+    const residuals = residualsForFit(pairs, slope, intercept);
+    const residualCenter = median(residuals);
+    const mad = median(residuals.map((residual) => Math.abs(residual - residualCenter)));
+    let sigma = Number.isFinite(mad) ? 1.4826 * mad : Number.NaN;
+
+    if (!Number.isFinite(sigma) || sigma <= 1e-12) {
+      sigma = Math.sqrt(mean(residuals.map((residual) => residual * residual)));
+    }
+
+    if (!Number.isFinite(sigma) || sigma <= 1e-12) {
+      break;
+    }
+
+    const cutoff = 1.5 * sigma;
+    const nextWeights = residuals.map((residual) => {
+      const absResidual = Math.abs(residual - residualCenter);
+      const rawWeight = absResidual <= cutoff ? 1 : cutoff / Math.max(absResidual, 1e-12);
+      return clipWeight(rawWeight);
+    });
+
+    if (weightsAllClose(nextWeights, weights)) {
+      weights = nextWeights;
+      break;
+    }
+
+    weights = nextWeights;
+  }
+
+  const { slope, intercept } = solveWeightedLeastSquares(pairs, weights, forceZero);
+
+  if (!Number.isFinite(slope) || !Number.isFinite(intercept)) {
+    return invalidRobustFit(n, 'Weighted least-squares fit is singular');
+  }
+
+  const residuals = residualsForFit(pairs, slope, intercept);
+  const yValues = pairs.map((point) => point.y);
+  const meanY = mean(yValues);
+  const ssRes = residuals.reduce((sum, residual) => sum + residual * residual, 0);
+  const ssTot = yValues.reduce((sum, value) => sum + (value - meanY) ** 2, 0);
+  const r2 = ssTot > COVARIANCE_EPSILON ? 1 - ssRes / ssTot : Number.NaN;
+  const rmse = Math.sqrt(ssRes / n);
+  const covariance = covarianceFromFit(pairs, residuals, weights, forceZero);
+
+  return {
+    slope,
+    intercept,
+    r2,
+    rmse,
+    n,
+    warnings: [],
+    covariance,
+    x: pairs.map((point) => point.x),
+    y: yValues,
+    weights,
+    yhat: pairs.map((point) => slope * point.x + intercept),
+    fitMethod: ROBUST_FIT_METHOD,
+  };
+}
+
+export function stdAddC0SdFromFit(fit: Pick<RobustLineFit, 'slope' | 'intercept' | 'covariance'>): { c0: number; c0Sd: number } {
+  const m = fit.slope;
+  const q = fit.intercept;
+
+  if (!Number.isFinite(m) || Math.abs(m) < COVARIANCE_EPSILON || !Number.isFinite(q)) {
+    return { c0: Number.NaN, c0Sd: Number.NaN };
+  }
+
+  const x0 = -q / m;
+  const c0 = -x0;
+  const cov = fit.covariance;
+
+  if (!cov || cov.some((row) => row.some((value) => !Number.isFinite(value)))) {
+    return { c0, c0Sd: Number.NaN };
+  }
+
+  const dDm = q / (m * m);
+  const dDq = -1 / m;
+  const variance = (
+    dDm * dDm * cov[0][0] +
+    dDq * dDq * cov[1][1] +
+    2 * dDm * dDq * cov[0][1]
+  );
+
+  return {
+    c0,
+    c0Sd: Math.sqrt(Math.max(variance, 0)),
+  };
 }
 
 function groupedStandardAdditionPoints(points: StandardAdditionPoint[]): Array<{ x: number; points: StandardAdditionPoint[] }> {
@@ -257,6 +519,7 @@ function robustStandardAdditionDiagnostics(
     .map(([index]) => index)
     .sort((a, b) => a - b);
   const usedLevels = levels.filter((_, index) => !outlierIndexes.includes(index));
+  // Supplemental web diagnostic only; Python-equivalent primary fits use fitLineWithCovariance().
   const robustFit = usedLevels.length >= 4
     ? fitLinearRegression(usedLevels.map((level) => level.x), usedLevels.map((level) => level.meanY))
     : invalidRegression(usedLevels.length, 'Robust diagnostic fit requires at least 4 remaining levels.');
@@ -337,6 +600,7 @@ export function fitLinearRegression(x: number[], y: number[]): LinearRegressionF
     slope,
     intercept,
     r2,
+    rmse: Math.sqrt(sse / n),
     n,
     warnings: [],
   };
@@ -375,14 +639,17 @@ export function fitCalibration(
     }
 
     const { x, y } = groupedMedianFitPoints(points);
-    const fit = fitLinearRegression(x, y);
+    const fit = fitLineWithCovariance(x, y);
 
     return {
       channel,
       slope: fit.slope,
       intercept: fit.intercept,
       r2: fit.r2,
+      rmse: fit.rmse,
       n: fit.n,
+      covariance: fit.covariance,
+      fitMethod: fit.fitMethod,
     };
   });
 }
@@ -441,18 +708,23 @@ export function fitStandardAddition(
     }
 
     const { x, y } = groupedMedianFitPoints(points);
-    const fit = fitLinearRegression(x, y);
+    const fit = fitLineWithCovariance(x, y);
     const diagnostics = standardAdditionDiagnostics(group.sampleId, group.dilutionFactor, points, fit);
     const robustDiagnostics = robustStandardAdditionDiagnostics(group.dilutionFactor, points);
     const warnings = [...fit.warnings, ...(diagnostics.fitDiagnosticWarning ? [diagnostics.fitDiagnosticWarning] : [])];
+    const c0 = stdAddC0SdFromFit(fit);
     let concentrationInDilutedSample = Number.NaN;
+    let concentrationInDilutedSampleSd = Number.NaN;
     let concentrationInOriginalSample = Number.NaN;
+    let concentrationInOriginalSampleSd = Number.NaN;
 
-    if (!Number.isFinite(fit.slope) || Math.abs(fit.slope) <= EPSILON || !Number.isFinite(fit.intercept)) {
+    if (!Number.isFinite(c0.c0)) {
       warnings.push('Standard-addition concentration is undefined because slope is invalid or zero');
     } else {
-      concentrationInDilutedSample = fit.intercept / fit.slope;
+      concentrationInDilutedSample = c0.c0;
+      concentrationInDilutedSampleSd = c0.c0Sd;
       concentrationInOriginalSample = group.dilutionFactor * concentrationInDilutedSample;
+      concentrationInOriginalSampleSd = group.dilutionFactor * concentrationInDilutedSampleSd;
     }
 
     return {
@@ -462,9 +734,14 @@ export function fitStandardAddition(
       slope: fit.slope,
       intercept: fit.intercept,
       r2: fit.r2,
+      rmse: fit.rmse,
       n: fit.n,
+      covariance: fit.covariance,
+      fitMethod: fit.fitMethod,
       concentrationInDilutedSample,
+      concentrationInDilutedSampleSd,
       concentrationInOriginalSample,
+      concentrationInOriginalSampleSd,
       signalSourceUsedForFit,
       ...diagnostics,
       ...robustDiagnostics,

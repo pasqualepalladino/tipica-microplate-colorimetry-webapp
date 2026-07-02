@@ -4,7 +4,7 @@ import { ImageGeometryLoader } from './components/ImageGeometryLoader';
 import { PlateCanvas } from './components/PlateCanvas';
 import { PlateMapEditor } from './components/PlateMapEditor';
 import packageJson from '../package.json';
-import { fitCalibration, fitLinearRegression, fitStandardAddition } from './core/fitting';
+import { fitCalibration, fitLineWithCovariance, fitLinearRegression, fitStandardAddition, stdAddC0SdFromFit } from './core/fitting';
 import {
   addCorrectionMetadataToCalibrationFits,
   addCorrectionMetadataToStandardAdditionFits,
@@ -1377,7 +1377,7 @@ The primary RGB signal is pseudo-absorbance, reported as PAbs_Red, PAbs_Green an
 where I_well is the linearized median intensity from the well ROI and I_BG is the linearized local inter-well background predicted for that well. This is an image-derived pseudo-absorbance and is not assumed to be a spectrophotometric absorbance.
 
 Fitting and quantification
-Calibration and standard-addition fits use the current TIPICA webapp fitting results. Python desktop uses robust residual-based IRLS linear regression; web parity of the fitting implementation is tracked separately and no formulas are changed by this export. For standard addition, the original-sample concentration is C0 = DF x q/m, where y = m x + q and x is the added concentration.
+Calibration and standard-addition fits in the primary RGB export path use the Python robust residual-based IRLS linear regression port with covariance propagation. Full fitting parity across every Python workflow path remains under validation. For standard addition, the original-sample concentration is C0 = DF x q/m, where y = m x + q and x is the added concentration.
 
 Ranking score
 For methods with both calibration and standard addition, the Python desktop global score is:
@@ -1810,37 +1810,6 @@ function groupedMedianRows(points: { x: number; y: number }[]): { x: number; y: 
     .sort((a, b) => a.x - b.x);
 }
 
-function c0SdFromFitRows(points: { x: number; y: number }[], slope: number, intercept: number, dilutionFactor: number): number | '' {
-  const finite = points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
-
-  if (finite.length <= 2 || !Number.isFinite(slope) || Math.abs(slope) <= 1e-15 || !Number.isFinite(intercept)) {
-    return '';
-  }
-
-  const n = finite.length;
-  const meanX = finite.reduce((sum, point) => sum + point.x, 0) / n;
-  const sxx = finite.reduce((sum, point) => sum + (point.x - meanX) ** 2, 0);
-
-  if (sxx <= 1e-15) {
-    return '';
-  }
-
-  const sse = finite.reduce((sum, point) => {
-    const residual = point.y - (slope * point.x + intercept);
-    return sum + residual ** 2;
-  }, 0);
-  const sigma2 = sse / Math.max(1, n - 2);
-  const covM = sigma2 / sxx;
-  const covQ = sigma2 * ((1 / n) + (meanX ** 2) / sxx);
-  const covMQ = -sigma2 * meanX / sxx;
-  const dDm = intercept / (slope * slope);
-  const dDq = -1 / slope;
-  const variance = Math.max(0, dDm ** 2 * covM + dDq ** 2 * covQ + 2 * dDm * dDq * covMQ);
-  const sd = Math.abs(dilutionFactor) * Math.sqrt(variance);
-
-  return Number.isFinite(sd) ? sd : '';
-}
-
 function expectedRefKey(label: string, index: number): string {
   const safe = label.trim().replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
   return safe || `Reference_${index}`;
@@ -2125,7 +2094,9 @@ function buildReportFitRows(
     const rawY = alignedYValues(rawPointRows, fitX);
     const correction = correctionForChannel(lowSignalCorrections, fit.channel);
     const clipAudit = alignedClipValues(correction, fitX);
-    const c0Sd = c0SdFromFitRows(points, fit.slope, fit.intercept, fit.dilutionFactor);
+    const c0Sd = Number.isFinite(fit.concentrationInOriginalSampleSd ?? Number.NaN)
+      ? fit.concentrationInOriginalSampleSd as number
+      : '';
 
     rows.push({
       Channel: reportChannelName(fit.channel),
@@ -2497,12 +2468,12 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: 'MeanW_Red/MeanW_Green/MeanW_Blue', Meaning: 'Linearized median well intensity for each RGB channel', Formula: 'I_lin = (I/255)^2.2', Unit: 'dimensionless', 'Where used': '04_RAW', 'Shown when': 'always', Notes: '' },
     { Term: 'MeanBG_Red/MeanBG_Green/MeanBG_Blue', Meaning: 'Linearized local background intensity for each RGB channel', Formula: 'I_lin = (I/255)^2.2', Unit: 'dimensionless', 'Where used': '04_RAW', 'Shown when': 'always', Notes: '' },
     { Term: 'SignalT_Red/SignalT_Green/SignalT_Blue', Meaning: 'Transmittance-like ratio before logarithmic conversion', Formula: 'SignalT = MeanW / MeanBG', Unit: 'dimensionless', 'Where used': '04_RAW', 'Shown when': 'always', Notes: '' },
-    { Term: 'm/q', Meaning: 'Slope and intercept of the current webapp linear fit', Formula: 'y = m x + q', Unit: 'response / concentration and response', 'Where used': '06_FITTING', 'Shown when': 'fit rows present', Notes: 'The webapp currently uses its existing least-squares fit implementation; robust IRLS parity remains separate work.' },
-    { Term: 'R2', Meaning: 'Coefficient of determination from current webapp fit', Formula: '1 - SSE/SST', Unit: 'dimensionless', 'Where used': '06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'fit rows present', Notes: '' },
+    { Term: 'm/q', Meaning: 'Slope and intercept of the robust IRLS fit', Formula: 'y = m x + q', Unit: 'response / concentration and response', 'Where used': '06_FITTING', 'Shown when': 'fit rows present', Notes: 'Primary RGB calibration and standard-addition fits use the Python robust IRLS port; full fitting parity remains limited to rewired paths.' },
+    { Term: 'R2', Meaning: 'Coefficient of determination from robust IRLS fit', Formula: '1 - SSE/SST', Unit: 'dimensionless', 'Where used': '06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'fit rows present', Notes: '' },
     { Term: 'RMSE', Meaning: 'Root mean squared residual against the exported fit row', Formula: 'sqrt(mean(residual^2))', Unit: 'response unit', 'Where used': '06_FITTING', 'Shown when': 'fit rows present', Notes: 'Diagnostic workbook value derived from existing fit parameters.' },
     { Term: 'LOD/LOQ', Meaning: 'Detection and quantification limits used for RGB ranking', Formula: 'LOD = 3 x sigma_cal / |m|; LOQ = 10 x sigma_cal / |m|', Unit: unitLabel, 'Where used': '03_OVERVIEW, 06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'calibration present', Notes: 'sigma_cal follows the existing Python-style PNG ranking helper.' },
     { Term: 'Score/BaseScore', Meaning: 'Common method-ranking score', Formula: 'slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ) when LOQ is available', Unit: `1/${unitLabel}`, 'Where used': '03_OVERVIEW, 07_METHOD_COMPARISON', 'Shown when': 'method comparison present', Notes: 'Expected/reference values and recovery are external checks only.' },
-    { Term: 'C0/C0_sd', Meaning: 'Estimated original-sample concentration and fit-derived uncertainty', Formula: 'standard addition: C0 = DF x q/m; C0_sd is propagated from the linear-fit covariance when available', Unit: unitLabel, 'Where used': '06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'standard addition or unknown rows present', Notes: 'Uses the current web least-squares fit covariance; robust IRLS weighting parity remains separate.' },
+    { Term: 'C0/C0_sd', Meaning: 'Estimated original-sample concentration and fit-derived uncertainty', Formula: 'standard addition: C0 = DF x q/m; C0_sd is propagated from the robust IRLS covariance when available', Unit: unitLabel, 'Where used': '06_FITTING, 07_METHOD_COMPARISON', 'Shown when': 'standard addition or unknown rows present', Notes: 'C0_sd follows the Python covariance-propagation formula for rewired standard-addition fit rows.' },
     { Term: 'Replicate medians and SD', Meaning: 'Replicate-group summary by ID, DF, type and concentration', Formula: 'median(PAbs) and sample SD over finite replicate wells', Unit: 'dimensionless', 'Where used': '05_REPLICATES_MEAN', 'Shown when': 'replicate groups present', Notes: '' },
     { Term: 'PAbs_*_raw / PAbs_*_exported / PAbs_*_fit_input_*', Meaning: 'Audit columns distinguishing raw extracted PAbs, exported display PAbs and grouped fit-input values', Formula: 'raw from original measurements; exported/fit-input from corrected display pipeline when enabled', Unit: 'dimensionless', 'Where used': '04_RAW, 05_REPLICATES_MEAN, 06_FITTING', 'Shown when': 'RGB rows present', Notes: 'These columns are diagnostic only and do not change the underlying calculations.' },
     { Term: 'S0_*/ClipDelta_*/TotalDelta_* and ClipY_* audit fields', Meaning: 'Low-signal correction intermediates traced from the current RGB correction payload', Formula: 'diagnostic values are reported as stored in the current correction payload; calibration payload also exposes observed, shifted, expected and corrected y arrays when available', Unit: 'dimensionless', 'Where used': '04_RAW, 05_REPLICATES_MEAN, 06_FITTING', 'Shown when': 'low-signal correction payload available', Notes: 'Added for Python-parity audit of calibration-transfer intermediates.' },
@@ -3260,7 +3231,7 @@ function buildCielabFittingRows(points: CielabDiagnosticPoint[], descriptors: re
     const groupedCalRows = groupedMedianCielabFitRows(calibrationPoints, descriptor.getValue);
     const xCal = groupedCalRows.map((point) => point.x);
     const yCal = groupedCalRows.map((point) => point.y);
-    const calFit = fitLinearRegression(xCal, yCal);
+    const calFit = fitLineWithCovariance(xCal, yCal);
     const calPointRows = calibrationPoints
       .map((point) => ({ x: point.conc as number, y: cielabValueAsNumber(descriptor.getValue(point)) }))
       .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
@@ -3307,14 +3278,17 @@ function buildCielabFittingRows(points: CielabDiagnosticPoint[], descriptors: re
       const groupedStdRows = groupedMedianCielabFitRows(group.points, descriptor.getValue);
       const xStd = groupedStdRows.map((point) => point.x);
       const yStd = groupedStdRows.map((point) => point.y);
-      const stdFit = fitLinearRegression(xStd, yStd);
+      const stdFit = fitLineWithCovariance(xStd, yStd);
       const beta = Number.isFinite(calFit.slope) && Math.abs(calFit.slope) > 1e-15 && Number.isFinite(stdFit.slope)
         ? stdFit.slope / calFit.slope
         : Number.NaN;
-      const c0 = Number.isFinite(stdFit.intercept) && Number.isFinite(stdFit.slope) && Math.abs(stdFit.slope) > 1e-15
-        ? group.dilutionFactor * (stdFit.intercept / stdFit.slope)
+      const c0Fit = stdAddC0SdFromFit(stdFit);
+      const c0 = Number.isFinite(c0Fit.c0)
+        ? group.dilutionFactor * c0Fit.c0
         : Number.NaN;
-      const c0Sd = c0SdFromFitRows(groupedStdRows, stdFit.slope, stdFit.intercept, group.dilutionFactor);
+      const c0Sd = Number.isFinite(c0Fit.c0Sd)
+        ? group.dilutionFactor * c0Fit.c0Sd
+        : '';
 
       rows.push({
         Channel: descriptor.channel,
@@ -3375,8 +3349,8 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: 'Method/Family/ComparableGroup/CommonFactorsN/RankMode', Meaning: 'Method-comparison identifiers and comparable-score grouping', Formula: 'text labels and number of factors defining score comparability', Unit: 'mixed', 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: 'Scores are directly comparable only within the same ComparableGroup.' },
     { Term: 'Score/ScoreFormula', Meaning: 'Common method-ranking score and formula descriptor', Formula: 'slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ) when LOQ is available', Unit: `1/${unitLabel}`, 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: 'Expected/reference values, SNR and clipping are not part of Score.' },
     { Term: 'R2_cal/R2_std_mean/m_cal/m_std_mean/SlopeAgreement', Meaning: 'Fit-quality and slope-agreement descriptors for method comparison', Formula: 'SlopeAgreement = min(abs(m_cal), abs(m_std_mean)) / max(abs(m_cal), abs(m_std_mean))', Unit: 'mixed', 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: '' },
-    { Term: 'C0_mean/C0_median/C0_sd_median', Meaning: 'Summary of available original-concentration estimates', Formula: 'mean/median of C0 estimates and median of associated C0_sd values', Unit: unitLabel, 'Where used': '10_METHOD_COMPARISON', Notes: 'C0_sd is populated when the current web fit covariance is available; robust IRLS covariance parity remains separate.' },
-    { Term: 'Channel/FitType/ID/DF/n_points/m/q/R2/RMSE', Meaning: 'Diagnostic fitting identifiers and linear-fit descriptors', Formula: 'y = m x + q; R2 = 1 - SSE/SST; RMSE = sqrt(mean(residual^2))', Unit: 'mixed', 'Where used': '11_CIELAB_FITTING', Notes: 'Current webapp least-squares diagnostic fit; Python IRLS parity remains future work.' },
+    { Term: 'C0_mean/C0_median/C0_sd_median', Meaning: 'Summary of available original-concentration estimates', Formula: 'mean/median of C0 estimates and median of associated C0_sd values', Unit: unitLabel, 'Where used': '10_METHOD_COMPARISON', Notes: 'C0_sd is populated from the robust IRLS covariance when the rewired fit path exposes it.' },
+    { Term: 'Channel/FitType/ID/DF/n_points/m/q/R2/RMSE', Meaning: 'Diagnostic fitting identifiers and robust IRLS descriptors', Formula: 'y = m x + q; R2 = 1 - SSE/SST; RMSE = sqrt(mean(residual^2))', Unit: 'mixed', 'Where used': '11_CIELAB_FITTING', Notes: 'CIELAB/DeltaE exported fitting rows use the Python robust IRLS port; full CIELAB parity still depends on descriptor-input parity.' },
     { Term: 'LOD/LOQ', Meaning: 'Detection and quantification limits', Formula: 'LOD = 3 sigma_cal / abs(m); LOQ = 10 sigma_cal / abs(m)', Unit: unitLabel, 'Where used': '10_METHOD_COMPARISON, 11_CIELAB_FITTING', Notes: '' },
     { Term: 'sigma_cal/sigma_source/SNR', Meaning: 'Calibration noise estimate, source and slope-to-noise ratio', Formula: 'SNR = abs(m) / sigma_cal', Unit: 'mixed', 'Where used': '10_METHOD_COMPARISON, 11_CIELAB_FITTING', Notes: 'SNR is diagnostic and is not part of the common Score.' },
     { Term: 'beta_k/bias_index_k', Meaning: 'Per-fit slope ratio and relative slope-bias index', Formula: 'beta_k = m_std / m_cal; bias_index_k = abs(beta_k - 1)', Unit: 'dimensionless', 'Where used': '11_CIELAB_FITTING', Notes: '' },
@@ -5980,7 +5954,7 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
           <h3>Analysis options block</h3>
           <ul>
             <li>All points are always used in fitting.</li>
-            <li>Fitting uses robust residual-based IRLS linear regression; all finite points are retained.</li>
+            <li>Primary RGB calibration and standard-addition fit rows use the Python robust residual-based IRLS port; full fitting parity across every Python path remains under validation.</li>
             <li>RGB signal is fixed to full background normalization. The image is never modified.</li>
             <li>ID/DF priority: chooses whether row defaults or column defaults are applied first.</li>
           </ul>

@@ -18,7 +18,10 @@ export interface CalibrationFit {
   slope: number;
   intercept: number;
   r2: number;
+  rmse?: number;
   n: number;
+  covariance?: [[number, number], [number, number]];
+  fitMethod?: string;
   correctionApplied?: boolean;
   S0?: number | null;
   meanClipDelta?: number | null;
@@ -32,9 +35,14 @@ export interface StandardAdditionFit {
   slope: number;
   intercept: number;
   r2: number;
+  rmse?: number;
   n: number;
+  covariance?: [[number, number], [number, number]];
+  fitMethod?: string;
   concentrationInDilutedSample: number;
+  concentrationInDilutedSampleSd?: number;
   concentrationInOriginalSample: number;
+  concentrationInOriginalSampleSd?: number;
   correctionApplied?: boolean;
   S0?: number | null;
   meanClipDelta?: number | null;
