@@ -23,7 +23,9 @@ For validation-oriented local checks:
 
 ```bash
 npm run build
+npm run smoke:fitting-parity
 npm run smoke:plate-configurator
+npm run smoke:configurator-persistence
 ```
 
 ## Generate an output package
@@ -61,3 +63,7 @@ Treat the output as beta validation material rather than manuscript-source numer
 ## Reference implementation
 
 The archived Python desktop implementation remains the reference implementation for the manuscript results.
+
+## Citation
+
+Use the webapp citation metadata in `CITATION.cff` only for this beta browser companion. Cite the archived Python reference package/manuscript when using or comparing scientific results. The webapp beta release must not be treated as equivalent to the Python reference deposit.

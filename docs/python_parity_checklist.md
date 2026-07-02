@@ -29,6 +29,7 @@ This checklist tracks practical comparison work between TIPICA Webapp and the ar
 - Compare replicate aggregation and `n_points` values.
 - Compare calibration and standard-addition fitting inputs. Primary RGB calibration and standard-addition fit rows now use the TypeScript port of the Python robust IRLS helper, but full fitting parity still requires every Python fit path and input aggregation path to be covered.
 - Compare standard-addition C0 and C0_sd outputs and marker semantics. C0_sd is covariance-propagated only for rewired standard-addition fit rows.
+- Compare configurator/project persistence for concentration, type, ID, DF, expected references, unit labels, and row/column priority. Current webapp persistence guards are improved, but full configurator parity remains unclaimed.
 - Compare CIELAB/DeltaE descriptors where computed by both implementations.
 - Compare background sampling, ROI/core/used-pixel counts, and geometry diagnostics.
 

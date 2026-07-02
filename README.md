@@ -22,7 +22,7 @@ The webapp currently provides a Python-style output package structure and a brow
 - `RESULTS` report workbook
 - `RAW_DATA_DETAILS` diagnostics workbook
 
-## What remains under validation
+## Known validation limitations
 
 - Numerical parity with the Python desktop implementation
 - Full fitting parity across every Python path
@@ -36,6 +36,15 @@ The webapp currently provides a Python-style output package structure and a brow
 - Background sampling and ROI/core/used-pixel parity
 - Geometry diagnostic parity
 - Figure-level formatting parity
+
+Safety flags for the beta release:
+
+- SAFE_TO_CLAIM_FULL_WORKFLOW_PARITY = no
+- SAFE_TO_CLAIM_FULL_FITTING_PARITY = no
+- SAFE_TO_CLAIM_FULL_CONFIGURATOR_PARITY = no
+- SAFE_TO_CLAIM_FULL_IMAGE_INPUT_PARITY = no
+- SAFE_TO_CLAIM_FULL_XLSX_TXT_PARITY = no
+- SAFE_TO_CLAIM_WEBAPP_DEPOSIT_EQUIVALENT_TO_PYTHON_DEPOSIT = no
 
 ## Reference implementation
 
@@ -72,11 +81,29 @@ npm run dev
 
 Open the local Vite URL shown in the terminal after `npm run dev`.
 
+## How to validate locally
+
+```bash
+npm run build
+npm run smoke:fitting-parity
+npm run smoke:plate-configurator
+npm run smoke:configurator-persistence
+```
+
+These checks are regression guards for the beta browser implementation. Passing them does not establish full Python workflow or output parity.
+
+## Citation and relationship to Python reference
+
+This repository is the TIPICA Webapp beta browser companion. It is not the archived Python reference implementation and was not used to generate the submitted manuscript results.
+
+If citing this beta webapp, use the metadata in [CITATION.cff](CITATION.cff). When using, validating, or comparing scientific results, also cite the archived Python reference package/manuscript as appropriate. The Python reference package DOI is `10.5281/zenodo.20553451`.
+
 ## Validation documents
 
 - [Validation status](VALIDATION_STATUS.md)
 - [Python parity checklist](docs/python_parity_checklist.md)
 - [Reviewer quick start](docs/reviewer_quick_start.md)
+- [Release checklist v0.1.0-beta](docs/release_checklist_v0.1.0-beta.md)
 
 ## Privacy
 
