@@ -2,6 +2,7 @@ node_modules
 dist
 .vite
 .tmp-smoke/
+.tmp-fitting/
 *.local
 vite-dev.out.log
 vite-dev.err.log
