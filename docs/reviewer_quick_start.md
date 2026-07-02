@@ -6,7 +6,7 @@ TIPICA Webapp is a beta browser-based companion interface for evaluating the bro
 
 ## Important limitation
 
-The current webapp is intended for preliminary evaluation of the browser workflow. It should not be used as the authoritative source for the manuscript numerical results until Python-parity validation is complete.
+The current webapp is intended for preliminary evaluation of the browser workflow. It should not be used as the authoritative source for the manuscript numerical results unless validation against the Python source and outputs is completed for that specific use.
 
 The webapp was not used to generate the submitted manuscript results.
 
@@ -54,7 +54,7 @@ RAW_DATA_DETAILS/
 
 ## Interpreting outputs
 
-The exported files are useful for reviewing the browser workflow and the current state of Python-style package generation. Full parity validation is still ongoing for numerical values, workbook content, CIELAB/DeltaE diagnostics, fitting inputs, background and ROI diagnostics, geometry diagnostics, captions, and figure formatting.
+The exported files are useful for reviewing the browser workflow and the current state of Python-style package generation. Full parity remains unclaimed; validation is still ongoing for numerical values, workbook content, CIELAB/DeltaE diagnostics, fitting inputs beyond the rewired robust IRLS rows, background and ROI diagnostics, geometry diagnostics, captions, XLSX/TXT content, and figure formatting.
 
 Treat the output as beta validation material rather than manuscript-source numerical evidence.
 

@@ -1382,7 +1382,7 @@ Calibration and standard-addition fits in the primary RGB export path use the Py
 Ranking score
 For methods with both calibration and standard addition, the Python desktop global score is:
     GlobalScore = slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ)
-with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|). This web export computes LOQ for PNG channel selection from the median calibration replicate SD when that SD is available, matching the Python RESULTS ranking rule. If LOQ is unavailable, the Python-compatible fallback uses the fit-only common factors. Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
+with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|). This web export computes LOQ for PNG channel selection from the median calibration replicate SD when that SD is available, following the current Python-style ranking helper. If LOQ is unavailable, the browser fallback uses the fit-only common factors. Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
 
 Reference values and recovery
 External reference values, when provided, are used only for external comparison (Delta and recovery). They are not used to choose the ranked RGB method.
@@ -1409,7 +1409,7 @@ BG_STAT_MASK.png
 Current web export shows the accepted inter-well background sampling mask overlaid on the analyzed image. It supports auditability of background sampling and does not change calculations; the exact Python binary-mask rendering is not yet reproduced.
 
 FIGURE_CIELAB_DELTAE.png
-Python-style CIELAB/DeltaE fitting/report figure with plate preview, descriptor fitting panels, reference values, C0/Score/Delta/Recovery tables, calibration and standard-addition summaries. It mirrors the Python composite report artifact for CIELAB/DeltaE descriptors.
+Python-style CIELAB/DeltaE fitting/report figure with plate preview, descriptor fitting panels, reference values, C0/Score/Delta/Recovery tables, calibration and standard-addition summaries. The exported CIELAB/DeltaE fit rows use the robust IRLS helper, but full CIELAB parity also depends on descriptor-input parity.
 
 METHOD_COMPARISON.png
 Cross-method diagnostic comparison for currently available webapp methods. Score uses common fit-quality factors; external reference values and recovery checks are displayed as checks and do not affect ranking.
@@ -3817,7 +3817,7 @@ function buildCielabCompositeScientificLines({
   pushText('DeltaE_ab,chroma = sqrt((a-aref)^2 + (b-bref)^2)');
   pushText('');
   pushText(`Mode: ${modeLabel}`);
-  pushText('Fit: robust IRLS');
+  pushText('Fit: robust IRLS for exported fit rows');
   pushText(`Plate: ${plateMap.length}-well | QC: ${plateStatus}`);
   pushText(`Plate QC: wells flagged ${flagged}/${total} | wells critical ${critical}/${total}`);
   pushText('');
@@ -5261,7 +5261,7 @@ function buildFigureRgbScientificLines({
   pushText('Pseudo-absorbance = log10(I_BG/I_well)');
   pushText('');
   pushText(`Mode: ${modeLabel}`);
-  pushText('Fit: robust IRLS');
+  pushText('Fit: robust IRLS for exported fit rows');
   pushText(`Background: ${formatBackgroundModel(backgroundModel)}`);
   pushText(`ROI mode: ${formatRoiMode(roiMode)}`);
   pushText(`Plate: ${plateMap.length}-well | QC: ${plateStatus}`);
@@ -7926,7 +7926,7 @@ function App() {
     setIsRunningCompleteAnalysis(true);
     setPendingCompleteAnalysisFitting(false);
     setPendingCompleteAnalysisPackageExport(false);
-    setStatusMessage('Starting a new complete validated analysis...');
+    setStatusMessage('Starting the browser analysis workflow...');
     setError(null);
 
     try {
@@ -7948,10 +7948,10 @@ function App() {
         return;
       }
 
-      setStatusMessage('Complete validated analysis: waiting for extracted measurements...');
+      setStatusMessage('Browser analysis workflow: waiting for extracted measurements...');
       setPendingCompleteAnalysisFitting(true);
     } catch {
-      setStatusMessage('Complete validated analysis failed');
+      setStatusMessage('Browser analysis workflow failed');
       setIsRunningCompleteAnalysis(false);
       setPendingCompleteAnalysisFitting(false);
       setPendingCompleteAnalysisPackageExport(false);
@@ -7977,7 +7977,7 @@ function App() {
     }
 
     setPendingCompleteAnalysisFitting(false);
-    setStatusMessage('Complete validated analysis: fitting...');
+    setStatusMessage('Browser analysis workflow: fitting...');
 
     void runFittingRoutine({ useLowSignalCorrection }).then((fittingSucceeded) => {
       if (!fittingSucceeded) {
@@ -7986,7 +7986,7 @@ function App() {
         return;
       }
 
-      setStatusMessage('Complete validated analysis: waiting for fitting results...');
+      setStatusMessage('Browser analysis workflow: waiting for fitting results...');
       setPendingCompleteAnalysisPackageExport(true);
     });
   }, [
@@ -8006,7 +8006,7 @@ function App() {
     }
 
     setPendingCompleteAnalysisPackageExport(false);
-    setStatusMessage('Complete validated analysis: exporting package...');
+    setStatusMessage('Browser analysis workflow: exporting package...');
 
     void handleExportCompleteAnalysisPackage().finally(() => {
       setIsRunningCompleteAnalysis(false);
@@ -8303,14 +8303,14 @@ function App() {
         </section>
 
         <section className="control-section" aria-labelledby="complete-workflow-heading">
-          <h2 id="complete-workflow-heading">Complete validated workflow</h2>
+          <h2 id="complete-workflow-heading">Browser analysis workflow</h2>
           <button
             type="button"
             className="primary-button"
             disabled={!overlayReady || configuredWellCount === 0 || isExtracting || isFitting || isRunningCompleteAnalysis || projectImageMismatchBlocksExtraction}
             onClick={handleRunCompleteValidatedAnalysis}
           >
-            {isRunningCompleteAnalysis ? 'Running complete analysis...' : 'Run complete validated analysis'}
+            {isRunningCompleteAnalysis ? 'Running browser analysis...' : 'Run browser analysis workflow'}
           </button>
         </section>
 

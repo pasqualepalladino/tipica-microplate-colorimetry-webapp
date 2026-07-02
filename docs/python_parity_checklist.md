@@ -4,7 +4,7 @@ This checklist tracks practical comparison work between TIPICA Webapp and the ar
 
 ## Reference files
 
-- Use `reference_python/analyzer.py` as the local source reference.
+- Use the Python package source under `tipica-microplate-colorimetry/src/tipica/tipica_core/analyzer.py` as the local source reference.
 - Use the archived Python output package, including `RUN_20260529_122854/`, when available.
 - Compare against a freshly generated web ZIP from the same image, geometry, plate map, and analysis settings.
 - Record any intentional browser differences separately from unresolved parity differences.
@@ -27,8 +27,8 @@ This checklist tracks practical comparison work between TIPICA Webapp and the ar
 
 - Compare RGB pseudo-absorbance values on common wells.
 - Compare replicate aggregation and `n_points` values.
-- Compare calibration and standard-addition fitting inputs.
-- Compare standard-addition C0 outputs and marker semantics.
+- Compare calibration and standard-addition fitting inputs. Primary RGB calibration and standard-addition fit rows now use the TypeScript port of the Python robust IRLS helper, but full fitting parity still requires every Python fit path and input aggregation path to be covered.
+- Compare standard-addition C0 and C0_sd outputs and marker semantics. C0_sd is covariance-propagated only for rewired standard-addition fit rows.
 - Compare CIELAB/DeltaE descriptors where computed by both implementations.
 - Compare background sampling, ROI/core/used-pixel counts, and geometry diagnostics.
 
@@ -44,7 +44,7 @@ This checklist tracks practical comparison work between TIPICA Webapp and the ar
 - `REPORT.xlsx / 04_RAW` row and column parity
 - Add Python RAW columns `L`, `a`, `b`, `DeltaL`, `Deltaa`, `Deltab`, `DeltaE_ab`, `DeltaE_ab_chroma`, `ImageWarning` where computed
 - Exclude/include wells exactly as Python does
-- Fitting `n_points` parity; Python uses replicate means in calibration where applicable
+- Full fitting parity across every Python path; Python uses replicate means in calibration where applicable
 - Method-comparison row parity including `DeltaE_chroma`, `DeltaE_ab`, `DeltaL`, `Deltaa`, `Deltab`
 - Background sample centroid/RGB median/area parity
 - ROI/core/used-pixel statistics parity

@@ -8,7 +8,7 @@ The webapp was not used to generate the submitted manuscript results. Users shou
 
 ## Current status
 
-The webapp currently reproduces the Python-style output package structure and provides a browser-based workflow for plate colorimetry. Full Python-parity validation is ongoing for numerical outputs, diagnostic workbook content, CIELAB/DeltaE outputs, robust fitting inputs, background and ROI diagnostics, and figure formatting.
+The webapp currently provides a Python-style output package structure and a browser-based workflow for plate colorimetry. Full parity validation remains open for numerical outputs, diagnostic workbook content, CIELAB/DeltaE inputs and outputs, background and ROI diagnostics, configurator behavior, image input/QC, XLSX/TXT contents, and figure formatting. Primary RGB calibration and standard-addition fit rows now use a TypeScript port of the Python robust IRLS fit with covariance propagation.
 
 ## What is currently implemented
 
@@ -25,7 +25,11 @@ The webapp currently reproduces the Python-style output package structure and pr
 ## What remains under validation
 
 - Numerical parity with the Python desktop implementation
-- Robust fitting input parity
+- Full fitting parity across every Python path
+- Robust fitting input parity outside the rewired primary RGB and exported CIELAB/DeltaE fit rows
+- Image input/QC parity
+- Configurator parity
+- XLSX/TXT content parity
 - Replicate aggregation and `n_points` parity
 - CIELAB/DeltaE diagnostic parity
 - Diagnostic workbook content parity

@@ -4,14 +4,14 @@ TIPICA Webapp is a beta browser-based companion implementation. The archived Pyt
 
 | Area | Current status | Notes |
 | --- | --- | --- |
-| File list parity | Implemented | Implemented for the current Python-style reference package structure with `RESULTS/` and `RAW_DATA_DETAILS/`. |
+| File list parity | Partially implemented | The current export uses the Python-style `RESULTS/` and `RAW_DATA_DETAILS/` structure, but complete package parity remains under direct audit. |
 | PNG dimensions | Implemented | Implemented for the current reference dimensions used by the browser export. |
-| XLSX sheet order | Implemented | The report and diagnostics workbooks use the intended Python-style sheet order. |
+| XLSX sheet order | Under validation | Direct XLSX/TXT audit showed workbook differences remain, including diagnostics workbook sheet-count/order/content differences. |
 | RESULTS report workbook content | Partially implemented | Workbook exists, but numerical and table-content parity remain under validation. |
 | RAW_DATA_DETAILS diagnostics workbook content | Partially implemented | Workbook exists with Python-style sheets, but several diagnostic quantities remain under validation or blank when not computed by the webapp. |
 | RGB pseudo-absorbance numerical parity | Under validation | RGB/PAbs values are being compared against the archived Python desktop output. |
-| Fitting input parity | Under validation | Replicate aggregation and `n_points` semantics require continued parity checks. |
-| Standard-addition C0 marker semantics | Partially implemented | Corrected and considered aligned with Python semantics after 36S, but still subject to broader parity validation. |
+| Fitting input parity | Partially implemented | Primary RGB calibration and standard-addition fit rows use a TypeScript port of the Python robust IRLS fit with covariance propagation. Replicate aggregation, `n_points`, unknown/equation paths, stored-calibration paths, and full fitting parity remain under validation. |
+| Standard-addition C0/C0_sd semantics | Partially implemented | C0_sd is now propagated from robust fit covariance for rewired standard-addition fit rows, but full C0/C0_sd parity remains subject to broader fitting and input parity validation. |
 | CIELAB/DeltaE diagnostics | Partially implemented | Browser exports CIELAB/DeltaE diagnostics, but numerical and method-row parity remain under validation. |
 | Method comparison | Partially implemented | Method-comparison outputs exist; row coverage and scoring parity are still under validation. |
 | Background sampling | Under validation | Background-cell sampling, accepted-mask statistics, centroids, and RGB medians need parity review. |
