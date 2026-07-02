@@ -3,6 +3,7 @@ dist
 .vite
 .tmp-smoke/
 .tmp-fitting/
+.tmp-configurator-persistence/
 *.local
 vite-dev.out.log
 vite-dev.err.log

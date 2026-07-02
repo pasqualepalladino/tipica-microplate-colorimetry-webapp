@@ -17,6 +17,7 @@ import {
   type ExpectedRef,
   type PlateCellType,
   type PlateDefaults,
+  type PlateEditorSnapshot,
   type PlateFormatLabel,
   wellConfigsToPlateEditorState,
 } from '../core/plateConfigurator';
@@ -25,11 +26,13 @@ interface PlateMapEditorProps {
   plateMap: WellConfig[];
   unitLabel: string;
   expectedRefs: ExpectedRef[];
+  editorSnapshot?: PlateEditorSnapshot | null;
   storedCalibrationLoaded: boolean;
   onChange: (plateMap: WellConfig[]) => void;
   onClear: () => void;
   onExpectedRefsChange?: (expectedRefs: ExpectedRef[]) => void;
   onUnitLabelChange?: (unitLabel: string) => void;
+  onEditorSnapshotChange?: (snapshot: PlateEditorSnapshot) => void;
 }
 
 interface ExpectedRefRow {
@@ -80,18 +83,32 @@ export function PlateMapEditor({
   plateMap,
   unitLabel,
   expectedRefs,
+  editorSnapshot,
   storedCalibrationLoaded,
   onChange,
   onClear,
   onExpectedRefsChange,
   onUnitLabelChange,
+  onEditorSnapshotChange,
 }: PlateMapEditorProps) {
   const unitParts = useMemo(() => parseUnitLabel(unitLabel), [unitLabel]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastEmittedSignatureRef = useRef<string>('');
   const lastEmittedExpectedRefsSignatureRef = useRef<string>('');
+  const lastEmittedEditorSnapshotSignatureRef = useRef<string>('');
 
   const initial = useMemo(() => {
+    if (editorSnapshot) {
+      return {
+        grid: editorSnapshot.grid,
+        nrow: editorSnapshot.nrow,
+        ncol: editorSnapshot.ncol,
+        plateFormat: inferPlateFormatLabel(editorSnapshot.nrow, editorSnapshot.ncol),
+        defaults: editorSnapshot.defaults,
+        idDfPriority: editorSnapshot.idDfPriority,
+      };
+    }
+
     const parsed = wellConfigsToPlateEditorState(plateMap);
     const plateFormat = inferPlateFormatLabel(parsed.nrow, parsed.ncol);
     return {
@@ -100,8 +117,9 @@ export function PlateMapEditor({
       ncol: parsed.ncol,
       plateFormat,
       defaults: parsed.defaults,
+      idDfPriority: 'row' as const,
     };
-  }, [plateMap]);
+  }, [editorSnapshot, plateMap]);
 
   const [grid, setGrid] = useState<CellGrid>(initial.grid);
   const [plateFormat, setPlateFormat] = useState<PlateFormatLabel>(initial.plateFormat);
@@ -110,7 +128,7 @@ export function PlateMapEditor({
   const [defaults, setDefaults] = useState<PlateDefaults>(initial.defaults);
   const [unitBase, setUnitBase] = useState(unitParts.base || 'mM');
   const [unitExp, setUnitExp] = useState(unitParts.exp || '0');
-  const [idDfPriority, setIdDfPriority] = useState<'row' | 'col'>('row');
+  const [idDfPriority, setIdDfPriority] = useState<'row' | 'col'>(initial.idDfPriority);
   const [expectedRows, setExpectedRows] = useState<ExpectedRefRow[]>(() => {
     if (expectedRefs.length === 0) {
       return [{ refId: '', label: '', value: '', sd: '' }];
@@ -130,6 +148,21 @@ export function PlateMapEditor({
   }, [unitParts.base, unitParts.exp]);
 
   useEffect(() => {
+    if (editorSnapshot) {
+      const incomingSnapshot = JSON.stringify(editorSnapshot);
+      if (incomingSnapshot === lastEmittedEditorSnapshotSignatureRef.current) {
+        return;
+      }
+
+      setGrid(editorSnapshot.grid);
+      setNrow(editorSnapshot.nrow);
+      setNcol(editorSnapshot.ncol);
+      setPlateFormat(inferPlateFormatLabel(editorSnapshot.nrow, editorSnapshot.ncol));
+      setDefaults(editorSnapshot.defaults);
+      setIdDfPriority(editorSnapshot.idDfPriority);
+      return;
+    }
+
     const incoming = JSON.stringify(plateMap);
     if (incoming === lastEmittedSignatureRef.current) {
       return;
@@ -143,7 +176,8 @@ export function PlateMapEditor({
     setNcol(parsed.ncol);
     setPlateFormat(nextFormat);
     setDefaults(parsed.defaults);
-  }, [plateMap]);
+    setIdDfPriority('row');
+  }, [editorSnapshot, plateMap]);
 
   useEffect(() => {
     const incoming = JSON.stringify(expectedRefs);
@@ -208,6 +242,22 @@ export function PlateMapEditor({
     lastEmittedExpectedRefsSignatureRef.current = JSON.stringify(collectedExpectedRefs);
     onExpectedRefsChange(collectedExpectedRefs);
   }, [collectedExpectedRefs, onExpectedRefsChange]);
+
+  useEffect(() => {
+    if (!onEditorSnapshotChange) {
+      return;
+    }
+
+    const snapshot: PlateEditorSnapshot = {
+      grid,
+      defaults,
+      nrow,
+      ncol,
+      idDfPriority,
+    };
+    lastEmittedEditorSnapshotSignatureRef.current = JSON.stringify(snapshot);
+    onEditorSnapshotChange(snapshot);
+  }, [defaults, grid, idDfPriority, ncol, nrow, onEditorSnapshotChange]);
 
   const configuredWellCount = useMemo(() => {
     const state = collectPlateState(grid, defaults, nrow, ncol, {

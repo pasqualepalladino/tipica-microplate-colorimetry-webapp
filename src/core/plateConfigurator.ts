@@ -97,6 +97,10 @@ export interface PlateEditorState {
   ncol: number;
 }
 
+export interface PlateEditorSnapshot extends PlateEditorState {
+  idDfPriority: 'row' | 'col';
+}
+
 // ---------------------------------------------------------------------------
 // Row label utilities  (Python _row_label_from_index / _row_index_from_label)
 // ---------------------------------------------------------------------------

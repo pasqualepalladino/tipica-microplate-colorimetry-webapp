@@ -34,7 +34,7 @@ import {
 import {
   createEmptyPlateMap,
 } from './core/plateMap';
-import type { ExpectedRef } from './core/plateConfigurator';
+import type { ExpectedRef, PlateEditorSnapshot } from './core/plateConfigurator';
 import { estimateLocalBackground, sampleCircularRoi, sampleCircleIntersectionRoi } from './core/sampling';
 import {
   buildBackgroundVisualDiagnostics,
@@ -820,6 +820,72 @@ function parseProjectExpectedRefs(raw: unknown): ExpectedRef[] {
   });
 }
 
+function parseProjectStringRecord(raw: unknown, label: string): Record<number, string> {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(`Invalid ${label} in project JSON.`);
+  }
+
+  const result: Record<number, string> = {};
+  Object.entries(raw as Record<string, unknown>).forEach(([key, value]) => {
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 0 || typeof value !== 'string') {
+      throw new Error(`Invalid ${label} in project JSON.`);
+    }
+    result[index] = value;
+  });
+  return result;
+}
+
+function parseProjectPlateEditorSnapshot(raw: unknown): PlateEditorSnapshot | null {
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('Invalid plateConfigurator in project JSON.');
+  }
+
+  const payload = raw as Record<string, unknown>;
+  const nrow = payload.nrow;
+  const ncol = payload.ncol;
+  const priority = payload.idDfPriority;
+  const defaults = payload.defaults;
+
+  if (
+    typeof nrow !== 'number' ||
+    typeof ncol !== 'number' ||
+    !Number.isInteger(nrow) ||
+    !Number.isInteger(ncol) ||
+    nrow <= 0 ||
+    ncol <= 0
+  ) {
+    throw new Error('Invalid plateConfigurator dimensions in project JSON.');
+  }
+
+  if (priority !== 'row' && priority !== 'col') {
+    throw new Error('Invalid plateConfigurator idDfPriority in project JSON.');
+  }
+
+  if (defaults === null || typeof defaults !== 'object' || Array.isArray(defaults)) {
+    throw new Error('Invalid plateConfigurator defaults in project JSON.');
+  }
+
+  const defaultPayload = defaults as Record<string, unknown>;
+
+  return {
+    grid: parseProjectStringRecord(payload.grid, 'plateConfigurator grid'),
+    defaults: {
+      rowDf: parseProjectStringRecord(defaultPayload.rowDf, 'plateConfigurator rowDf'),
+      rowId: parseProjectStringRecord(defaultPayload.rowId, 'plateConfigurator rowId'),
+      colDf: parseProjectStringRecord(defaultPayload.colDf, 'plateConfigurator colDf'),
+      colId: parseProjectStringRecord(defaultPayload.colId, 'plateConfigurator colId'),
+    },
+    nrow,
+    ncol,
+    idDfPriority: priority,
+  };
+}
+
 function isImageAnalysisSize(raw: unknown): raw is { width: number; height: number } {
   return (
     raw !== null &&
@@ -865,6 +931,10 @@ function parseProjectJson(raw: unknown) {
   const floorGeometrySource = parseProjectFloorGeometrySource(project.floorGeometrySource, projectGeometry);
   const projectPlateMap = parseProjectPlateMap(project.plateMap);
   const expectedRefs = parseProjectExpectedRefs(project.expectedRefs);
+  const plateMapUnit = typeof project.plateMapUnit === 'string' && project.plateMapUnit.trim() !== ''
+    ? project.plateMapUnit
+    : 'mM';
+  const plateEditorSnapshot = parseProjectPlateEditorSnapshot(project.plateConfigurator);
   const storedCalibrationRaw = project.storedCalibration;
   const storedCalibration = storedCalibrationRaw == null
     ? null
@@ -915,6 +985,8 @@ function parseProjectJson(raw: unknown) {
     floorGeometrySource,
     roiRadiusFactor,
     plateMap: projectPlateMap,
+    plateMapUnit,
+    plateEditorSnapshot,
     expectedRefs,
     storedCalibration,
     lowSignalCorrectionEnabled,
@@ -942,6 +1014,8 @@ function createProjectPayload(
   geometry: PlateGeometry,
   radiusFactor: number,
   plateMap: WellConfig[],
+  plateMapUnit: string,
+  plateEditorSnapshot: PlateEditorSnapshot | null,
   expectedRefs: ExpectedRef[],
   storedCalibration: StoredCalibration | null,
   lowSignalCorrectionEnabled: boolean,
@@ -966,6 +1040,8 @@ function createProjectPayload(
     roiMode,
     roiPixelStatisticsMode,
     plateMap,
+    plateMapUnit,
+    plateConfigurator: plateEditorSnapshot,
     expectedRefs,
     storedCalibration: storedCalibration ?? null,
     lowSignalCorrectionEnabled,
@@ -6313,6 +6389,7 @@ function App() {
   const [roiStats, setRoiStats] = useState<{ minPixels: number; maxPixels: number; meanPixels: number } | null>(null);
   const [plateMap, setPlateMap] = useState<WellConfig[]>(createEmptyPlateMap);
   const [plateMapUnit, setPlateMapUnit] = useState('mM');
+  const [plateEditorSnapshot, setPlateEditorSnapshot] = useState<PlateEditorSnapshot | null>(null);
   const [expectedRefs, setExpectedRefs] = useState<ExpectedRef[]>([]);
   const [calibrationFits, setCalibrationFits] = useState<CalibrationFit[]>([]);
   const [standardAdditionFits, setStandardAdditionFits] = useState<StandardAdditionFit[]>([]);
@@ -6764,13 +6841,17 @@ function App() {
       setError(null);
     } catch (overrideError) {
       const detail = overrideError instanceof Error ? overrideError.message : 'Unknown shared-geometry parse error.';
-      clearSharedGeometryOverrideState(`Shared geometry override load failed: ${detail}`);
+      if (sharedGeometryOverride) {
+        setSharedGeometryOverrideStatus(`Shared geometry override load failed: ${detail}. Existing override preserved.`);
+      } else {
+        clearSharedGeometryOverrideState(`Shared geometry override load failed: ${detail}`);
+      }
       clearMeasurementsAndFits();
       setError(`Could not load Python canonical geometry: ${file.name}. ${detail}`);
     } finally {
       event.currentTarget.value = '';
     }
-  }, [clearFits, clearMeasurementsAndFits, clearSharedGeometryOverrideState, wells]);
+  }, [clearFits, clearMeasurementsAndFits, clearSharedGeometryOverrideState, sharedGeometryOverride, wells]);
 
   const handleClearSharedGeometryOverride = useCallback(() => {
     clearSharedGeometryOverrideState();
@@ -6787,6 +6868,7 @@ function App() {
   const handleClearPlateMap = useCallback(() => {
     setPlateMap(createEmptyPlateMap());
     setPlateMapUnit('mM');
+    setPlateEditorSnapshot(null);
     clearFits();
   }, [clearFits]);
 
@@ -7038,6 +7120,8 @@ function App() {
         geometry,
         radiusFactor,
         plateMap,
+        plateMapUnit,
+        plateEditorSnapshot,
         expectedRefs,
         storedCalibration,
         useLowSignalCorrection,
@@ -7056,7 +7140,7 @@ function App() {
       const detail = saveError instanceof Error ? saveError.message : 'Unknown project save error.';
       setError(detail);
     }
-  }, [backgroundModel, expectedRefs, extractionSummary, fittingSummary, floorGeometrySource, floorRoiRadiusFactor, geometry, image, imageName, plateMap, radiusFactor, roiMode, roiPixelStatisticsMode, storedCalibration, useLowSignalCorrection]);
+  }, [backgroundModel, expectedRefs, extractionSummary, fittingSummary, floorGeometrySource, floorRoiRadiusFactor, geometry, image, imageName, plateEditorSnapshot, plateMap, plateMapUnit, radiusFactor, roiMode, roiPixelStatisticsMode, storedCalibration, useLowSignalCorrection]);
 
   const handleLoadProjectClick = useCallback(() => {
     projectFileInputRef.current?.click();
@@ -7107,6 +7191,8 @@ function App() {
       setRoiPixelStatisticsMode(project.roiPixelStatisticsMode ?? roiPixelStatisticsMode);
       setFloorRoiRadiusFactor(project.floorRoiRadiusFactor ?? floorRoiRadiusFactor);
       setPlateMap(project.plateMap);
+      setPlateMapUnit(project.plateMapUnit);
+      setPlateEditorSnapshot(project.plateEditorSnapshot);
       setExpectedRefs(project.expectedRefs);
       setStoredCalibration(project.storedCalibration);
       setBackgroundModel(project.backgroundModel ?? backgroundModel);
@@ -7137,7 +7223,6 @@ function App() {
         savedLowSignalCorrectionEnabled,
       });
 
-      clearSharedGeometryOverrideState('Python canonical geometry override cleared because a project was loaded.');
       clearMeasurementsAndFits();
       setManualPickingActive(false);
       setManualPoints([]);
@@ -7176,6 +7261,7 @@ function App() {
     setShowFloorCircles(true);
     setPlateMap(createEmptyPlateMap());
     setPlateMapUnit('mM');
+    setPlateEditorSnapshot(null);
     setExpectedRefs([]);
     setStoredCalibration(null);
     setUseLowSignalCorrection(false);
@@ -8134,7 +8220,6 @@ function App() {
           onImageLoaded={(loadedImage, fileName) => {
             setImage(loadedImage);
             setImageName(fileName);
-            clearSharedGeometryOverrideState('Python canonical geometry override cleared because a new image was loaded.');
             clearMeasurementsAndFits();
             setError(null);
           }}
@@ -8173,7 +8258,6 @@ function App() {
             setManualFloorCircles([]);
             setManualFloorCirclePreviewCenter(null);
             setManualFloorCircleRadiusDelta(0);
-            clearSharedGeometryOverrideState('Python canonical geometry override cleared because geometry changed.');
             clearMeasurementsAndFits();
             setError(null);
           }}
@@ -8479,11 +8563,13 @@ function App() {
           plateMap={plateMap}
           unitLabel={plateMapUnit}
           expectedRefs={expectedRefs}
+          editorSnapshot={plateEditorSnapshot}
           storedCalibrationLoaded={Boolean(storedCalibration)}
           onChange={handlePlateMapChange}
           onClear={handleClearPlateMap}
           onExpectedRefsChange={setExpectedRefs}
           onUnitLabelChange={setPlateMapUnit}
+          onEditorSnapshotChange={setPlateEditorSnapshot}
         />
         <ResultSection
           title="Stored Calibration"
