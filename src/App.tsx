@@ -72,6 +72,14 @@ const LIMITED_STORED_CALIBRATION_METADATA_WARNING = 'Stored calibration has limi
 const STORED_CALIBRATION_METHOD_MISMATCH_WARNING = 'Stored calibration method differs from current extraction method; results may not be comparable.';
 const MISSING_VALUE = 'Not available';
 const SHARED_GEOMETRY_OVERRIDE_SOURCE = 'python_canonical_override';
+const VALIDATION_SEARCH_PARAMS = typeof window !== 'undefined'
+  ? new URLSearchParams(window.location.search)
+  : null;
+const SHOW_VALIDATION_CONTROLS = VALIDATION_SEARCH_PARAMS?.get('validation') === '1' ||
+  VALIDATION_SEARCH_PARAMS?.get('dev') === '1';
+const SHOW_PUBLIC_PROJECT_CONTROLS = SHOW_VALIDATION_CONTROLS;
+const SHOW_PUBLIC_GEOMETRY_JSON_UPLOAD = SHOW_VALIDATION_CONTROLS;
+const SHOW_PUBLIC_GEOMETRY_DEVELOPER_CONTROLS = SHOW_VALIDATION_CONTROLS;
 
 interface SharedGeometryOverrideRecord {
   wellId: string;
@@ -6803,12 +6811,21 @@ function App() {
     : projectLoadedInfo.savedLowSignalCorrectionEnabled
       ? 'Low-signal correction enabled'
       : 'Low-signal correction disabled';
-  const compactStatusSummary = [
-    image ? 'Image ready' : 'Image waiting',
+  const analysisStatusLabel = isRunningCompleteAnalysis || isExtracting || isFitting
+    ? 'Analysis running'
+    : calibrationFits.length > 0 || standardAdditionFits.length > 0 || unknownResults.length > 0
+      ? 'Results available'
+      : overlayReady && configuredWellCount > 0
+        ? 'Analysis ready'
+        : 'Analysis waiting';
+  const publicStatusItems = [
+    image ? 'Image loaded' : 'Image waiting',
     wells.length === 96 ? 'Geometry ready' : 'Geometry waiting',
-    measurements.length > 0 ? 'Results ready' : 'Results waiting',
-    error ? 'Error' : null,
-  ].filter((item): item is string => item !== null).join(' � ');
+    configuredWellCount > 0 ? 'Map configured' : 'Map waiting',
+    analysisStatusLabel,
+    error ? 'Needs attention' : null,
+  ].filter((item): item is string => item !== null);
+  const compactStatusSummary = publicStatusItems.join(' / ');
 
   const clearFits = useCallback(() => {
     setCalibrationFits([]);
@@ -8059,7 +8076,7 @@ function App() {
     setIsRunningCompleteAnalysis(true);
     setPendingCompleteAnalysisFitting(false);
     setPendingCompleteAnalysisPackageExport(false);
-    setStatusMessage('Starting the browser analysis workflow...');
+    setStatusMessage('Starting analysis...');
     setError(null);
 
     try {
@@ -8081,10 +8098,10 @@ function App() {
         return;
       }
 
-      setStatusMessage('Browser analysis workflow: waiting for extracted measurements...');
+      setStatusMessage('Analysis waiting for extracted measurements...');
       setPendingCompleteAnalysisFitting(true);
     } catch {
-      setStatusMessage('Browser analysis workflow failed');
+      setStatusMessage('Analysis failed');
       setIsRunningCompleteAnalysis(false);
       setPendingCompleteAnalysisFitting(false);
       setPendingCompleteAnalysisPackageExport(false);
@@ -8110,7 +8127,7 @@ function App() {
     }
 
     setPendingCompleteAnalysisFitting(false);
-    setStatusMessage('Browser analysis workflow: fitting...');
+    setStatusMessage('Analysis fitting...');
 
     void runFittingRoutine({ useLowSignalCorrection }).then((fittingSucceeded) => {
       if (!fittingSucceeded) {
@@ -8119,7 +8136,7 @@ function App() {
         return;
       }
 
-      setStatusMessage('Browser analysis workflow: waiting for fitting results...');
+      setStatusMessage('Analysis waiting for fitting results...');
       setPendingCompleteAnalysisPackageExport(true);
     });
   }, [
@@ -8139,7 +8156,7 @@ function App() {
     }
 
     setPendingCompleteAnalysisPackageExport(false);
-    setStatusMessage('Browser analysis workflow: exporting package...');
+    setStatusMessage('Analysis package exporting...');
 
     void handleExportCompleteAnalysisPackage().finally(() => {
       setIsRunningCompleteAnalysis(false);
@@ -8173,7 +8190,7 @@ function App() {
           <p className="header-note">Tool for Image-based Plate-Integrated Colorimetric Analysis</p>
         </header>
 
-        <section className="control-section" aria-labelledby="project-heading">
+        {SHOW_PUBLIC_PROJECT_CONTROLS ? <section className="control-section" aria-labelledby="project-heading">
           <h2 id="project-heading">Project</h2>
           <button
             type="button"
@@ -8259,11 +8276,12 @@ function App() {
           ) : null}
           {projectLoadWarning ? <p className="panel-note">{projectLoadWarning}</p> : null}
           {loadedProjectMethodMetadataMismatch ? <p className="panel-note">Current method settings differ from the loaded project metadata.</p> : null}
-        </section>
+        </section> : null}
 
         <ImageGeometryLoader
           imageName={imageName}
           geometryName={geometryName}
+          showGeometryUpload={SHOW_PUBLIC_GEOMETRY_JSON_UPLOAD}
           onImageLoaded={(loadedImage, fileName) => {
             setImage(loadedImage);
             setImageName(fileName);
@@ -8384,14 +8402,14 @@ function App() {
           </dl>
           {geometryAlignmentDiagnostics?.warning ? <p className="panel-note">{geometryAlignmentDiagnostics.warning}</p> : null}
           {floorGeometryNotice ? <p className="panel-note">{floorGeometryNotice}</p> : null}
-          <button
+          {SHOW_PUBLIC_GEOMETRY_DEVELOPER_CONTROLS ? <button
             type="button"
             className="secondary-button"
             onClick={handleExportGeometryJson}
           >
             Export complete geometry JSON
-          </button>
-          <details className="geometry-subsection">
+          </button> : null}
+          {SHOW_PUBLIC_GEOMETRY_DEVELOPER_CONTROLS ? <details className="geometry-subsection">
             <summary>Developer diagnostic: shared geometry override</summary>
             <button
               type="button"
@@ -8430,18 +8448,18 @@ function App() {
               </div>
             </dl>
             <p className="panel-note">{sharedGeometryOverrideStatus}</p>
-          </details>
+          </details> : null}
         </section>
 
         <section className="control-section" aria-labelledby="complete-workflow-heading">
-          <h2 id="complete-workflow-heading">Browser analysis workflow</h2>
+          <h2 id="complete-workflow-heading">Analysis</h2>
           <button
             type="button"
             className="primary-button"
             disabled={!overlayReady || configuredWellCount === 0 || isExtracting || isFitting || isRunningCompleteAnalysis || projectImageMismatchBlocksExtraction}
             onClick={handleRunCompleteValidatedAnalysis}
           >
-            {isRunningCompleteAnalysis ? 'Running browser analysis...' : 'Run browser analysis workflow'}
+            {isRunningCompleteAnalysis ? 'Running TIPICA analysis...' : 'Run TIPICA analysis'}
           </button>
         </section>
 
@@ -8507,76 +8525,28 @@ function App() {
 
         <details className="control-section compact-status-section">
           <summary id="status-heading">
-            <span>Status � {compactStatusSummary}</span>
+            <span>Status - {compactStatusSummary}</span>
           </summary>
           <dl className="status-list">
             <div>
               <dt>Image</dt>
-              <dd>{image ? `${image.naturalWidth} x ${image.naturalHeight}px` : 'Waiting'}</dd>
+              <dd>{image ? 'Loaded' : 'Waiting'}</dd>
             </div>
             <div>
               <dt>Geometry</dt>
-              <dd>{wells.length === 96 ? '96 wells generated' : 'Waiting'}</dd>
-            </div>
-            <div>
-              <dt>Overlay</dt>
-              <dd>{overlayReady ? 'Ready' : 'Waiting'}</dd>
-            </div>
-            <div>
-              <dt>Selected ROI mode</dt>
-              <dd>{formatRoiMode(roiMode)}</dd>
-            </div>
-            <div>
-              <dt>ROI pixel statistics</dt>
-              <dd>{formatRoiPixelStatisticsMode(roiPixelStatisticsMode)}</dd>
-            </div>
-            <div>
-              <dt>Floor geometry</dt>
-              <dd>{floorGeometryAvailable ? 'Available' : 'Missing'}</dd>
-            </div>
-            <div>
-              <dt>Floor geometry source</dt>
-              <dd>{floorGeometrySourceLabel}</dd>
-            </div>
-            <div>
-              <dt>Shared geometry override</dt>
-              <dd>{sharedGeometryOverride ? `${sharedGeometryOverride.wellCount} wells from ${sharedGeometryOverride.sourceName}` : 'Inactive'}</dd>
-            </div>
-            {roiStats ? (
-              <>
-                <div>
-                  <dt>ROI pixels (min/mean/max)</dt>
-                  <dd>{roiStats.minPixels.toFixed(0)} / {roiStats.meanPixels.toFixed(0)} / {roiStats.maxPixels.toFixed(0)}</dd>
-                </div>
-              </>
-            ) : null}
-            <div>
-              <dt>Results</dt>
-              <dd>{measurements.length > 0 ? `${measurements.length} wells` : 'Waiting'}</dd>
+              <dd>{wells.length === 96 ? 'Ready' : 'Waiting'}</dd>
             </div>
             <div>
               <dt>Map</dt>
-              <dd>{configuredWellCount} configured wells</dd>
+              <dd>{configuredWellCount > 0 ? 'Configured' : 'Waiting'}</dd>
             </div>
             <div>
-              <dt>Fits</dt>
-              <dd>{fittingSummary}</dd>
+              <dt>Analysis</dt>
+              <dd>{analysisStatusLabel}</dd>
             </div>
             <div>
-              <dt>Stored cal</dt>
-              <dd>{storedCalibration ? storedCalibration.sourceName : 'Waiting'}</dd>
-            </div>
-            <div>
-              <dt>Correction</dt>
-              <dd>{useLowSignalCorrection ? lowSignalCorrectionSource : 'Off'}</dd>
-            </div>
-            <div>
-              <dt>Unknowns</dt>
-              <dd>{unknownResults.length > 0 ? `${unknownResults.length} rows` : 'Waiting'}</dd>
-            </div>
-            <div>
-              <dt>Process</dt>
-              <dd>{statusMessage}</dd>
+              <dt>Results</dt>
+              <dd>{measurements.length > 0 ? 'Available' : 'Waiting'}</dd>
             </div>
           </dl>
           {error ? <p className="error-message">{error}</p> : null}

@@ -5,6 +5,7 @@ import type { PlateGeometry } from '../types/geometry';
 interface ImageGeometryLoaderProps {
   imageName: string | null;
   geometryName: string | null;
+  showGeometryUpload?: boolean;
   onImageLoaded: (image: HTMLImageElement, fileName: string) => void;
   onGeometryLoaded: (geometry: PlateGeometry, fileName: string) => void;
   onError: (message: string) => void;
@@ -13,6 +14,7 @@ interface ImageGeometryLoaderProps {
 export function ImageGeometryLoader({
   imageName,
   geometryName,
+  showGeometryUpload = false,
   onImageLoaded,
   onGeometryLoaded,
   onError,
@@ -68,11 +70,15 @@ export function ImageGeometryLoader({
       </label>
       <p className="file-name">{imageName ?? 'No image selected'}</p>
 
-      <label className="file-control">
-        <span>Geometry JSON</span>
-        <input type="file" accept="application/json,.json" onChange={handleGeometryChange} />
-      </label>
-      <p className="file-name">{geometryName ?? 'No geometry selected'}</p>
+      {showGeometryUpload ? (
+        <>
+          <label className="file-control">
+            <span>Geometry JSON</span>
+            <input type="file" accept="application/json,.json" onChange={handleGeometryChange} />
+          </label>
+          <p className="file-name">{geometryName ?? 'No geometry selected'}</p>
+        </>
+      ) : null}
     </section>
   );
 }
