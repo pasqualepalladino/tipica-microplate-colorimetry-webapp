@@ -1091,6 +1091,109 @@ function createAnalysisImageData(image: HTMLImageElement, wells: WellCenter[]): 
   return ctx.getImageData(0, 0, coordinateSize.width, coordinateSize.height);
 }
 
+function summarizePlateMapForMetadata(plateMap: WellConfig[]): { wellCount: number; roles: Record<string, number>; rowLabels: string[]; colLabels: number[] } {
+  const roles = plateMap.reduce<Record<string, number>>((accumulator, well) => {
+    accumulator[well.role] = (accumulator[well.role] ?? 0) + 1;
+    return accumulator;
+  }, {});
+
+  return {
+    wellCount: plateMap.length,
+    roles,
+    rowLabels: Array.from(new Set(plateMap.map((well) => String(well.row)))).sort(),
+    colLabels: Array.from(new Set(plateMap.map((well) => well.col))).sort((a, b) => a - b),
+  };
+}
+
+function createAnalysisRunConfigMetadata(options: {
+  imageName: string | null;
+  geometryName: string | null;
+  geometrySource: string;
+  roiMode: RoiMode;
+  roiPixelStatisticsMode: RoiPixelStatisticsMode;
+  backgroundModel: BackgroundModel;
+  radiusFactor: number;
+  floorRoiRadiusFactor: number;
+  floorGeometryAvailable: boolean;
+  floorCircles: FloorCircle[] | null;
+  geometry: PlateGeometry | null;
+  wells: WellCenter[];
+  plateMap: WellConfig[];
+  plateMapUnit: string;
+  expectedRefs: ExpectedRef[];
+  storedCalibration: StoredCalibration | null;
+  sharedGeometryOverride: SharedGeometryOverrideState | null;
+  appVersion: string;
+  generatedAt: string;
+}): Record<string, unknown> {
+  return {
+    appVersion: options.appVersion,
+    generatedAt: options.generatedAt,
+    imageName: options.imageName ?? null,
+    geometryName: options.geometryName ?? null,
+    geometrySource: options.geometrySource,
+    roiMode: options.roiMode,
+    roiPixelStatisticsMode: options.roiPixelStatisticsMode,
+    backgroundModel: options.backgroundModel,
+    radiusFactor: options.radiusFactor,
+    floorRoiRadiusFactor: options.floorRoiRadiusFactor,
+    floorGeometryAvailable: options.floorGeometryAvailable,
+    manualMouthGeometry: options.geometry
+      ? {
+        corner_a1: options.geometry.corner_a1,
+        corner_a12: options.geometry.corner_a12,
+        corner_h12: options.geometry.corner_h12,
+        corner_h1: options.geometry.corner_h1,
+        mouth_radius_px: options.geometry.mouth_radius_px ?? null,
+      }
+      : null,
+    floorCircles: options.floorGeometryAvailable && options.floorCircles && options.floorCircles.length === options.wells.length
+      ? options.floorCircles.map((circle) => ({ x: circle.x, y: circle.y, r: circle.r }))
+      : null,
+    sharedGeometryOverride: options.sharedGeometryOverride
+      ? {
+        sourceName: options.sharedGeometryOverride.sourceName,
+        wellCount: options.sharedGeometryOverride.wellCount,
+        missingWells: options.sharedGeometryOverride.missingWells,
+        ignoredFields: options.sharedGeometryOverride.ignoredFields,
+        records: Array.from(options.sharedGeometryOverride.recordsByWell.values()).map((record) => ({
+          wellId: record.wellId,
+          mouthCx: record.mouthCx,
+          mouthCy: record.mouthCy,
+          floorCx: record.floorCx,
+          floorCy: record.floorCy,
+          mouthRadius: record.mouthRadius,
+          floorRadius: record.floorRadius,
+          floorRadiusGeom: record.floorRadiusGeom ?? null,
+          mouthRadiusGeom: record.mouthRadiusGeom ?? null,
+          cylRadiusBg: record.cylRadiusBg ?? null,
+          localPitchPx: record.localPitchPx ?? null,
+          floorSource: record.floorSource ?? null,
+        })),
+      }
+      : null,
+    storedCalibration: options.storedCalibration
+      ? {
+        sourceName: options.storedCalibration.sourceName ?? null,
+        createdAt: options.storedCalibration.createdAt ?? null,
+        selectedChannel: options.storedCalibration.selectedChannel ?? null,
+        fitCount: options.storedCalibration.fits?.length ?? 0,
+        channelCount: options.storedCalibration.pythonChannels?.length ?? 0,
+      }
+      : null,
+    expectedRefs: options.expectedRefs.map((expectedRef) => ({
+      refId: expectedRef.refId,
+      label: expectedRef.label,
+      value: expectedRef.value,
+      sd: expectedRef.sd,
+    })),
+    plateMap: {
+      unit: options.plateMapUnit,
+      summary: summarizePlateMapForMetadata(options.plateMap),
+    },
+  };
+}
+
 function createDiagnosticCanvas(imageData: ImageData): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
   const canvas = document.createElement('canvas');
 
@@ -8127,6 +8230,35 @@ function App() {
         `${pythonRawDataDetailsPrefix}_RAW_DATA_DETAILS_CAPTION.txt`,
         createPythonRawDataDetailsCaptionText(pythonResultsBase, plateMapUnit),
         'text/plain;charset=utf-8',
+      );
+
+      const analysisRunConfigMetadata = createAnalysisRunConfigMetadata({
+        imageName,
+        geometryName,
+        geometrySource: currentMethodMetadata.geometrySource ?? 'unknown',
+        roiMode: currentMethodMetadata.roiMode,
+        roiPixelStatisticsMode: currentMethodMetadata.roiPixelStatisticsMode,
+        backgroundModel,
+        radiusFactor,
+        floorRoiRadiusFactor,
+        floorGeometryAvailable: sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable,
+        floorCircles: (sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable)
+          ? sharedGeometryOverride ? effectiveFloorCircles : floorCircles
+          : null,
+        geometry,
+        wells: sharedGeometryOverride ? effectiveWells : wells,
+        plateMap,
+        plateMapUnit,
+        expectedRefs,
+        storedCalibration,
+        sharedGeometryOverride,
+        appVersion: packageJson.version,
+        generatedAt: new Date().toISOString(),
+      });
+      addTextFile(
+        `${pythonRawDataDetailsPrefix}_analysis_run_config.json`,
+        JSON.stringify(analysisRunConfigMetadata, null, 2),
+        'application/json;charset=utf-8',
       );
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
