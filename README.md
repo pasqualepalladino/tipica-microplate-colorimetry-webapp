@@ -2,6 +2,8 @@
 
 TIPICA Webapp is a beta browser-based companion implementation of TIPICA, designed to improve accessibility of image-based plate colorimetric analysis workflows.
 
+This beta release is a browser-based companion implementation for TIPICA-style plate colorimetry workflows. It produces Python-style outputs and reproducibility metadata for local review and comparison, but it is not yet validated as a full equivalent to the archived Python reference implementation. Numerical results, XLSX/TXT content, figure formatting, and several diagnostics remain under active parity validation; Python remains the reference for exact artifact structure and scientific outputs.
+
 TIPICA Webapp is currently a beta companion interface under active parity validation. The archived Python desktop implementation remains the reference implementation for the manuscript results.
 
 The webapp was not used to generate the submitted manuscript results. Users should not interpret the current webapp as a validated substitute for the archived Python desktop release.
@@ -50,7 +52,14 @@ Safety flags for the beta release:
 
 The archived Python desktop implementation remains the reference implementation for the manuscript results. The browser implementation is being checked against that reference output before any broader parity claim should be made.
 
-## Output package
+## Exported artifacts
+
+The webapp exports a complete-analysis package as a ZIP archive containing Python-style RESULTS and RAW_DATA_DETAILS folders. Typical contents include:
+
+- XLSX workbooks for the RESULTS report and RAW_DATA_DETAILS diagnostics
+- TXT caption files for the report and raw-data details outputs
+- PNG figures for plate ROI overlays, RGB views, CIELAB/DeltaE diagnostics, and method-comparison views
+- Reproducibility metadata in RAW_DATA_DETAILS with analysis_run_config.json
 
 The current intended default ZIP structure is:
 
@@ -68,6 +77,7 @@ RAW_DATA_DETAILS/
   <base>_FIGURE_CIELAB_DELTAE.png
   <base>_METHOD_COMPARISON.png
   <base>_RAW_DATA_DETAILS_CAPTION.txt
+  <base>_analysis_run_config.json
 ```
 
 ## How to run locally
