@@ -22,6 +22,82 @@ function lerpPoint(a: Point, b: Point, t: number): Point {
   };
 }
 
+function solveLinearSystem(matrix: number[][], vector: number[]): number[] | null {
+  const size = matrix.length;
+  const augmented = matrix.map((row, index) => [...row, vector[index]]);
+
+  for (let pivot = 0; pivot < size; pivot += 1) {
+    let pivotRow = pivot;
+
+    while (pivotRow < size && Math.abs(augmented[pivotRow][pivot]) < 1e-12) {
+      pivotRow += 1;
+    }
+
+    if (pivotRow === size) {
+      return null;
+    }
+
+    if (pivotRow !== pivot) {
+      [augmented[pivot], augmented[pivotRow]] = [augmented[pivotRow], augmented[pivot]];
+    }
+
+    const pivotValue = augmented[pivot][pivot];
+
+    for (let col = pivot; col <= size; col += 1) {
+      augmented[pivot][col] /= pivotValue;
+    }
+
+    for (let row = 0; row < size; row += 1) {
+      if (row === pivot) {
+        continue;
+      }
+
+      const factor = augmented[row][pivot];
+      if (Math.abs(factor) < 1e-12) {
+        continue;
+      }
+
+      for (let col = pivot; col <= size; col += 1) {
+        augmented[row][col] -= factor * augmented[pivot][col];
+      }
+    }
+  }
+
+  return augmented.map((row) => row[size]);
+}
+
+function computePerspectiveTransform(src: Point[], dst: Point[]): number[] | null {
+  const matrix: number[][] = [];
+  const vector: number[] = [];
+
+  src.forEach((sourcePoint, index) => {
+    const targetPoint = dst[index];
+    const { x: u, y: v } = sourcePoint;
+    const { x: x, y: y } = targetPoint;
+
+    matrix.push([u, v, 1, 0, 0, 0, -x * u, -x * v]);
+    vector.push(x);
+    matrix.push([0, 0, 0, u, v, 1, -y * u, -y * v]);
+    vector.push(y);
+  });
+
+  const solution = solveLinearSystem(matrix, vector);
+  return solution ? [...solution, 1] : null;
+}
+
+function applyPerspectiveTransform(homography: number[], x: number, y: number): Point | null {
+  const denominator = homography[6] * x + homography[7] * y + homography[8];
+
+  if (!Number.isFinite(denominator) || Math.abs(denominator) < 1e-12) {
+    return null;
+  }
+
+  return {
+    x: (homography[0] * x + homography[1] * y + homography[2]) / denominator,
+    y: (homography[3] * x + homography[4] * y + homography[5]) / denominator,
+  };
+}
+
 function distance(a: WellCenter, b: WellCenter): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
@@ -228,6 +304,14 @@ export function generate96WellFloorCircles(geometry: PlateGeometry): FloorCircle
   const floorH12 = geometry.floor_h12_circle_img as FloorCircle;
   const floorH1 = geometry.floor_h1_circle_img as FloorCircle;
   const floorCircles: FloorCircle[] = [];
+  const sourceCorners: Point[] = [
+    { x: 0, y: 0 },
+    { x: COL_COUNT - 1, y: 0 },
+    { x: COL_COUNT - 1, y: ROW_COUNT - 1 },
+    { x: 0, y: ROW_COUNT - 1 },
+  ];
+  const targetCorners: Point[] = [floorA1, floorA12, floorH12, floorH1];
+  const perspectiveTransform = computePerspectiveTransform(sourceCorners, targetCorners);
 
   for (let row = 0; row < ROW_COUNT; row += 1) {
     const rowT = row / (ROW_COUNT - 1);
@@ -238,7 +322,10 @@ export function generate96WellFloorCircles(geometry: PlateGeometry): FloorCircle
 
     for (let col = 0; col < COL_COUNT; col += 1) {
       const colT = col / (COL_COUNT - 1);
-      const center = lerpPoint(leftEdge, rightEdge, colT);
+      const projectedCenter = perspectiveTransform
+        ? applyPerspectiveTransform(perspectiveTransform, col, row)
+        : null;
+      const center = projectedCenter ?? lerpPoint(leftEdge, rightEdge, colT);
       const radius = Math.max(1, lerp(leftRadius, rightRadius, colT));
 
       floorCircles.push({

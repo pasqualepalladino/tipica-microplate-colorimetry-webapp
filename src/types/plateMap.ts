@@ -20,6 +20,14 @@ export interface CalibrationFit {
   r2: number;
   rmse?: number;
   n: number;
+  sigmaCal?: number;
+  sigmaSource?: string;
+  snr?: number;
+  lod?: number;
+  loq?: number;
+  clipX?: string;
+  clipDelta?: string;
+  source?: string;
   covariance?: [[number, number], [number, number]];
   fitMethod?: string;
   correctionApplied?: boolean;

@@ -1388,8 +1388,8 @@ const PYTHON_RESULTS_CHANNEL_LABELS: Record<FitChannel, string> = {
 interface PythonResultsPlotPoint {
   x: number;
   y: number;
-  yerr: number;
-  n: number;
+  yerr?: number;
+  n?: number;
 }
 
 interface PythonResultsStandardAdditionGroup {
@@ -1544,6 +1544,7 @@ interface PythonReportWorkbookOptions {
   lowSignalCorrections: RgbLowSignalCorrection[];
   correctionApplications: WellChannelCorrectionApplication[];
   sharedGeometryOverride: SharedGeometryOverrideState | null;
+  storedCalibration: StoredCalibration | null;
 }
 
 function escapeXml(value: string): string {
@@ -1672,6 +1673,73 @@ async function createXlsxWorkbookBlob(sheets: XlsxSheet[]): Promise<Blob> {
 
 function reportChannelName(channel: FitChannel): string {
   return PYTHON_RESULTS_CHANNEL_LABELS[channel];
+}
+
+function calibrationFitsFromStoredCalibration(calibration: StoredCalibration | null): CalibrationFit[] {
+  if (!calibration) {
+    return [];
+  }
+
+  return calibration.fits.map((fit) => ({
+    channel: fit.channel,
+    slope: fit.slope,
+    intercept: fit.intercept,
+    r2: fit.r2,
+    rmse: fit.rmse,
+    n: fit.n,
+    sigmaCal: fit.sigmaCal,
+    sigmaSource: fit.sigmaSource,
+    snr: fit.snr,
+    lod: fit.lod,
+    loq: fit.loq,
+    S0: fit.S0,
+    meanClipDelta: null,
+    clipX: fit.clipX,
+    clipDelta: fit.clipDelta,
+    source: 'stored_calibration',
+  }));
+}
+
+function storedCalibrationDiagnosticFitRows(calibration: StoredCalibration | null): XlsxRow[] {
+  if (!calibration?.pythonChannels) {
+    return [];
+  }
+
+  return calibration.pythonChannels.filter((fit) => ![
+    'Signal_Red',
+    'Signal_Green',
+    'Signal_Blue',
+    'PAbs_Red',
+    'PAbs_Green',
+    'PAbs_Blue',
+    'Red',
+    'Green',
+    'Blue',
+  ].includes(fit.channel)).map((fit) => ({
+    Channel: fit.channel.replace(/^Signal_/, 'PAbs_'),
+    FitType: 'Calibration',
+    ID: '',
+    DF: '',
+    n_points: fit.n,
+    m: fit.slope,
+    q: fit.intercept,
+    R2: fit.r2,
+    RMSE: fit.rmse ?? '',
+    sigma_cal: fit.sigmaCal ?? '',
+    sigma_source: fit.sigmaSource ?? '',
+    SNR: fit.snr ?? '',
+    LOD: fit.lod ?? '',
+    LOQ: fit.loq ?? '',
+    C0: '',
+    C0_sd: '',
+    beta_k: '',
+    bias_index_k: '',
+    S0_calibration: fit.S0 ?? '',
+    S0_applied: fit.S0 ?? '',
+    NClipPoints: fit.nClipPoints ?? '',
+    ClipX: fit.clipX ?? '',
+    ClipDelta: fit.clipDelta ?? '',
+  }));
 }
 
 function reportFitSignalSourceLabel(channel: FitChannel, corrected: boolean): string {
@@ -1902,7 +1970,9 @@ function groupedMedianRows(points: { x: number; y: number }[]): { x: number; y: 
 
 function expectedRefKey(label: string, index: number): string {
   const safe = label.trim().replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-  return safe || `Reference_${index}`;
+  // Always include the reference index to ensure deterministic unique keys even when labels duplicate.
+  const base = safe || 'Reference';
+  return `${base}_${index}`;
 }
 
 function referenceMatchesSample(ref: ExpectedRef, sampleId: string): boolean {
@@ -2130,7 +2200,39 @@ function buildReportFitRows(
     const pointRows = collectCalibrationMedianPointsForChannel(fit.channel, displayMeasurements, plateMap);
     const rawPointRows = collectCalibrationMedianPointsForChannel(fit.channel, measurements, plateMap);
     const ranking = rankingByChannel.get(fit.channel);
-    const sigmaCal = ranking?.sigmaCal ?? Number.NaN;
+    // Prefer stored calibration reported sigma/LOQ when the fit originates from a stored calibration payload.
+    const isStoredCalibration = (fit as any).source === 'stored_calibration';
+    let sigmaCal = isStoredCalibration
+      ? (Number.isFinite(fit.sigmaCal ?? Number.NaN) ? fit.sigmaCal as number : (Number.isFinite(ranking?.sigmaCal ?? Number.NaN) ? ranking!.sigmaCal : Number.NaN))
+      : (fit.sigmaCal ?? ranking?.sigmaCal ?? Number.NaN);
+    let sigmaSource = isStoredCalibration
+      ? (Number.isFinite(fit.sigmaCal ?? Number.NaN) ? (fit.sigmaSource ?? 'stored_calibration') : (ranking?.sigmaSource ?? ''))
+      : (fit.sigmaSource ?? ranking?.sigmaSource ?? '');
+    let lodValue = isStoredCalibration
+      ? (Number.isFinite(fit.lod ?? Number.NaN) ? fit.lod as number : (Number.isFinite(ranking?.lod ?? Number.NaN) ? ranking!.lod : Number.NaN))
+      : (Number.isFinite(fit.lod ?? Number.NaN) ? fit.lod as number : (Number.isFinite(ranking?.lod ?? Number.NaN) ? ranking!.lod : Number.NaN));
+    let loqValue = isStoredCalibration
+      ? (Number.isFinite(fit.loq ?? Number.NaN) ? fit.loq as number : (Number.isFinite(ranking?.loq ?? Number.NaN) ? ranking!.loq : Number.NaN))
+      : (Number.isFinite(fit.loq ?? Number.NaN) ? fit.loq as number : (Number.isFinite(ranking?.loq ?? Number.NaN) ? ranking!.loq : Number.NaN));
+
+    // If stored calibration fit lacked sigma/LOQ, attempt to estimate sigma from the stored calibration calibration points
+    // using the same estimator as the Python ranking helper, and compute LOD/LOQ from it when possible.
+    if (isStoredCalibration && !Number.isFinite(sigmaCal)) {
+      const estimated = estimateSigmaForPythonResultsLoq(pointRows);
+      if (Number.isFinite(estimated.sigma)) {
+        sigmaCal = estimated.sigma;
+        if (!sigmaSource) {
+          sigmaSource = estimated.source;
+        }
+      }
+    }
+
+    if (isStoredCalibration && !Number.isFinite(lodValue) && Number.isFinite(sigmaCal) && Number.isFinite(fit.slope) && Math.abs(fit.slope) > 1e-15) {
+      lodValue = (3 * sigmaCal) / Math.abs(fit.slope);
+    }
+    if (isStoredCalibration && !Number.isFinite(loqValue) && Number.isFinite(sigmaCal) && Number.isFinite(fit.slope) && Math.abs(fit.slope) > 1e-15) {
+      loqValue = (10 * sigmaCal) / Math.abs(fit.slope);
+    }
     const correction = correctionForChannel(lowSignalCorrections, fit.channel);
     const fitX = pointRows.map((point) => point.x);
     const rawY = alignedYValues(rawPointRows, fitX);
@@ -2144,17 +2246,17 @@ function buildReportFitRows(
       m: fit.slope,
       q: fit.intercept,
       R2: fit.r2,
-      RMSE: finiteRmse(pointRows, fit.slope, fit.intercept),
+      RMSE: Number.isFinite(fit.rmse ?? Number.NaN) ? fit.rmse as number : finiteRmse(pointRows, fit.slope, fit.intercept),
       sigma_cal: Number.isFinite(sigmaCal) ? sigmaCal : '',
-      sigma_source: ranking?.sigmaSource ?? '',
-      SNR: Number.isFinite(sigmaCal) && sigmaCal > 0 ? Math.abs(fit.slope) / sigmaCal : '',
-      LOD: ranking && Number.isFinite(ranking.lod) ? ranking.lod : '',
-      LOQ: ranking && Number.isFinite(ranking.loq) ? ranking.loq : '',
+      sigma_source: sigmaSource ?? '',
+      SNR: Number.isFinite(fit.snr ?? Number.NaN) ? fit.snr as number : Number.isFinite(sigmaCal) && sigmaCal > 0 ? Math.abs(fit.slope) / sigmaCal : '',
+      LOD: Number.isFinite(lodValue) ? lodValue : '',
+      LOQ: Number.isFinite(loqValue) ? loqValue : '',
       S0_calibration: fit.S0 ?? '',
       S0_applied: fit.S0 ?? '',
       NClipPoints: correction?.nClipPoints ?? '',
-      ClipX: correction ? joinedNumberCell(correction.clipPoints.map((point) => point.concentration)) : '',
-      ClipDelta: fit.meanClipDelta ?? '',
+      ClipX: fit.clipX ?? (correction ? joinedNumberCell(correction.clipPoints.map((point) => point.concentration)) : ''),
+      ClipDelta: fit.clipDelta ?? fit.meanClipDelta ?? '',
       FitSignalSource: reportFitSignalSourceLabel(fit.channel, Boolean(fit.correctionApplied)),
       FitX_points: joinedNumberCell(fitX),
       FitY_raw_points: joinedNumberCell(rawY),
@@ -2178,16 +2280,12 @@ function buildReportFitRows(
       ? fit.slope / cal.slope
       : Number.NaN;
     const fitX = fit.addedConcentrationsUsed ?? [];
-    const fitY = fit.meanSignalValuesUsed ?? [];
-    const points = fitX.map((x, index) => ({ x, y: fitY[index] ?? Number.NaN }));
     const rawPointRows = collectStandardAdditionMedianPointsForChannel(fit, fit.channel, measurements, plateMap);
     const rawY = alignedYValues(rawPointRows, fitX);
+    const fitY = fit.meanSignalValuesUsed ?? [];
     const correction = correctionForChannel(lowSignalCorrections, fit.channel);
     const clipAudit = alignedClipValues(correction, fitX);
-    const c0Sd = Number.isFinite(fit.concentrationInOriginalSampleSd ?? Number.NaN)
-      ? fit.concentrationInOriginalSampleSd as number
-      : '';
-
+    const points = fitX.map((x, index) => ({ x, y: typeof fitY[index] === 'number' ? fitY[index] : Number.NaN }));
     rows.push({
       Channel: reportChannelName(fit.channel),
       FitType: 'StdAdd',
@@ -2204,7 +2302,7 @@ function buildReportFitRows(
       ID: fit.sampleId,
       DF: fit.dilutionFactor,
       C0: fit.concentrationInOriginalSample,
-      C0_sd: c0Sd,
+      C0_sd: Number.isFinite(fit.concentrationInOriginalSampleSd ?? Number.NaN) ? fit.concentrationInOriginalSampleSd as number : '',
       beta_k: Number.isFinite(beta) ? beta : '',
       bias_index_k: Number.isFinite(beta) ? Math.abs(beta - 1) : '',
       S0_calibration: '',
@@ -2609,7 +2707,11 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     options.rankings,
     options.lowSignalCorrections,
   );
-  const fitRows = [...rgbFitRows, ...buildCielabFittingRows(cielabPoints)];
+  const fitRows = [
+    ...rgbFitRows,
+    ...storedCalibrationDiagnosticFitRows(options.storedCalibration),
+    ...buildCielabFittingRows(cielabPoints),
+  ];
   const methodComparisonRows = buildMethodComparisonRowsFromFitRows(fitRows, options.expectedRefs, true);
   const overviewRows = buildReportOverviewRows(
     options.imageBase,
@@ -3455,7 +3557,11 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
     options.rankings,
     options.lowSignalCorrections,
   );
-  const methodComparisonRows = buildMethodComparisonRowsFromFitRows([...rgbFitRows, ...buildCielabFittingRows(cielabPoints)], options.expectedRefs, false);
+  const methodComparisonRows = buildMethodComparisonRowsFromFitRows([
+    ...rgbFitRows,
+    ...storedCalibrationDiagnosticFitRows(options.storedCalibration),
+    ...buildCielabFittingRows(cielabPoints),
+  ], options.expectedRefs, false);
   const methodComparisonPreferred = [
     'Method',
     'Family',
@@ -4954,10 +5060,10 @@ function collectStandardAdditionPointsForFit(
   return groupedPoints;
 }
 
-function estimateSigmaForPythonResultsLoq(calibrationPoints: PythonResultsPlotPoint[]): { sigma: number; source: string } {
+function estimateSigmaForPythonResultsLoq(calibrationPoints: Array<Pick<PythonResultsPlotPoint, 'x' | 'y'> & Partial<Pick<PythonResultsPlotPoint, 'yerr' | 'n'>>>): { sigma: number; source: string } {
   const calibrationSdValues = calibrationPoints
     .map((point) => point.yerr)
-    .filter((value) => Number.isFinite(value) && value > 0);
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0);
   const medianCalibrationSd = medianFinite(calibrationSdValues);
 
   if (Number.isFinite(medianCalibrationSd) && medianCalibrationSd > 0) {
@@ -4967,7 +5073,7 @@ function estimateSigmaForPythonResultsLoq(calibrationPoints: PythonResultsPlotPo
   const zeroSdValues = calibrationPoints
     .filter((point) => Math.abs(point.x) <= 1e-12)
     .map((point) => point.yerr)
-    .filter((value) => Number.isFinite(value));
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
   const medianZeroSd = medianFinite(zeroSdValues);
 
   if (Number.isFinite(medianZeroSd)) {
@@ -5001,7 +5107,9 @@ function computePythonResultsChannelRankings(
     const cal = calibrationFits.find((fit) => fit.channel === channel);
     const std = standardAdditionFits.filter((fit) => fit.channel === channel);
     const calibrationPoints = collectCalibrationPointsForChannel(channel, measurements, plateMap);
-    const { sigma, source } = estimateSigmaForPythonResultsLoq(calibrationPoints);
+    const estimatedSigma = estimateSigmaForPythonResultsLoq(calibrationPoints);
+    const sigma = cal?.sigmaCal ?? estimatedSigma.sigma;
+    const source = cal?.sigmaSource ?? estimatedSigma.source;
     const r2Cal = cal && Number.isFinite(cal.r2) ? Math.max(0, cal.r2) : Number.NaN;
     const r2StdValues = std
       .map((fit) => fit.r2)
@@ -5025,10 +5133,14 @@ function computePythonResultsChannelRankings(
       .map((value) => Math.max(0, Math.min(1, value)));
     const slopeAgreement = meanFinite(slopeAgreementValues);
     const slope = cal?.slope ?? Number.NaN;
-    const lod = cal && Number.isFinite(sigma) && sigma > 0 && Number.isFinite(slope) && Math.abs(slope) > 1e-15
+    const lod = cal && Number.isFinite(cal.lod ?? Number.NaN)
+      ? cal.lod as number
+      : cal && Number.isFinite(sigma) && sigma > 0 && Number.isFinite(slope) && Math.abs(slope) > 1e-15
       ? (3 * sigma) / Math.abs(slope)
       : Number.NaN;
-    const loq = cal && Number.isFinite(sigma) && sigma > 0 && Number.isFinite(slope) && Math.abs(slope) > 1e-15
+    const loq = cal && Number.isFinite(cal.loq ?? Number.NaN)
+      ? cal.loq as number
+      : cal && Number.isFinite(sigma) && sigma > 0 && Number.isFinite(slope) && Math.abs(slope) > 1e-15
       ? (10 * sigma) / Math.abs(slope)
       : Number.NaN;
     let score = computePythonFitBaseScore(r2Cal, r2Std, slopeAgreement, loq);
@@ -5518,11 +5630,11 @@ function drawPythonStyleChannelPanel(
     ...(referenceX.length > 0 ? [0] : []),
     ...calibrationPoints.map((point) => point.y),
     ...calibrationPoints.flatMap((point) => (
-      Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []
+      typeof point.yerr === 'number' && Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []
     )),
     ...stdPoints.map((point) => point.y),
     ...stdPoints.flatMap((point) => (
-      Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []
+      typeof point.yerr === 'number' && Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []
     )),
   ];
   const xRange = rangeWithPadding(allX, 0, 1);
@@ -5660,7 +5772,7 @@ function drawPythonStyleChannelPanel(
   calibrationPoints.forEach((point) => {
     const px = xToPx(point.x);
     const py = yToPx(point.y);
-    if (Number.isFinite(point.yerr) && point.yerr > 0) {
+    if (typeof point.yerr === 'number' && Number.isFinite(point.yerr) && point.yerr > 0) {
       drawVerticalErrorBar(ctx, px, yToPx(point.y - point.yerr), yToPx(point.y + point.yerr), 10, color);
     }
 
@@ -5691,7 +5803,7 @@ function drawPythonStyleChannelPanel(
 
       const px = xToPx(point.x);
       const py = yToPx(point.y);
-      if (Number.isFinite(point.yerr) && point.yerr > 0) {
+      if (typeof point.yerr === 'number' && Number.isFinite(point.yerr) && point.yerr > 0) {
         drawVerticalErrorBar(ctx, px, yToPx(point.y - point.yerr), yToPx(point.y + point.yerr), 10, color);
       }
 
@@ -7776,8 +7888,11 @@ function App() {
       const displayMeasurements = lowSignalCorrectionEffective
         ? correctedMeasurementSet.measurements
         : measurements;
+      const effectiveCalibrationFits = storedCalibration
+        ? calibrationFitsFromStoredCalibration(storedCalibration)
+        : calibrationFits;
       const rankings = computePythonResultsChannelRankings(
-        calibrationFits,
+        effectiveCalibrationFits,
         standardAdditionFitsWithSlopeContext,
         displayMeasurements,
         plateMap,
@@ -7785,7 +7900,7 @@ function App() {
       const methodComparisonFitRows = [
         ...buildReportFitRows(
           measurements,
-          calibrationFits,
+          effectiveCalibrationFits,
           standardAdditionFitsWithSlopeContext,
           unknownResults,
           displayMeasurements,
@@ -7793,10 +7908,11 @@ function App() {
           rankings,
           activeLowSignalCorrections,
         ),
+        ...storedCalibrationDiagnosticFitRows(storedCalibration),
         ...buildCielabFittingRows(buildCielabDiagnosticPoints(measurements, plateMap).points),
       ];
       const methodComparisonRows = buildMethodComparisonRowsFromFitRows(methodComparisonFitRows, expectedRefs, true);
-      const bestChannel = rankings[0]?.channel ?? 'R';
+      const bestChannel = storedCalibration?.selectedChannel ?? rankings[0]?.channel ?? 'R';
       let backgroundVisualDiagnostics: BackgroundVisualDiagnostics | null = null;
       let pythonPlateOverlayCanvas: HTMLCanvasElement | null = null;
 
@@ -7819,7 +7935,7 @@ function App() {
           measurements,
           displayMeasurements,
           plateMap,
-          calibrationFits,
+          calibrationFits: effectiveCalibrationFits,
           standardAdditionFits: standardAdditionFitsWithSlopeContext,
           expectedRefs,
           unitLabel: plateMapUnit,
@@ -7832,7 +7948,7 @@ function App() {
           bestChannel,
           displayMeasurements,
           plateMap,
-          calibrationFits,
+          calibrationFits: effectiveCalibrationFits,
           standardAdditionFits: standardAdditionFitsWithSlopeContext,
           expectedRefs,
           unitLabel: plateMapUnit,
@@ -7887,7 +8003,7 @@ function App() {
           measurements,
           displayMeasurements,
           plateMap,
-          calibrationFits,
+          calibrationFits: effectiveCalibrationFits,
           standardAdditionFits: standardAdditionFitsWithSlopeContext,
           unknownResults,
           expectedRefs,
@@ -7900,6 +8016,7 @@ function App() {
           lowSignalCorrections: activeLowSignalCorrections,
           correctionApplications: correctedMeasurementSet.applications,
           sharedGeometryOverride,
+          storedCalibration,
         }),
       );
       addZipBlob(
@@ -7914,7 +8031,7 @@ function App() {
           measurements,
           displayMeasurements,
           plateMap,
-          calibrationFits,
+          calibrationFits: effectiveCalibrationFits,
           standardAdditionFits: standardAdditionFitsWithSlopeContext,
           unknownResults,
           expectedRefs,
@@ -7935,6 +8052,7 @@ function App() {
           floorCircles: (sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable)
             ? sharedGeometryOverride ? effectiveFloorCircles : floorCircles
             : null,
+          storedCalibration,
         }),
       );
       addZipBlob(
@@ -7949,7 +8067,7 @@ function App() {
           measurements,
           displayMeasurements,
           plateMap,
-          calibrationFits,
+          calibrationFits: effectiveCalibrationFits,
           standardAdditionFits: standardAdditionFitsWithSlopeContext,
           unknownResults,
           expectedRefs,
@@ -7970,6 +8088,7 @@ function App() {
           floorCircles: (sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable)
             ? sharedGeometryOverride ? effectiveFloorCircles : floorCircles
             : null,
+          storedCalibration,
         }),
       );
       if (measurements.length > 0 && pythonPlateOverlayCanvas) {
@@ -8043,6 +8162,7 @@ function App() {
     radiusFactor,
     sharedGeometryExclusionRadiiByWell,
     sharedGeometryOverride,
+    storedCalibration,
     standardAdditionFitsWithSlopeContext,
     unknownResults,
     wells,

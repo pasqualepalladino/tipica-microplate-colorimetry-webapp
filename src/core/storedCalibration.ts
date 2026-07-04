@@ -7,6 +7,7 @@ import type {
 import type {
   StoredCalibration,
   StoredCalibrationFit,
+  PythonStoredCalibrationChannel,
   RgbLowSignalClipPoint,
   RgbLowSignalCorrection,
   UnknownConcentrationResult,
@@ -68,6 +69,22 @@ function parseChannel(value: unknown): FitChannel {
   throw new Error('Stored calibration fit channel must be R, G, or B.');
 }
 
+function parsePythonBundleChannelName(value: unknown): FitChannel | null {
+  if (value === 'Signal_Red' || value === 'PAbs_Red' || value === 'Red') {
+    return 'R';
+  }
+
+  if (value === 'Signal_Green' || value === 'PAbs_Green' || value === 'Green') {
+    return 'G';
+  }
+
+  if (value === 'Signal_Blue' || value === 'PAbs_Blue' || value === 'Blue') {
+    return 'B';
+  }
+
+  return null;
+}
+
 function parseLowSignalClipPoint(rawClipPoint: unknown): RgbLowSignalClipPoint {
   if (!isRecord(rawClipPoint)) {
     throw new Error('Each stored calibration correction clip point must be an object.');
@@ -127,6 +144,209 @@ function parseStoredCalibrationFit(rawFit: unknown): StoredCalibrationFit {
     intercept: parseFiniteNumber(rawFit.intercept, 'intercept'),
     r2: parseFiniteNumber(rawFit.r2, 'r2'),
     n: parsePositiveInteger(rawFit.n, 'n'),
+    ...(typeof rawFit.rmse === 'number' && Number.isFinite(rawFit.rmse) ? { rmse: rawFit.rmse } : {}),
+    ...(typeof rawFit.sigmaCal === 'number' && Number.isFinite(rawFit.sigmaCal) ? { sigmaCal: rawFit.sigmaCal } : {}),
+    ...(typeof rawFit.sigmaSource === 'string' ? { sigmaSource: rawFit.sigmaSource } : {}),
+    ...(typeof rawFit.snr === 'number' && Number.isFinite(rawFit.snr) ? { snr: rawFit.snr } : {}),
+    ...(typeof rawFit.lod === 'number' && Number.isFinite(rawFit.lod) ? { lod: rawFit.lod } : {}),
+    ...(typeof rawFit.loq === 'number' && Number.isFinite(rawFit.loq) ? { loq: rawFit.loq } : {}),
+    ...(typeof rawFit.S0 === 'number' && Number.isFinite(rawFit.S0) ? { S0: rawFit.S0 } : {}),
+    ...(typeof rawFit.nClipPoints === 'number' && Number.isFinite(rawFit.nClipPoints) ? { nClipPoints: rawFit.nClipPoints } : {}),
+    ...(typeof rawFit.clipX === 'string' ? { clipX: rawFit.clipX } : {}),
+    ...(typeof rawFit.clipDelta === 'string' ? { clipDelta: rawFit.clipDelta } : {}),
+  };
+}
+
+function optionalFiniteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function parsePythonStoredChannel(channelName: string, rawChannel: unknown): PythonStoredCalibrationChannel | null {
+  if (!isRecord(rawChannel)) {
+    return null;
+  }
+
+  const slope = optionalFiniteNumber(rawChannel.m);
+  const intercept = optionalFiniteNumber(rawChannel.q);
+  const r2 = optionalFiniteNumber(rawChannel.R2);
+
+  if (slope === undefined || intercept === undefined || r2 === undefined) {
+    return null;
+  }
+
+  const correction = isRecord(rawChannel.rgb_low_signal_correction)
+    ? rawChannel.rgb_low_signal_correction
+    : {};
+  const clipX = typeof rawChannel.ClipX === 'string'
+    ? rawChannel.ClipX
+    : Array.isArray(correction.clip_x)
+      ? correction.clip_x.join(',')
+      : undefined;
+  const clipDelta = typeof rawChannel.ClipDelta === 'string'
+    ? rawChannel.ClipDelta
+    : Array.isArray(correction.clip_delta)
+      ? correction.clip_delta.join(',')
+      : undefined;
+
+  return {
+    channel: channelName,
+    n: typeof rawChannel.n_points === 'number' && Number.isFinite(rawChannel.n_points)
+      ? rawChannel.n_points
+      : 0,
+    slope,
+    intercept,
+    r2,
+    ...(optionalFiniteNumber(rawChannel.RMSE) !== undefined ? { rmse: optionalFiniteNumber(rawChannel.RMSE) } : {}),
+    ...(optionalFiniteNumber(rawChannel.sigma_cal) !== undefined ? { sigmaCal: optionalFiniteNumber(rawChannel.sigma_cal) } : {}),
+    ...(typeof rawChannel.sigma_source === 'string' ? { sigmaSource: rawChannel.sigma_source } : {}),
+    ...(optionalFiniteNumber(rawChannel.SNR) !== undefined ? { snr: optionalFiniteNumber(rawChannel.SNR) } : {}),
+    ...(optionalFiniteNumber(rawChannel.LOD) !== undefined ? { lod: optionalFiniteNumber(rawChannel.LOD) } : {}),
+    ...(optionalFiniteNumber(rawChannel.LOQ) !== undefined ? { loq: optionalFiniteNumber(rawChannel.LOQ) } : {}),
+    ...(optionalFiniteNumber(rawChannel.S0_calibration) !== undefined ? { S0: optionalFiniteNumber(rawChannel.S0_calibration) } : {}),
+    ...(optionalFiniteNumber(rawChannel.NClipPoints) !== undefined ? { nClipPoints: optionalFiniteNumber(rawChannel.NClipPoints) } : {}),
+    ...(clipX !== undefined ? { clipX } : {}),
+    ...(clipDelta !== undefined ? { clipDelta } : {}),
+  };
+}
+
+function parsePythonStoredCalibrationCorrection(
+  channelName: string,
+  rawChannel: unknown,
+): RgbLowSignalCorrection | null {
+  if (!isRecord(rawChannel)) {
+    return null;
+  }
+
+  const correctionRaw = rawChannel.rgb_low_signal_correction;
+  if (!isRecord(correctionRaw)) {
+    return null;
+  }
+
+  const channel = parsePythonBundleChannelName(channelName);
+  if (!channel) {
+    return null;
+  }
+
+  if (!Array.isArray(correctionRaw.clip_x) || !Array.isArray(correctionRaw.clip_delta)) {
+    return null;
+  }
+
+  const clipX = correctionRaw.clip_x;
+  const clipDelta = correctionRaw.clip_delta;
+  if (clipX.length !== clipDelta.length) {
+    return null;
+  }
+
+  const clipYObserved = Array.isArray(correctionRaw.clip_y_observed) ? correctionRaw.clip_y_observed : [];
+  const clipYShifted = Array.isArray(correctionRaw.clip_y_shifted) ? correctionRaw.clip_y_shifted : [];
+  const clipYExpected = Array.isArray(correctionRaw.clip_y_expected) ? correctionRaw.clip_y_expected : [];
+  const clipThreshold = Array.isArray(correctionRaw.clip_sd_threshold)
+    ? correctionRaw.clip_sd_threshold
+    : Array.isArray(correctionRaw.clip_sd)
+      ? correctionRaw.clip_sd
+      : [];
+
+  const clipPoints = clipX.map((concentration, index) => {
+    const yRaw = index < clipYObserved.length ? clipYObserved[index] : 0;
+    const yShifted = index < clipYShifted.length ? clipYShifted[index] : 0;
+    const yExpected = index < clipYExpected.length ? clipYExpected[index] : 0;
+    const threshold = index < clipThreshold.length ? clipThreshold[index] : 0;
+
+    return {
+      concentration: parseFiniteNumber(concentration, 'correction concentration'),
+      yRaw: parseFiniteNumber(yRaw, 'correction yRaw'),
+      yShifted: parseFiniteNumber(yShifted, 'correction yShifted'),
+      yExpected: parseFiniteNumber(yExpected, 'correction yExpected'),
+      threshold: parseNonNegativeNumber(threshold, 'correction threshold'),
+      clipDelta: parseNonNegativeNumber(clipDelta[index], 'correction clipDelta'),
+    };
+  });
+
+  const S0 = parseNonNegativeNumber(correctionRaw.S0_calibration ?? correctionRaw.S0 ?? 0, 'correction S0_calibration');
+  const nClipPoints = parseNonNegativeInteger(correctionRaw.n_clip_points ?? 0, 'correction n_clip_points');
+
+  return {
+    channel,
+    S0,
+    forcedZeroSlope: 0,
+    nCalibrationPoints: clipPoints.length,
+    nClipPoints,
+    clipPoints,
+  };
+}
+
+function parsePythonStoredCalibrationBundle(raw: Record<string, unknown>): StoredCalibration | null {
+  if (!isRecord(raw.channels)) {
+    return null;
+  }
+
+  const pythonChannels = Object.entries(raw.channels)
+    .flatMap(([channelName, rawChannel]) => {
+      const parsed = parsePythonStoredChannel(channelName, rawChannel);
+      return parsed ? [parsed] : [];
+    });
+  const fitByChannel = new Map<FitChannel, StoredCalibrationFit>();
+
+  pythonChannels.forEach((channel) => {
+    const fitChannel = parsePythonBundleChannelName(channel.channel);
+    if (!fitChannel || fitByChannel.has(fitChannel)) {
+      return;
+    }
+
+    fitByChannel.set(fitChannel, {
+      channel: fitChannel,
+      slope: channel.slope,
+      intercept: channel.intercept,
+      r2: channel.r2,
+      n: Math.max(1, Math.round(channel.n)),
+      ...(channel.rmse !== undefined ? { rmse: channel.rmse } : {}),
+      ...(channel.sigmaCal !== undefined ? { sigmaCal: channel.sigmaCal } : {}),
+      ...(channel.sigmaSource !== undefined ? { sigmaSource: channel.sigmaSource } : {}),
+      ...(channel.snr !== undefined ? { snr: channel.snr } : {}),
+      ...(channel.lod !== undefined ? { lod: channel.lod } : {}),
+      ...(channel.loq !== undefined ? { loq: channel.loq } : {}),
+      ...(channel.S0 !== undefined ? { S0: channel.S0 } : {}),
+      ...(channel.nClipPoints !== undefined ? { nClipPoints: channel.nClipPoints } : {}),
+      ...(channel.clipX !== undefined ? { clipX: channel.clipX } : {}),
+      ...(channel.clipDelta !== undefined ? { clipDelta: channel.clipDelta } : {}),
+    });
+  });
+
+  const fits = CHANNELS.flatMap((channel) => {
+    const fit = fitByChannel.get(channel);
+    return fit ? [fit] : [];
+  });
+
+  if (fits.length !== CHANNELS.length) {
+    return null;
+  }
+
+  const correctionByChannel = new Map<FitChannel, RgbLowSignalCorrection>();
+  for (const [channelName, rawChannel] of Object.entries(raw.channels)) {
+    const correction = parsePythonStoredCalibrationCorrection(channelName, rawChannel);
+    if (correction && !correctionByChannel.has(correction.channel)) {
+      correctionByChannel.set(correction.channel, correction);
+    }
+  }
+
+  const corrections = CHANNELS.flatMap((channel) => {
+    const correction = correctionByChannel.get(channel);
+    return correction ? [correction] : [];
+  });
+
+  const selectedChannel = parsePythonBundleChannelName(raw.selected_channel);
+
+  return {
+    version: 2,
+    sourceName: typeof raw.image_basename === 'string' && raw.image_basename.trim()
+      ? raw.image_basename.trim()
+      : 'Python stored calibration',
+    createdAt: new Date().toISOString(),
+    unit: raw.unit_label === 'mM' || raw.unit_label === undefined ? 'mM' : 'mM',
+    fits,
+    ...(selectedChannel ? { selectedChannel } : {}),
+    ...(corrections.length ? { corrections } : {}),
+    pythonChannels,
   };
 }
 
@@ -239,6 +459,11 @@ export function createStoredCalibrationFromFits(
 export function parseStoredCalibrationJson(raw: unknown): StoredCalibration {
   if (!isRecord(raw)) {
     throw new Error('Stored calibration JSON must be an object.');
+  }
+
+  const pythonBundle = parsePythonStoredCalibrationBundle(raw);
+  if (pythonBundle) {
+    return pythonBundle;
   }
 
   const version = raw.version;

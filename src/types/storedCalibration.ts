@@ -7,6 +7,34 @@ export interface StoredCalibrationFit {
   intercept: number;
   r2: number;
   n: number;
+  rmse?: number;
+  sigmaCal?: number;
+  sigmaSource?: string;
+  snr?: number;
+  lod?: number;
+  loq?: number;
+  S0?: number | null;
+  nClipPoints?: number | null;
+  clipX?: string;
+  clipDelta?: string;
+}
+
+export interface PythonStoredCalibrationChannel {
+  channel: string;
+  n: number;
+  slope: number;
+  intercept: number;
+  r2: number;
+  rmse?: number;
+  sigmaCal?: number;
+  sigmaSource?: string;
+  snr?: number;
+  lod?: number;
+  loq?: number;
+  S0?: number | null;
+  nClipPoints?: number | null;
+  clipX?: string;
+  clipDelta?: string;
 }
 
 export interface RgbLowSignalClipPoint {
@@ -33,6 +61,8 @@ export interface StoredCalibration {
   createdAt: string;
   unit: 'mM';
   fits: StoredCalibrationFit[];
+  selectedChannel?: FitChannel;
+  pythonChannels?: PythonStoredCalibrationChannel[];
   corrections?: RgbLowSignalCorrection[];
   methodMetadata?: MethodMetadata;
 }
