@@ -6295,7 +6295,7 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
 
         <section className="about-dialog-section">
           <h3>Citation / version</h3>
-          <p>Citation, license, and version information will be finalized with the release documentation.</p>
+          <p>Citation, license, and version information are provided in the GitHub release documentation; the Zenodo DOI will be added before manuscript submission.</p>
         </section>
       </section>
     </div>
