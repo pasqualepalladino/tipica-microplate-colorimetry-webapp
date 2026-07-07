@@ -2072,10 +2072,15 @@ function groupedMedianRows(points: { x: number; y: number }[]): { x: number; y: 
 }
 
 function expectedRefKey(label: string, index: number): string {
-  const safe = label.trim().replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-  // Always include the reference index to ensure deterministic unique keys even when labels duplicate.
-  const base = safe || 'Reference';
-  return `${base}_${index}`;
+  const trimmed = label.trim();
+  const fallback = `Expected_${index}`;
+  const base = trimmed || fallback;
+  const safe = base
+    .replace(/[^A-Za-z0-9_ \/\\-]+/g, '')
+    .replace(/[ \/\\-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return safe || fallback;
 }
 
 function referenceMatchesSample(ref: ExpectedRef, sampleId: string): boolean {
