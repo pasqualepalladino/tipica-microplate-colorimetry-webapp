@@ -294,7 +294,11 @@ export function hasFloorGeometry(geometry: PlateGeometry): boolean {
   );
 }
 
-export function generate96WellFloorCircles(geometry: PlateGeometry): FloorCircle[] | null {
+export function generate96WellFloorCircles(
+  geometry: PlateGeometry,
+  wells: WellCenter[] | null = null,
+  radiusFactor: number | null = null,
+): FloorCircle[] | null {
   if (!hasFloorGeometry(geometry)) {
     return null;
   }
@@ -326,7 +330,13 @@ export function generate96WellFloorCircles(geometry: PlateGeometry): FloorCircle
         ? applyPerspectiveTransform(perspectiveTransform, col, row)
         : null;
       const center = projectedCenter ?? lerpPoint(leftEdge, rightEdge, colT);
-      const radius = Math.max(1, lerp(leftRadius, rightRadius, colT));
+      const interpolatedRadius = Math.max(1, lerp(leftRadius, rightRadius, colT));
+      const mouthRadius = wells && radiusFactor !== null
+        ? estimateRoiRadius(wells, row, col, radiusFactor)
+        : Number.NaN;
+      const radius = Number.isFinite(mouthRadius)
+        ? Math.min(Math.max(interpolatedRadius, 0.50 * mouthRadius), 1.05 * mouthRadius)
+        : interpolatedRadius;
 
       floorCircles.push({
         x: center.x,

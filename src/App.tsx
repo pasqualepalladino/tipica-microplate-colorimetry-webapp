@@ -6679,8 +6679,8 @@ function App() {
     [geometry],
   );
   const floorCircles = useMemo(
-    () => (geometry ? generate96WellFloorCircles(geometry) : null),
-    [geometry],
+    () => (geometry ? generate96WellFloorCircles(geometry, wells, radiusFactor) : null),
+    [geometry, radiusFactor, wells],
   );
   const effectiveWells = useMemo(() => {
     if (!sharedGeometryOverride) {
