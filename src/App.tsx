@@ -6,6 +6,7 @@ import { PlateMapEditor } from './components/PlateMapEditor';
 import packageJson from '../package.json';
 import { fitCalibration, fitLineWithCovariance, fitLinearRegression, fitStandardAddition, stdAddC0SdFromFit } from './core/fitting';
 import { computePythonImageQcInfo, type PythonImageQcInfo } from './core/imageQc';
+import { buildPythonReportOverviewRows } from './core/reportOverview';
 import {
   addCorrectionMetadataToCalibrationFits,
   addCorrectionMetadataToStandardAdditionFits,
@@ -2670,32 +2671,19 @@ function buildReportOverviewRows(
   unitLabel: string,
   selectedChannel: FitChannel,
   rankings: PythonResultsChannelRank[],
+  fitRows: XlsxRow[],
   methodComparisonRows: XlsxRow[],
+  expectedRefs: ExpectedRef[],
 ): XlsxRow[] {
-  const best = methodComparisonRows[0] ?? {};
-
-  return [
-    { Field: 'Report', Value: imageBase },
-    { Field: 'Unit', Value: unitLabel },
-    { Field: 'Mode', Value: calibrationAndStdAddModeLabel(methodComparisonRows) },
-    { Field: 'Selected method from rank', Value: best.Method ?? reportChannelName(selectedChannel) },
-    { Field: 'Selected family', Value: best.Family ?? 'PAbs' },
-    { Field: 'Ranking mode', Value: best.RankMode ?? '' },
-    { Field: 'Selected method score', Value: best.Score ?? '' },
-    { Field: 'R2 calibration', Value: best.R2_cal ?? '' },
-    { Field: 'R2 std add', Value: best.R2_std_mean ?? '' },
-    { Field: 'Slope agreement', Value: best.SlopeAgreement ?? '' },
-    { Field: 'C0 median', Value: best.C0_median ?? '' },
-    { Field: 'C0 SD median', Value: best.C0_sd_median ?? '' },
-    { Field: 'beta (mean)', Value: best.beta_mean ?? '' },
-    { Field: 'Bias index (mean)', Value: best.bias_index_mean ?? '' },
-    { Field: 'LOD', Value: best.LOD ?? '' },
-    { Field: 'LOQ', Value: best.LOQ ?? '' },
-    { Field: 'Quantification', Value: rankings.some((ranking) => ranking.score > 0) ? 'available' : 'not_available' },
-    { Field: 'Reliability score', Value: '' },
-    { Field: 'Confidence class', Value: '' },
-    { Field: 'Reliability note', Value: 'Python reliability scoring is not yet implemented in the webapp report.' },
-  ];
+  return buildPythonReportOverviewRows({
+    imageBase,
+    unitLabel,
+    selectedChannel,
+    rankings,
+    methodComparisonRows,
+    fitRows,
+    expectedRefs,
+  });
 }
 
 function calibrationAndStdAddModeLabel(methodComparisonRows: XlsxRow[]): string {
@@ -2921,7 +2909,9 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     options.unitLabel,
     options.selectedChannel,
     options.rankings,
+    fitRows,
     methodComparisonRows,
+    options.expectedRefs,
   );
   const methodComparisonPreferred = [
     'Selected',
