@@ -3189,7 +3189,7 @@ function buildDiagnosticsGeometryQcRows(options: PythonDiagnosticsWorkbookOption
     const fallbackMouthRadius = Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
       ? estimateRoiRadius(options.wells, context.row, context.col, options.radiusFactor)
       : measurement.mouthRadiusUsed;
-    const fallbackFloorRadius = floor ? floor.r * options.floorRoiRadiusFactor : measurement.floorRadiusUsed;
+    const fallbackFloorRadius = floor && Number.isFinite(floor.r) ? floor.r : measurement.floorRadiusUsed;
     const mouthRadius = overrideRecord?.mouthRadius ?? measurement.mouthRadiusUsed ?? fallbackMouthRadius;
     const floorRadius = overrideRecord?.floorRadius ?? measurement.floorRadiusUsed ?? fallbackFloorRadius;
     const finiteMouthRadius = finiteOrBlank(mouthRadius);
@@ -3235,7 +3235,7 @@ function buildDiagnosticsWellBottomRows(options: PythonDiagnosticsWorkbookOption
     const fallbackMouthRadius = Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
       ? estimateRoiRadius(options.wells, context.row, context.col, options.radiusFactor)
       : measurement.mouthRadiusUsed;
-    const fallbackFloorRadius = floor ? floor.r * options.floorRoiRadiusFactor : measurement.floorRadiusUsed;
+    const fallbackFloorRadius = floor && Number.isFinite(floor.r) ? floor.r : measurement.floorRadiusUsed;
     const mouthRadius = overrideRecord?.mouthRadius ?? measurement.mouthRadiusUsed ?? fallbackMouthRadius;
     const floorRadius = overrideRecord?.floorRadius ?? measurement.floorRadiusUsed ?? fallbackFloorRadius;
     const shiftPx = floor && context.center ? Math.hypot(floor.x - context.center.x, floor.y - context.center.y) : Number.NaN;
@@ -4984,7 +4984,7 @@ function buildPythonStylePlateRoiOverlayCanvas(
     const floorRadius = floorCircle
       ? measurement?.floorRadiusUsed && measurement.floorRadiusUsed > 0
         ? measurement.floorRadiusUsed
-        : Math.max(1, floorCircle.r * floorRoiRadiusFactor)
+        : Math.max(1, floorCircle.r)
       : 0;
 
     ctx.beginPath();
@@ -7585,7 +7585,7 @@ function App() {
 
           if (selectedRoiMode === 'mouth-floor-intersection' && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length) {
             const projectedFloorCircle = extractionFloorCircles[well.row * 12 + well.col];
-            const floorRadius = overrideRecord ? Math.max(1, overrideRecord.floorRadius) : Math.max(1, projectedFloorCircle.r * floorRoiRadiusFactor);
+            const floorRadius = overrideRecord ? Math.max(1, overrideRecord.floorRadius) : Math.max(1, projectedFloorCircle.r);
             const mouthRadius = overrideRecord ? Math.max(1, overrideRecord.mouthRadius) : estimateRoiRadius(extractionWells, well.row, well.col, radiusFactor);
             floorRadiusUsed = floorRadius;
             mouthRadiusUsed = mouthRadius;
@@ -7593,7 +7593,7 @@ function App() {
             roiSample = sampleCircleIntersectionRoi(imageData, well.x, well.y, mouthRadius, projectedFloorCircle.x, projectedFloorCircle.y, floorRadius, { pixelStatisticsMode: selectedRoiPixelStatisticsMode });
           } else if (selectedRoiMode === 'floor-aware' && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length) {
             const projectedFloorCircle = extractionFloorCircles[well.row * 12 + well.col];
-            const radius = overrideRecord ? Math.max(1, overrideRecord.floorRadius) : Math.max(1, projectedFloorCircle.r * floorRoiRadiusFactor);
+            const radius = overrideRecord ? Math.max(1, overrideRecord.floorRadius) : Math.max(1, projectedFloorCircle.r);
             floorRadiusUsed = radius;
             roiModeUsed = 'floor-aware';
             roiSample = sampleCircularRoi(imageData, projectedFloorCircle.x, projectedFloorCircle.y, radius, { pixelStatisticsMode: selectedRoiPixelStatisticsMode });
