@@ -5,6 +5,7 @@ import { PlateCanvas } from './components/PlateCanvas';
 import { PlateMapEditor } from './components/PlateMapEditor';
 import packageJson from '../package.json';
 import { fitCalibration, fitLineWithCovariance, fitLinearRegression, fitStandardAddition, stdAddC0SdFromFit } from './core/fitting';
+import { computePythonImageQcInfo, type PythonImageQcInfo } from './core/imageQc';
 import {
   addCorrectionMetadataToCalibrationFits,
   addCorrectionMetadataToStandardAdditionFits,
@@ -1628,6 +1629,7 @@ const REPORT_RGB_CHANNELS: FitChannel[] = ['R', 'G', 'B'];
 interface PythonReportWorkbookOptions {
   imageBase: string;
   imageName: string | null;
+  imageQcInfo?: PythonImageQcInfo;
   unitLabel: string;
   selectedChannel: FitChannel;
   generatedAt: string;
@@ -2725,37 +2727,39 @@ function calibrationAndStdAddModeLabel(methodComparisonRows: XlsxRow[]): string 
 }
 
 function buildReportMetadataRows(options: PythonReportWorkbookOptions): XlsxRow[] {
-  return [
-    { Field: 'Image basename', Value: options.imageBase, Notes: '' },
-    { Field: 'Image file', Value: options.imageName ?? '', Notes: '' },
-    { Field: 'Generated at', Value: options.generatedAt, Notes: 'Browser export timestamp.' },
-    { Field: 'Application', Value: 'TIPICA webapp', Notes: '' },
-    { Field: 'Application version', Value: packageJson.version, Notes: '' },
-    { Field: 'ROI mode', Value: options.methodMetadata.roiMode, Notes: '' },
-    { Field: 'ROI pixel statistics mode', Value: options.methodMetadata.roiPixelStatisticsMode, Notes: '' },
-    { Field: 'Background model', Value: options.methodMetadata.backgroundModel, Notes: '' },
-    { Field: 'Background actual model', Value: options.methodMetadata.backgroundActualModel ?? '', Notes: '' },
-    { Field: 'Background mask algorithm', Value: options.methodMetadata.backgroundMaskAlgorithm ?? '', Notes: '' },
-    { Field: 'Background candidate pixels', Value: options.methodMetadata.backgroundCandidatePixels ?? '', Notes: '' },
-    { Field: 'Background accepted samples', Value: options.methodMetadata.backgroundAcceptedSamples ?? '', Notes: '' },
-    { Field: 'Background warning', Value: options.methodMetadata.backgroundWarning ?? '', Notes: '' },
-    { Field: 'Low-signal correction applied', Value: options.correctionApplied ? 1 : 0, Notes: '' },
-    { Field: 'Low-signal correction source', Value: options.methodMetadata.correctionSource ?? '', Notes: '' },
-    { Field: 'Low-signal correction metadata', Value: options.methodMetadata.correctionMetadata ?? '', Notes: '' },
-    { Field: 'Geometry source', Value: options.geometrySource, Notes: '' },
-    { Field: 'Geometry name', Value: options.geometryName ?? '', Notes: '' },
-    { Field: 'Floor geometry available', Value: options.floorGeometryAvailable ? 1 : 0, Notes: '' },
-    { Field: 'SharedGeometryOverrideActive', Value: options.sharedGeometryOverride ? 1 : 0, Notes: 'Developer diagnostic geometry override status.' },
-    { Field: 'SharedGeometryOverrideSource', Value: options.sharedGeometryOverride?.sourceName ?? '', Notes: '' },
-    { Field: 'SharedGeometryOverrideWells', Value: options.sharedGeometryOverride?.wellCount ?? '', Notes: '' },
-    { Field: 'SharedGeometryOverrideMapping', Value: options.sharedGeometryOverride?.mappingSummary ?? '', Notes: '' },
-    { Field: 'Measurements', Value: options.measurements.length, Notes: '' },
-    { Field: 'Plate map entries', Value: options.plateMap.length, Notes: '' },
-    { Field: 'Expected reference values', Value: options.expectedRefs.length, Notes: '' },
-    { Field: 'Calibration fits', Value: options.calibrationFits.length, Notes: '' },
-    { Field: 'Standard-addition fits', Value: options.standardAdditionFits.length, Notes: '' },
-    { Field: 'Unknown concentration rows', Value: options.unknownResults.length, Notes: '' },
-  ];
+  const rows: XlsxRow[] = [];
+  const info = options.imageQcInfo;
+
+  const addRow = (field: string, value: XlsxCellValue, notes: string): void => {
+    if (value === null || value === undefined || value === '') {
+      return;
+    }
+
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      return;
+    }
+
+    rows.push({ Field: field, Value: value, Notes: notes });
+  };
+
+  addRow('Analysis image source', info?.analysis_image_source ?? null, 'original or in-memory resized image used for all measurements');
+  addRow('Original image path', info?.original_image_path ?? null, 'source file selected by the user');
+  addRow('Original image size', info?.original_image_size ?? null, 'width x height in pixels, when known');
+  addRow('Analysis image size', info?.analysis_image_size ?? null, 'width x height in pixels actually analyzed');
+  addRow('Resize scale', info?.resize_scale ?? null, 'analysis_width / original_width, when a resized image is used');
+  addRow('Initial image QC', info?.initial_image_qc ?? null, 'Rule-based result: FAIL if destructive=True; WARNING if quality_warning=True or borderline=True; otherwise OK. No image correction is applied.');
+  addRow('Initial image QC class', info?.image_qc_class ?? null, 'non_correctable if destructive=True; quality_warning if flatfield_span > 0.18 and no destructive defect; usable_with_warnings if only borderline defects; good if no flags.');
+  addRow('Initial image QC messages', info?.image_qc_messages ?? null, 'Messages list the threshold rules triggered by the measured fields below.');
+  rows.push({ Field: 'Image QC decision rules', Value: 'thresholds', Notes: 'destructive = dead_channel OR saturation_fraction>0.003 OR saturation_all_channels_fraction>0.0008 OR specular_fraction>0.003 OR max_side<900 OR approx_roi_pixels<120; borderline = saturation_fraction>0.0005 OR specular_fraction>0.0005 OR blur_score<35; quality_warning = flatfield_span>0.18.' });
+  addRow('Flat-field span', info?.flatfield_span ?? null, 'Flatfield_span = (P95 - P5) / median of the slow illumination field estimated from the grayscale image. Larger values indicate stronger illumination/background gradient.');
+  addRow('Specular fraction', info?.specular_fraction ?? null, 'fraction of bright low-saturation pixels');
+  addRow('Saturation fraction', info?.saturation_fraction ?? null, 'fraction of pixels with at least one saturated channel');
+  addRow('Dead channel', info?.dead_channel ?? null, '1 if a channel is near-dead by mean/variance checks');
+  addRow('Approx well pitch', info?.approx_well_pitch_px ?? null, 'median distance between adjacent well centers, in pixels');
+  addRow('Approx ROI pixels/well', info?.approx_roi_pixels_per_well ?? null, 'median number of pixels used in the final floor ROI mask per well');
+  addRow('Blur score', info?.blur_score ?? null, 'variance of Laplacian of the analysis image; lower values indicate stronger blur');
+
+  return rows;
 }
 
 function buildReportLegendRows(unitLabel: string): XlsxRow[] {
@@ -8120,12 +8124,20 @@ function App() {
       const bestChannel = storedCalibration?.selectedChannel ?? rankings[0]?.channel ?? 'R';
       let backgroundVisualDiagnostics: BackgroundVisualDiagnostics | null = null;
       let pythonPlateOverlayCanvas: HTMLCanvasElement | null = null;
+      let imageQcInfo: PythonImageQcInfo | undefined;
 
       if (image && measurements.length > 0 && wells.length === 96) {
         const exportWells = sharedGeometryOverride ? effectiveWells : wells;
         const exportFloorCircles = sharedGeometryOverride ? effectiveFloorCircles : floorCircles;
         const exportFloorGeometryAvailable = sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable;
         const imageData = createAnalysisImageData(image, exportWells);
+        imageQcInfo = computePythonImageQcInfo(
+          imageData,
+          exportWells,
+          measurements,
+          imageName,
+          { width: image.naturalWidth, height: image.naturalHeight },
+        );
         pythonPlateOverlayCanvas = buildPythonStylePlateRoiOverlayCanvas(
           imageData,
           exportWells,
@@ -8202,6 +8214,7 @@ function App() {
         await createPythonReportWorkbookBlob({
           imageBase: pythonResultsBase,
           imageName,
+          imageQcInfo,
           unitLabel: plateMapUnit,
           selectedChannel: bestChannel,
           generatedAt: new Date().toISOString(),
