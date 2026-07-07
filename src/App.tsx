@@ -2885,13 +2885,13 @@ function uniqueHeaders(preferred: string[], rows: XlsxRow[]): string[] {
 async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptions): Promise<Blob> {
   const contentsRows: XlsxRow[] = [
     { Sheet: '01_CONTENTS', Purpose: 'Index of primary results workbook sheets.' },
-    { Sheet: '02_METADATA', Purpose: 'Image-level metadata and current webapp analysis settings used to audit the analysis.' },
-    { Sheet: '03_OVERVIEW', Purpose: 'Final quantitative summary, selected method and external reference checks when provided.' },
+    { Sheet: '02_METADATA', Purpose: 'Image-level metadata and rule-based image QC used to audit the analysis.' },
+    { Sheet: '03_OVERVIEW', Purpose: 'Final quantitative summary, selected method, reliability and external reference checks when provided.' },
     { Sheet: '04_RAW', Purpose: 'Well-level analytical values used by the fitting pipeline.' },
-    { Sheet: '05_REPLICATES_MEAN', Purpose: 'Replicate-group medians, SDs and available group QC flags.' },
-    { Sheet: '06_FITTING', Purpose: 'Calibration, standard-addition and stored-calibration unknown fit results.' },
+    { Sheet: '05_REPLICATES_MEAN', Purpose: 'Replicate-group medians, robust SDs and group QC flags.' },
+    { Sheet: '06_FITTING', Purpose: 'Calibration, standard-addition and unknown/CRM fit results.' },
     { Sheet: '07_METHOD_COMPARISON', Purpose: 'Method ranking using only common score factors; expected values are external checks only.' },
-    { Sheet: '08_LEGENDS', Purpose: 'Definitions for fields reported in this workbook and primary RGB figure.' },
+    { Sheet: '08_LEGENDS', Purpose: 'Definitions for all fields reported in this workbook and primary RGB figure.' },
   ];
   const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap);
   const rawRows = buildReportRawRows(options.measurements, options.displayMeasurements, options.plateMap, options.correctionApplications);
