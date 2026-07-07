@@ -27,6 +27,12 @@ export interface RgbSampleStats extends Rgb {
   roiTrimDarkQ?: number | null;
   roiTrimBrightQ?: number | null;
   roiStatisticsWarnings?: string[];
+  highlightFractionRoi?: number;
+  highlightFractionCore?: number;
+  brightExcludedFraction?: number;
+  brightExcludedMeanGray?: number | null;
+  brightExcessMeanGray?: number;
+  highlightIndex?: number;
   roiFullPixelCoordinates?: DiagnosticPixel[];
   roiCorePixelCoordinates?: DiagnosticPixel[];
   roiUsedPixelCoordinates?: DiagnosticPixel[];
@@ -422,15 +428,27 @@ function robustTrimmedRoiStats(
     corePixels = fuzzyPixels;
   }
 
-  const highlightFraction = pixels.filter((pixel) => pixel.gray >= HIGHLIGHT_GRAY_THRESHOLD).length / pixels.length;
+  const highlightFractionRoi = pixels.filter((pixel) => pixel.gray >= HIGHLIGHT_GRAY_THRESHOLD).length / pixels.length;
+  const highlightFractionCore = corePixels.length > 0
+    ? corePixels.filter((pixel) => pixel.gray >= HIGHLIGHT_GRAY_THRESHOLD).length / corePixels.length
+    : 0;
 
-  if (highlightFraction > HIGHLIGHT_FRACTION_WARNING_THRESHOLD) {
+  if (highlightFractionRoi > HIGHLIGHT_FRACTION_WARNING_THRESHOLD) {
     statisticsWarnings.push('Frequent highlight-like pixels detected in ROI.');
   }
 
   const grayValues = corePixels.map((pixel) => pixel.gray);
   const brightThreshold = grayValues.length > 0 ? percentile(grayValues, ROBUST_TRIM_BRIGHT_Q) : 255;
   const darkThreshold = grayValues.length > 0 ? percentile(grayValues, ROBUST_TRIM_DARK_Q) : 0;
+  const brightExcludedPixels = corePixels.filter((pixel) => pixel.gray > brightThreshold);
+  const brightExcludedFraction = brightExcludedPixels.length / Math.max(1, corePixels.length);
+  const brightExcludedMeanGray = brightExcludedPixels.length > 0
+    ? brightExcludedPixels.reduce((acc, pixel) => acc + pixel.gray, 0) / brightExcludedPixels.length
+    : null;
+  const brightExcessMeanGray = brightExcludedPixels.length > 0
+    ? brightExcludedPixels.reduce((acc, pixel) => acc + Math.max(pixel.gray - brightThreshold, 0), 0) / brightExcludedPixels.length
+    : 0;
+  const highlightIndex = brightExcludedFraction * brightExcessMeanGray;
   void darkThreshold;
   const minimumUsedPixels = Math.max(MIN_ROBUST_USED_PIXELS, Math.floor(MIN_ROBUST_USED_FRACTION * corePixels.length));
   let usedPixels = [...corePixels];
@@ -474,6 +492,12 @@ function robustTrimmedRoiStats(
     roiTrimDarkQ: ROBUST_TRIM_DARK_Q,
     roiTrimBrightQ: ROBUST_TRIM_BRIGHT_Q,
     roiStatisticsWarnings: statisticsWarnings,
+    highlightFractionRoi,
+    highlightFractionCore,
+    brightExcludedFraction,
+    brightExcludedMeanGray,
+    brightExcessMeanGray,
+    highlightIndex,
     ...(includeDiagnosticPixels ? {
       roiFullPixelCoordinates: fullDiagnosticPixels,
       roiCorePixelCoordinates: coreDiagnosticPixels,

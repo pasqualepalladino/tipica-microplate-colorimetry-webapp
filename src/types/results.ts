@@ -61,6 +61,12 @@ export interface WellMeasurement {
   roiTrimDarkQ?: number | null;
   roiTrimBrightQ?: number | null;
   roiStatisticsWarning?: string;
+  highlightFractionRoi?: number;
+  highlightFractionCore?: number;
+  brightExcludedFraction?: number;
+  brightExcludedMeanGray?: number | null;
+  brightExcessMeanGray?: number;
+  highlightIndex?: number;
   floorGeometryAvailable?: boolean;
   floorRadiusUsed?: number;
   mouthRadiusUsed?: number;
