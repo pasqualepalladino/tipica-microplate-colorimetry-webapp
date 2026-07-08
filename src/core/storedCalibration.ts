@@ -10,6 +10,7 @@ import type {
   PythonStoredCalibrationChannel,
   RgbLowSignalClipPoint,
   RgbLowSignalCorrection,
+  StoredCielabReference,
   UnknownConcentrationResult,
 } from '../types/storedCalibration';
 import type { BackgroundModel, MethodMetadata, Rgb, RoiMode, RoiPixelStatisticsMode, WellMeasurement } from '../types/results';
@@ -275,6 +276,32 @@ function parsePythonStoredCalibrationCorrection(
   };
 }
 
+function parseStoredCielabReference(raw: Record<string, unknown>): StoredCielabReference | undefined {
+  const referenceRaw = raw.cielab_reference;
+  if (!isRecord(referenceRaw)) {
+    return undefined;
+  }
+
+  const l = optionalFiniteNumber(referenceRaw.L_ref ?? referenceRaw.l);
+  const a = optionalFiniteNumber(referenceRaw.a_ref ?? referenceRaw.a);
+  const b = optionalFiniteNumber(referenceRaw.b_ref ?? referenceRaw.b);
+
+  if (l === undefined || a === undefined || b === undefined) {
+    return undefined;
+  }
+
+  const source = typeof referenceRaw.source === 'string' && referenceRaw.source.trim()
+    ? referenceRaw.source.trim()
+    : 'stored_calibration';
+
+  return {
+    l,
+    a,
+    b,
+    source,
+  };
+}
+
 function parsePythonStoredCalibrationBundle(raw: Record<string, unknown>): StoredCalibration | null {
   if (!isRecord(raw.channels)) {
     return null;
@@ -335,6 +362,7 @@ function parsePythonStoredCalibrationBundle(raw: Record<string, unknown>): Store
   });
 
   const selectedChannel = parsePythonBundleChannelName(raw.selected_channel);
+  const cielabReference = parseStoredCielabReference(raw);
 
   return {
     version: 2,
@@ -346,6 +374,7 @@ function parsePythonStoredCalibrationBundle(raw: Record<string, unknown>): Store
     fits,
     ...(selectedChannel ? { selectedChannel } : {}),
     ...(corrections.length ? { corrections } : {}),
+    ...(cielabReference ? { cielabReference } : {}),
     pythonChannels,
   };
 }
@@ -534,6 +563,20 @@ export function parseStoredCalibrationJson(raw: unknown): StoredCalibration {
     });
   }
 
+  const cielabReference = isRecord(raw.cielabReference)
+    ? (() => {
+        const l = optionalFiniteNumber(raw.cielabReference.l);
+        const a = optionalFiniteNumber(raw.cielabReference.a);
+        const b = optionalFiniteNumber(raw.cielabReference.b);
+        const source = typeof raw.cielabReference.source === 'string' && raw.cielabReference.source.trim()
+          ? raw.cielabReference.source.trim()
+          : 'stored_calibration';
+        return l !== undefined && a !== undefined && b !== undefined
+          ? { l, a, b, source }
+          : undefined;
+      })()
+    : undefined;
+
   return {
     version,
     sourceName: raw.sourceName.trim(),
@@ -542,6 +585,7 @@ export function parseStoredCalibrationJson(raw: unknown): StoredCalibration {
     fits,
     corrections,
     methodMetadata: parseOptionalMethodMetadata(raw.methodMetadata),
+    ...(cielabReference ? { cielabReference } : {}),
   };
 }
 

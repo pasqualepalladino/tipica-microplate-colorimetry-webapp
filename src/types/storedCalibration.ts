@@ -55,6 +55,13 @@ export interface RgbLowSignalCorrection {
   clipPoints: RgbLowSignalClipPoint[];
 }
 
+export interface StoredCielabReference {
+  l: number;
+  a: number;
+  b: number;
+  source: string;
+}
+
 export interface StoredCalibration {
   version: 1 | 2;
   sourceName: string;
@@ -65,6 +72,7 @@ export interface StoredCalibration {
   pythonChannels?: PythonStoredCalibrationChannel[];
   corrections?: RgbLowSignalCorrection[];
   methodMetadata?: MethodMetadata;
+  cielabReference?: StoredCielabReference;
 }
 
 export interface UnknownConcentrationResult {

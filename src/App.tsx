@@ -8,6 +8,13 @@ import { fitCalibration, fitLineWithCovariance, fitLinearRegression, fitStandard
 import { computePythonImageQcInfo, type PythonImageQcInfo } from './core/imageQc';
 import { buildPythonReportOverviewRows } from './core/reportOverview';
 import {
+  buildCielabDiagnosticPoints,
+  computeCielabStdAddBetaBias,
+  resolveStoredCalibrationSlopeForCielabDescriptor,
+  type CielabDiagnosticPoint,
+  type LabValue,
+} from './core/cielab';
+import {
   addCorrectionMetadataToCalibrationFits,
   addCorrectionMetadataToStandardAdditionFits,
   applyRgbLowSignalCorrections,
@@ -62,6 +69,7 @@ import type { MethodMetadata, Rgb, RoiMode, RoiPixelStatisticsMode, WellMeasurem
 import type {
   RgbLowSignalCorrection,
   StoredCalibration,
+  StoredCielabReference,
   UnknownConcentrationResult,
 } from './types/storedCalibration';
 
@@ -2098,11 +2106,12 @@ function buildReportRawRows(
   displayMeasurements: WellMeasurement[],
   plateMap: WellConfig[],
   correctionApplications: WellChannelCorrectionApplication[],
+  storedCielabReference?: StoredCielabReference,
 ): XlsxRow[] {
   const configByWell = new Map(plateMap.map((well) => [well.wellId, well]));
   const displayByWell = new Map(displayMeasurements.map((measurement) => [measurement.wellId, measurement]));
   const correctionLookup = buildCorrectionApplicationLookup(correctionApplications);
-  const { points: cielabPoints, referenceSource } = buildCielabDiagnosticPoints(displayMeasurements, plateMap);
+  const { points: cielabPoints, referenceSource } = buildCielabDiagnosticPoints(displayMeasurements, plateMap, storedCielabReference);
   const cielabByWell = new Map(cielabPoints.map((point) => [point.wellId, point]));
 
   return measurements.filter((measurement) => configByWell.get(measurement.wellId)?.role !== 'EMPTY').map((measurement) => {
@@ -2170,11 +2179,12 @@ function buildReportReplicateRows(
   displayMeasurements: WellMeasurement[],
   plateMap: WellConfig[],
   correctionApplications: WellChannelCorrectionApplication[],
+  storedCielabReference?: StoredCielabReference,
 ): XlsxRow[] {
   const configByWell = new Map(plateMap.map((well) => [well.wellId, well]));
   const measurementByWell = new Map(measurements.map((measurement) => [measurement.wellId, measurement]));
   const correctionLookup = buildCorrectionApplicationLookup(correctionApplications);
-  const { points: cielabPoints, referenceSource } = buildCielabDiagnosticPoints(displayMeasurements, plateMap);
+  const { points: cielabPoints, referenceSource } = buildCielabDiagnosticPoints(displayMeasurements, plateMap, storedCielabReference);
   const cielabByWell = new Map(cielabPoints.map((point) => [point.wellId, point]));
   const groups = new Map<string, { config: WellConfig; measurements: WellMeasurement[] }>();
 
@@ -2509,11 +2519,12 @@ function methodScore(r2Cal: number, r2Std: number, agreement: number, loq: numbe
   const hasCal = Number.isFinite(r2Cal);
   const hasStd = Number.isFinite(r2Std);
   const hasSlope = Number.isFinite(agreement);
-  const hasLoq = Number.isFinite(loq) && Math.abs(loq) > 1e-15;
 
-  if (hasCal && hasStd && hasSlope && hasLoq) {
+  if (hasCal && hasStd && hasSlope) {
+    const base = agreement ** 2 * Math.sqrt(Math.max(0, r2Cal) * Math.max(0, r2Std));
+    const loqValue = Number.isFinite(loq) ? loq : Number.NaN;
     return {
-      score: agreement ** 2 * Math.sqrt(Math.max(0, r2Cal) * Math.max(0, r2Std)) * (1 / Math.abs(loq)),
+      score: loqValue > 0 ? base / loqValue : base,
       formula: 'slope_agreement^2 * sqrt(R2_cal * R2_std) * (1/LOQ)',
       comparableGroup: 'calibration_plus_stdadd',
       commonFactorsN: 3,
@@ -2521,42 +2532,32 @@ function methodScore(r2Cal: number, r2Std: number, agreement: number, loq: numbe
     };
   }
 
-  if (hasCal && hasStd && hasSlope) {
+  if (hasCal) {
     return {
-      score: agreement ** 2 * Math.sqrt(Math.max(0, r2Cal) * Math.max(0, r2Std)),
-      formula: 'slope_agreement^2 * sqrt(R2_cal * R2_std)',
-      comparableGroup: 'calibration_plus_stdadd_no_loq',
-      commonFactorsN: 2,
-      rankMode: 'calibration_plus_stdadd',
-    };
-  }
-
-  if (hasCal && hasLoq) {
-    return {
-      score: Math.max(0, r2Cal) * (1 / Math.abs(loq)),
-      formula: 'R2_cal * (1/LOQ)',
+      score: Math.max(0, r2Cal),
+      formula: 'R2_cal',
       comparableGroup: 'calibration_only',
       commonFactorsN: 1,
       rankMode: 'calibration_only',
     };
   }
 
-  if (hasCal) {
+  if (hasStd) {
     return {
-      score: Math.max(0, r2Cal),
-      formula: 'R2_cal',
-      comparableGroup: 'calibration_only_no_loq',
+      score: Math.max(0, r2Std),
+      formula: 'R2_std_mean',
+      comparableGroup: 'stdadd_only',
       commonFactorsN: 1,
-      rankMode: 'calibration_only',
+      rankMode: 'stdadd_only',
     };
   }
 
   return {
-    score: Number.NaN,
-    formula: '',
-    comparableGroup: hasStd ? 'stdadd_only' : 'not_comparable',
-    commonFactorsN: hasStd ? 1 : 0,
-    rankMode: hasStd ? 'stdadd_only' : 'not_comparable',
+    score: 0,
+    formula: 'not_ranked',
+    comparableGroup: 'not_ranked',
+    commonFactorsN: 0,
+    rankMode: 'not_ranked',
   };
 }
 
@@ -2657,9 +2658,19 @@ function buildMethodComparisonRowsFromFitRows(fitRows: XlsxRow[], expectedRefs: 
   }
 
   if (includeSelectionColumns) {
-    rows.forEach((row, index) => {
-      row.Selected = index === 0 ? 1 : 0;
-      row.Rank = index + 1;
+    const maxFactors = Math.max(...rows.map((row) => Number(row.CommonFactorsN) || 0), 0);
+    const rankableRows = rows.filter((row) => (Number(row.CommonFactorsN) || 0) === maxFactors);
+    const selectedMethod = stringRowValue(rankableRows[0], 'Method');
+    const rankByMethod = new Map<string, number>();
+
+    rankableRows.forEach((row, index) => {
+      rankByMethod.set(stringRowValue(row, 'Method'), index + 1);
+    });
+
+    rows.forEach((row) => {
+      const method = stringRowValue(row, 'Method');
+      row.Selected = method === selectedMethod ? 1 : 0;
+      row.Rank = rankByMethod.get(method) ?? '';
     });
   }
 
@@ -2671,19 +2682,54 @@ function buildReportOverviewRows(
   unitLabel: string,
   selectedChannel: FitChannel,
   rankings: PythonResultsChannelRank[],
-  fitRows: XlsxRow[],
   methodComparisonRows: XlsxRow[],
-  expectedRefs: ExpectedRef[],
 ): XlsxRow[] {
-  return buildPythonReportOverviewRows({
-    imageBase,
-    unitLabel,
-    selectedChannel,
-    rankings,
-    methodComparisonRows,
-    fitRows,
-    expectedRefs,
-  });
+  const selectedRgbMethod = reportChannelName(selectedChannel);
+  const selectedRgbRanking = rankings.find((ranking) => ranking.channel === selectedChannel) ?? rankings[0];
+  const selectedRgbRow = methodComparisonRows.find((row) => stringRowValue(row, 'Method') === selectedRgbMethod) ?? {};
+  const diagnosticBest = methodComparisonRows.find((row) => Number(row.Selected) === 1) ?? methodComparisonRows[0] ?? {};
+
+  const selectedRgbScore = selectedRgbRanking && Number.isFinite(selectedRgbRanking.score)
+    ? selectedRgbRanking.score
+    : selectedRgbRow.Score ?? '';
+  const selectedRgbFormula = selectedRgbRanking?.scoreFormula ?? selectedRgbRow.ScoreFormula ?? '';
+  const selectedRgbR2Cal = selectedRgbRow.R2_cal ?? selectedRgbRanking?.r2Cal ?? '';
+  const selectedRgbR2Std = selectedRgbRow.R2_std_mean ?? selectedRgbRanking?.r2Std ?? '';
+  const selectedRgbSlopeAgreement = selectedRgbRow.SlopeAgreement ?? selectedRgbRanking?.slopeAgreement ?? '';
+  const selectedRgbLod = selectedRgbRow.LOD ?? selectedRgbRanking?.lod ?? '';
+  const selectedRgbLoq = selectedRgbRow.LOQ ?? selectedRgbRanking?.loq ?? '';
+
+  return [
+    { Field: 'Report', Value: imageBase },
+    { Field: 'Unit', Value: unitLabel },
+    { Field: 'Mode', Value: calibrationAndStdAddModeLabel(methodComparisonRows) },
+
+    { Field: 'Selected quantitative channel', Value: selectedRgbMethod },
+    { Field: 'Selected quantitative family', Value: 'RGB' },
+    { Field: 'Selected quantitative domain', Value: 'RGB pseudo-absorbance' },
+    { Field: 'Selected quantitative score', Value: selectedRgbScore },
+    { Field: 'Selected quantitative score formula', Value: selectedRgbFormula },
+    { Field: 'R2 calibration', Value: selectedRgbR2Cal },
+    { Field: 'R2 std add', Value: selectedRgbR2Std },
+    { Field: 'Slope agreement', Value: selectedRgbSlopeAgreement },
+    { Field: 'C0 median', Value: selectedRgbRow.C0_median ?? '' },
+    { Field: 'C0 SD median', Value: selectedRgbRow.C0_sd_median ?? '' },
+    { Field: 'beta (mean)', Value: selectedRgbRow.beta_mean ?? '' },
+    { Field: 'Bias index (mean)', Value: selectedRgbRow.bias_index_mean ?? '' },
+    { Field: 'LOD', Value: selectedRgbLod },
+    { Field: 'LOQ', Value: selectedRgbLoq },
+
+    { Field: 'Cross-method diagnostic selected descriptor', Value: diagnosticBest.Method ?? '' },
+    { Field: 'Cross-method diagnostic family', Value: diagnosticBest.Family ?? '' },
+    { Field: 'Cross-method diagnostic rank mode', Value: diagnosticBest.RankMode ?? '' },
+    { Field: 'Cross-method diagnostic score', Value: diagnosticBest.Score ?? '' },
+    { Field: 'Cross-method diagnostic note', Value: 'CIELAB/DeltaE descriptors are diagnostic and are not used to replace the primary RGB pseudo-absorbance quantitative channel.' },
+
+    { Field: 'Quantification', Value: rankings.some((ranking) => ranking.score > 0) ? 'available' : 'not_available' },
+    { Field: 'Reliability score', Value: '' },
+    { Field: 'Confidence class', Value: '' },
+    { Field: 'Reliability note', Value: 'Python reliability scoring is not yet implemented in the webapp report.' },
+  ];
 }
 
 function calibrationAndStdAddModeLabel(methodComparisonRows: XlsxRow[]): string {
@@ -2885,9 +2931,9 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     { Sheet: '07_METHOD_COMPARISON', Purpose: 'Method ranking using only common score factors; expected values are external checks only.' },
     { Sheet: '08_LEGENDS', Purpose: 'Definitions for all fields reported in this workbook and primary RGB figure.' },
   ];
-  const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap);
-  const rawRows = buildReportRawRows(options.measurements, options.displayMeasurements, options.plateMap, options.correctionApplications);
-  const replicateRows = buildReportReplicateRows(options.measurements, options.displayMeasurements, options.plateMap, options.correctionApplications);
+  const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap, options.storedCalibration?.cielabReference);
+  const rawRows = buildReportRawRows(options.measurements, options.displayMeasurements, options.plateMap, options.correctionApplications, options.storedCalibration?.cielabReference);
+  const replicateRows = buildReportReplicateRows(options.measurements, options.displayMeasurements, options.plateMap, options.correctionApplications, options.storedCalibration?.cielabReference);
   const rgbFitRows = buildReportFitRows(
     options.measurements,
     options.calibrationFits,
@@ -2901,7 +2947,7 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
   const fitRows = [
     ...rgbFitRows,
     ...storedCalibrationDiagnosticFitRows(options.storedCalibration),
-    ...buildCielabFittingRows(cielabPoints),
+    ...buildCielabFittingRows(cielabPoints, undefined, options.storedCalibration),
   ];
   const methodComparisonRows = buildMethodComparisonRowsFromFitRows(fitRows, options.expectedRefs, true);
   const overviewRows = buildReportOverviewRows(
@@ -2909,9 +2955,7 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     options.unitLabel,
     options.selectedChannel,
     options.rankings,
-    fitRows,
     methodComparisonRows,
-    options.expectedRefs,
   );
   const methodComparisonPreferred = [
     'Selected',
@@ -3589,7 +3633,11 @@ function groupedMedianCielabFitRows(points: CielabDiagnosticPoint[], getValue: (
     .sort((a, b) => a.x - b.x);
 }
 
-function buildCielabFittingRows(points: CielabDiagnosticPoint[], descriptors: readonly CielabFittingDescriptor[] = CIELAB_REPORT_DESCRIPTORS): XlsxRow[] {
+function buildCielabFittingRows(
+  points: CielabDiagnosticPoint[],
+  descriptors: readonly CielabFittingDescriptor[] = CIELAB_REPORT_DESCRIPTORS,
+  storedCalibration?: StoredCalibration | null,
+): XlsxRow[] {
   const rows: XlsxRow[] = [];
   const calibrationPoints = diagnosticCielabPointsForRole(points, 'C');
   const standardGroups = new Map<string, { sampleId: string; dilutionFactor: number; points: CielabDiagnosticPoint[] }>();
@@ -3661,9 +3709,8 @@ function buildCielabFittingRows(points: CielabDiagnosticPoint[], descriptors: re
       const xStd = groupedStdRows.map((point) => point.x);
       const yStd = groupedStdRows.map((point) => point.y);
       const stdFit = fitLineWithCovariance(xStd, yStd);
-      const beta = Number.isFinite(calFit.slope) && Math.abs(calFit.slope) > 1e-15 && Number.isFinite(stdFit.slope)
-        ? stdFit.slope / calFit.slope
-        : Number.NaN;
+      const storedSlope = resolveStoredCalibrationSlopeForCielabDescriptor(descriptor.channel, storedCalibration);
+      const { beta, biasIndex } = computeCielabStdAddBetaBias(stdFit.slope, calFit.slope, storedSlope);
       const c0Fit = stdAddC0SdFromFit(stdFit);
       const c0 = Number.isFinite(c0Fit.c0)
         ? group.dilutionFactor * c0Fit.c0
@@ -3690,7 +3737,7 @@ function buildCielabFittingRows(points: CielabDiagnosticPoint[], descriptors: re
         sigma_source: '',
         SNR: '',
         beta_k: finiteOrBlank(beta),
-        bias_index_k: Number.isFinite(beta) ? Math.abs(beta - 1) : '',
+        bias_index_k: finiteOrBlank(biasIndex),
       });
     });
   });
@@ -3739,7 +3786,7 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
 }
 
 async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWorkbookOptions): Promise<Blob> {
-  const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap);
+  const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap, options.storedCalibration?.cielabReference);
   const rgbFitRows = buildReportFitRows(
     options.measurements,
     options.calibrationFits,
@@ -3753,7 +3800,7 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
   const methodComparisonRows = buildMethodComparisonRowsFromFitRows([
     ...rgbFitRows,
     ...storedCalibrationDiagnosticFitRows(options.storedCalibration),
-    ...buildCielabFittingRows(cielabPoints),
+    ...buildCielabFittingRows(cielabPoints, undefined, options.storedCalibration),
   ], options.expectedRefs, false);
   const methodComparisonPreferred = [
     'Method',
@@ -3843,7 +3890,7 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
       name: '11_CIELAB_FITTING',
       rows: tableRows(
         ['Channel', 'FitType', 'ID', 'DF', 'n_points', 'm', 'q', 'R2', 'RMSE', 'LOD', 'LOQ', 'C0', 'C0_sd', 'sigma_cal', 'sigma_source', 'SNR', 'beta_k', 'bias_index_k'],
-        buildCielabFittingRows(cielabPoints, CIELAB_DIAGNOSTIC_DESCRIPTORS),
+        buildCielabFittingRows(cielabPoints, CIELAB_DIAGNOSTIC_DESCRIPTORS, options.storedCalibration),
       ),
     },
     {
@@ -3884,119 +3931,6 @@ async function createWebBgModelProofWorkbookBlob(options: PythonDiagnosticsWorkb
       ),
     },
   ]);
-}
-
-interface LabValue {
-  l: number;
-  a: number;
-  b: number;
-}
-
-interface CielabDiagnosticPoint extends LabValue {
-  wellId: string;
-  type: string;
-  id: string;
-  df: number;
-  conc: number | '';
-  deltaL: number | '';
-  deltaA: number | '';
-  deltaB: number | '';
-  deltaE: number | '';
-  deltaEChroma: number | '';
-}
-
-function srgbToLinearChannel(value: number): number {
-  const normalized = Math.max(0, Math.min(1, value / 255));
-  return normalized <= 0.04045
-    ? normalized / 12.92
-    : ((normalized + 0.055) / 1.055) ** 2.4;
-}
-
-function rgbToLab(rgb: Rgb): LabValue {
-  const r = srgbToLinearChannel(rgb.r);
-  const g = srgbToLinearChannel(rgb.g);
-  const b = srgbToLinearChannel(rgb.b);
-  const x = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047;
-  const y = (0.2126729 * r + 0.7151522 * g + 0.0721750 * b);
-  const z = (0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / 1.08883;
-  const f = (value: number) => (value > 216 / 24389 ? Math.cbrt(value) : (841 / 108) * value + 4 / 29);
-  const fx = f(x);
-  const fy = f(y);
-  const fz = f(z);
-
-  return {
-    l: 116 * fy - 16,
-    a: 500 * (fx - fy),
-    b: 200 * (fy - fz),
-  };
-}
-
-function medianLab(values: LabValue[]): LabValue | null {
-  if (values.length === 0) {
-    return null;
-  }
-
-  return {
-    l: medianFinite(values.map((value) => value.l)),
-    a: medianFinite(values.map((value) => value.a)),
-    b: medianFinite(values.map((value) => value.b)),
-  };
-}
-
-function buildCielabDiagnosticPoints(
-  measurements: WellMeasurement[],
-  plateMap: WellConfig[],
-): { points: CielabDiagnosticPoint[]; reference: LabValue | null; referenceSource: string } {
-  const configByWell = new Map(plateMap.map((well) => [well.wellId, well]));
-  const labByWell = new Map(measurements.map((measurement) => [measurement.wellId, rgbToLab(measurement.rgbWell)]));
-  const calibrationConfigs = plateMap.filter((well) => (
-    well.role === 'C' &&
-    well.concentration !== null &&
-    Number.isFinite(well.concentration) &&
-    labByWell.has(well.wellId)
-  ));
-  const zeroCalibration = calibrationConfigs.filter((well) => Math.abs(well.concentration ?? Number.NaN) <= 1e-12);
-  const referenceCandidates = zeroCalibration.length > 0
-    ? zeroCalibration
-    : calibrationConfigs.filter((well) => well.concentration === Math.min(...calibrationConfigs.map((candidate) => candidate.concentration ?? Number.POSITIVE_INFINITY)));
-  const reference = medianLab(referenceCandidates.map((well) => labByWell.get(well.wellId)).filter((value): value is LabValue => Boolean(value)));
-  const referenceSource = reference
-    ? zeroCalibration.length > 0
-      ? 'plate_zero_calibration'
-      : 'lowest_calibration'
-    : 'unavailable';
-
-  const points = measurements.map((measurement) => {
-    const config = configByWell.get(measurement.wellId);
-    const lab = labByWell.get(measurement.wellId) ?? rgbToLab(measurement.rgbWell);
-    const deltaL = reference ? lab.l - reference.l : Number.NaN;
-    const deltaA = reference ? lab.a - reference.a : Number.NaN;
-    const deltaB = reference ? lab.b - reference.b : Number.NaN;
-    const deltaE = reference ? Math.sqrt(deltaL ** 2 + deltaA ** 2 + deltaB ** 2) : Number.NaN;
-    const deltaEChroma = reference ? Math.sqrt(deltaA ** 2 + deltaB ** 2) : Number.NaN;
-    const conc: number | '' = typeof config?.concentration === 'number' && Number.isFinite(config.concentration)
-      ? config.concentration
-      : '';
-    const maybeNumber = (value: number): number | '' => (Number.isFinite(value) ? value : '');
-
-    return {
-      wellId: measurement.wellId,
-      type: config?.role ?? '',
-      id: config?.sampleId ?? '',
-      df: config?.dilutionFactor ?? 1,
-      conc,
-      l: lab.l,
-      a: lab.a,
-      b: lab.b,
-      deltaL: maybeNumber(deltaL),
-      deltaA: maybeNumber(deltaA),
-      deltaB: maybeNumber(deltaB),
-      deltaE: maybeNumber(deltaE),
-      deltaEChroma: maybeNumber(deltaEChroma),
-    };
-  });
-
-  return { points, reference, referenceSource };
 }
 
 function pointColorForRole(role: string): string {
@@ -4547,6 +4481,7 @@ function buildPythonStyleCielabDeltaECanvas(
   plateMap: WellConfig[],
   unitLabel: string,
   expectedRefs: ExpectedRef[],
+  storedCielabReference?: StoredCielabReference,
 ): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   const width = 2481;
@@ -4559,11 +4494,11 @@ function buildPythonStyleCielabDeltaECanvas(
     throw new Error('Could not create CIELAB/DeltaE diagnostic canvas.');
   }
 
-  const { points } = buildCielabDiagnosticPoints(measurements, plateMap);
+  const { points } = buildCielabDiagnosticPoints(measurements, plateMap, storedCielabReference);
   const compositeDescriptors = CIELAB_REPORT_DESCRIPTORS.filter((descriptor) =>
     CIELAB_COMPOSITE_CHANNELS.includes(descriptor.channel as CielabCompositeChannel),
   );
-  const fitRows = buildCielabFittingRows(points, compositeDescriptors);
+  const fitRows = buildCielabFittingRows(points, compositeDescriptors, undefined);
   const comparisonRows = buildMethodComparisonRowsFromFitRows(fitRows, expectedRefs, true);
   const selectedDescriptor = String(comparisonRows[0]?.Method ?? CIELAB_COMPOSITE_CHANNELS[0]);
   const scientificLines = buildCielabCompositeScientificLines({
@@ -8108,7 +8043,7 @@ function App() {
           activeLowSignalCorrections,
         ),
         ...storedCalibrationDiagnosticFitRows(storedCalibration),
-        ...buildCielabFittingRows(buildCielabDiagnosticPoints(measurements, plateMap).points),
+        ...buildCielabFittingRows(buildCielabDiagnosticPoints(measurements, plateMap, storedCalibration?.cielabReference).points, undefined, storedCalibration),
       ];
       const methodComparisonRows = buildMethodComparisonRowsFromFitRows(methodComparisonFitRows, expectedRefs, true);
       const bestChannel = storedCalibration?.selectedChannel ?? rankings[0]?.channel ?? 'R';
@@ -8310,6 +8245,7 @@ function App() {
             plateMap,
             plateMapUnit,
             expectedRefs,
+            storedCalibration?.cielabReference,
           )),
         );
       }
