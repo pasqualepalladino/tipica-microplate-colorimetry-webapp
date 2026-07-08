@@ -1685,35 +1685,273 @@ function excelColumnName(index: number): string {
   return column;
 }
 
-function xlsxCellXml(value: XlsxCellValue, rowIndex: number, columnIndex: number): string {
-  const ref = `${excelColumnName(columnIndex)}${rowIndex + 1}`;
+const XLSX_STYLE_DEFAULT = 0;
+const XLSX_STYLE_HEADER = 1;
+const XLSX_STYLE_TEXT_TOP = 2;
+const XLSX_STYLE_TEXT_WRAPPED = 3;
 
+const XLSX_NUMERIC_STYLE_BY_FORMAT: Record<string, number> = {
+  '0': 4,
+  '0.###': 5,
+  '0.0000': 6,
+  '0.00000': 7,
+  '0.000': 8,
+  '0.####': 9,
+  '0.00': 10,
+};
+
+type XlsxSerializableCellValue = string | number | boolean | null;
+
+function xlsxHeaderText(header: XlsxCellValue): string {
+  return String(header ?? '');
+}
+
+function xlsxIsTextHeader(header: string): boolean {
+  const normalized = header.trim().toLowerCase();
+  const textHeaders = new Set([
+    'row',
+    'well',
+    'id',
+    'type',
+    'field',
+    'notes',
+    'meaning',
+    'formula',
+    'unit',
+    'where used',
+    'shown when',
+    'component',
+    'family',
+    'method',
+    'rankmode',
+    'estimate_source',
+    'sigma_source',
+    'cielab_ref_source',
+    'selected method from rank',
+    'selected family',
+    'ranking mode',
+    'confidence class',
+    'empty-well qc status',
+    'quantification',
+    'reference label',
+    'status notes',
+  ]);
+
+  return textHeaders.has(normalized) || normalized.startsWith('expected_label');
+}
+
+function xlsxPythonCellValue(value: XlsxCellValue, header: string): XlsxSerializableCellValue {
   if (value === null || value === undefined || value === '') {
-    return `<c r="${ref}"/>`;
-  }
-
-  if (typeof value === 'number') {
-    return Number.isFinite(value)
-      ? `<c r="${ref}" t="n"><v>${value}</v></c>`
-      : `<c r="${ref}"/>`;
+    return null;
   }
 
   if (typeof value === 'boolean') {
-    return `<c r="${ref}" t="b"><v>${value ? 1 : 0}</v></c>`;
+    return value;
   }
 
-  return `<c r="${ref}" t="inlineStr"><is><t>${escapeXml(value)}</t></is></c>`;
+  const normalizedHeader = header.trim().toLowerCase();
+
+  if (xlsxIsTextHeader(normalizedHeader)) {
+    const text = String(value);
+
+    return ['nan', 'none'].includes(text.trim().toLowerCase()) ? null : text;
+  }
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  const text = String(value).trim();
+
+  if (['', 'nan', 'none'].includes(text.toLowerCase())) {
+    return null;
+  }
+
+  const numeric = Number(text);
+  if (Number.isFinite(numeric)) {
+    return numeric;
+  }
+
+  return String(value);
+}
+
+function xlsxNumberFormatForHeader(header: string): string {
+  const h = header.trim().toLowerCase();
+
+  if (['rank', 'selected', 'col', 'imagewarning', 'qcflagged', 'qccritical', 'n_points', 'nreplicates', 'nwellwarnings', 'nwellcritical', 'nclippoints', 'n_stdadd', 'n_unknown'].includes(h)) {
+    return '0';
+  }
+  if (h === 'df') {
+    return '0.###';
+  }
+  if (h === 'conc') {
+    return '0.###';
+  }
+  if (['r2', 'r2_cal', 'r2_std', 'r2_std_mean'].includes(h)) {
+    return '0.0000';
+  }
+  if (h.includes('score') || h.includes('slopeagreement') || h.includes('bias_index') || h.includes('beta') || h.includes('rel_error')) {
+    return '0.0000';
+  }
+  if (h.includes('recovery')) {
+    return '0';
+  }
+  if (['m', 'q', 'm_cal', 'm_std_mean', 'slope', 'intercept'].includes(h)) {
+    return '0.00000';
+  }
+  if (['lod', 'loq', 'sigma_cal', 'rmse', 'snr'].includes(h)) {
+    return '0.000';
+  }
+  if (['c0', 'c0_sd', 'c0_mean', 'c0_median', 'c0_sd_median', 'estimate_value', 'estimate_sd'].includes(h) || h.includes('expected_value') || h.includes('expected_sd') || h.includes('delta_expected') || h.includes('estimate_for_expected')) {
+    return '0.###';
+  }
+  if (h.includes('fraction') || h.includes('ratio') || h.includes('usedfraction') || h.includes('drift') || h.includes('span')) {
+    return '0.0000';
+  }
+  if (['value', 'sd'].includes(h)) {
+    return '0.####';
+  }
+  if (h.startsWith('meanw') || h.startsWith('meanbg') || h.startsWith('signalt') || h.startsWith('pseudoabs') || h.startsWith('pabs') || h.startsWith('signal')) {
+    return '0.0000';
+  }
+  if (h.startsWith('delta') || ['l', 'a', 'b'].includes(h) || h.startsWith('l_') || h.startsWith('a_') || h.startsWith('b_')) {
+    return '0.00';
+  }
+
+  return '0.####';
+}
+
+function xlsxStyleIdForCell(value: XlsxSerializableCellValue, header: string, rowIndex: number): number {
+  if (rowIndex === 0) {
+    return XLSX_STYLE_HEADER;
+  }
+
+  if (typeof value === 'number') {
+    return XLSX_NUMERIC_STYLE_BY_FORMAT[xlsxNumberFormatForHeader(header)] ?? XLSX_NUMERIC_STYLE_BY_FORMAT['0.####'];
+  }
+
+  if (typeof value === 'string' && value.length > 60) {
+    return XLSX_STYLE_TEXT_WRAPPED;
+  }
+
+  return XLSX_STYLE_TEXT_TOP;
+}
+
+function xlsxCellXml(value: XlsxCellValue, rowIndex: number, columnIndex: number, header: string): string {
+  const ref = `${excelColumnName(columnIndex)}${rowIndex + 1}`;
+  const serializedValue = rowIndex === 0 ? String(value ?? '') : xlsxPythonCellValue(value, header);
+  const styleId = xlsxStyleIdForCell(serializedValue, header, rowIndex);
+  const styleAttr = styleId === XLSX_STYLE_DEFAULT ? '' : ` s="${styleId}"`;
+
+  if (serializedValue === null || serializedValue === '') {
+    return `<c r="${ref}"${styleAttr}/>`;
+  }
+
+  if (typeof serializedValue === 'number') {
+    return Number.isFinite(serializedValue)
+      ? `<c r="${ref}"${styleAttr} t="n"><v>${serializedValue}</v></c>`
+      : `<c r="${ref}"${styleAttr}/>`;
+  }
+
+  if (typeof serializedValue === 'boolean') {
+    return `<c r="${ref}"${styleAttr} t="b"><v>${serializedValue ? 1 : 0}</v></c>`;
+  }
+
+  return `<c r="${ref}"${styleAttr} t="inlineStr"><is><t>${escapeXml(serializedValue)}</t></is></c>`;
+}
+
+function xlsxCellWidthSample(value: XlsxCellValue, header: string, rowIndex: number): number {
+  const serializedValue = rowIndex === 0 ? String(value ?? '') : xlsxPythonCellValue(value, header);
+
+  if (serializedValue === null) {
+    return 0;
+  }
+
+  const text = String(serializedValue);
+  const lines = text.split(/\r?\n/);
+  const maxLineLength = lines.reduce((current, line) => Math.max(current, line.length), 0) || text.length;
+
+  return Math.min(maxLineLength, 48);
+}
+
+function xlsxColumnWidths(rows: XlsxCellValue[][]): number[] {
+  const maxColumns = Math.max(...rows.map((row) => row.length), 0);
+  const headers = rows[0] ?? [];
+  const widths: number[] = Array.from({ length: maxColumns }, () => 8);
+
+  rows.forEach((row, rowIndex) => {
+    for (let columnIndex = 0; columnIndex < maxColumns; columnIndex += 1) {
+      const header = xlsxHeaderText(headers[columnIndex]);
+      const sample = xlsxCellWidthSample(row[columnIndex], header, rowIndex);
+
+      widths[columnIndex] = Math.min(34, Math.max(widths[columnIndex], sample + 2));
+    }
+  });
+
+  return widths;
 }
 
 function xlsxWorksheetXml(rows: XlsxCellValue[][]): string {
+  const headers = rows[0] ?? [];
+  const widths = xlsxColumnWidths(rows);
+  const colsXml = widths.length > 0
+    ? `<cols>${widths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join('')}</cols>`
+    : '';
   const sheetRows = rows.map((row, rowIndex) => (
-    `<row r="${rowIndex + 1}">${row.map((value, columnIndex) => xlsxCellXml(value, rowIndex, columnIndex)).join('')}</row>`
+    `<row r="${rowIndex + 1}">${row.map((value, columnIndex) => xlsxCellXml(value, rowIndex, columnIndex, xlsxHeaderText(headers[columnIndex]))).join('')}</row>`
   )).join('');
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft"/></sheetView></sheetViews>
+  ${colsXml}
   <sheetData>${sheetRows}</sheetData>
 </worksheet>`;
+}
+
+function xlsxStylesXml(): string {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="7">
+    <numFmt numFmtId="164" formatCode="0"/>
+    <numFmt numFmtId="165" formatCode="0.###"/>
+    <numFmt numFmtId="166" formatCode="0.0000"/>
+    <numFmt numFmtId="167" formatCode="0.00000"/>
+    <numFmt numFmtId="168" formatCode="0.000"/>
+    <numFmt numFmtId="169" formatCode="0.####"/>
+    <numFmt numFmtId="170" formatCode="0.00"/>
+  </numFmts>
+  <fonts count="2">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFD9EAF7"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="2">
+    <border/>
+    <border><left/><right/><top style="thin"><color rgb="FFC8C8C8"/></top><bottom style="thin"><color rgb="FFC8C8C8"/></bottom><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="11">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf>
+    <xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf>
+    <xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf>
+    <xf numFmtId="167" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf>
+    <xf numFmtId="168" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf>
+    <xf numFmtId="169" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf>
+    <xf numFmtId="170" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+  <dxfs count="0"/>
+  <tableStyles count="0" defaultTableStyle="TableStyleMedium9" defaultPivotStyle="PivotStyleLight16"/>
+</styleSheet>`;
 }
 
 function tableRows(headers: string[], rows: XlsxRow[]): XlsxCellValue[][] {
@@ -1769,14 +2007,7 @@ async function createXlsxWorkbookBlob(sheets: XlsxSheet[]): Promise<Blob> {
     },
     {
       name: 'xl/styles.xml',
-      blob: new Blob([`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
-  <fills count="1"><fill><patternFill patternType="none"/></fill></fills>
-  <borders count="1"><border/></borders>
-  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
-</styleSheet>`], { type: 'application/xml' }),
+      blob: new Blob([xlsxStylesXml()], { type: 'application/xml' }),
     },
     ...sheets.map((sheet, index) => ({
       name: `xl/worksheets/sheet${index + 1}.xml`,
