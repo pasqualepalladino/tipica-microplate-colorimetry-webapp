@@ -1,5 +1,5 @@
 import { buildCielabDiagnosticPoints, computeCielabStdAddBetaBias, resolveStoredCalibrationSlopeForCielabDescriptor } from '../src/core/cielab.js';
-import { parseStoredCalibrationJson } from '../src/core/storedCalibration.js';
+import { computeEmptyWellQcStatus, parseStoredCalibrationJson } from '../src/core/storedCalibration.js';
 
 const calibration = parseStoredCalibrationJson({
   channels: {
@@ -70,6 +70,27 @@ if (calibration.emptyWellPayload.Red?.robust_sd !== 0.01) {
 if (calibration.emptyWellRows[0]?.Signal_Green !== 0.2) {
   throw new Error('Expected parsed stored calibration to preserve empty-well row signals');
 }
+
+const emptyQcOk = computeEmptyWellQcStatus(calibration.emptyWellPayload);
+if (emptyQcOk.status !== 'ok' || emptyQcOk.n_empty_channels !== 3 || emptyQcOk.empty_robust_sd_median !== 0.02) {
+  throw new Error('Expected empty-well QC to match Python ok/median behavior');
+}
+
+const emptyQcWatch = computeEmptyWellQcStatus(calibration.emptyWellPayload, [{ Ratio_median: Math.exp(0.15) }]);
+if (emptyQcWatch.status !== 'watch') {
+  throw new Error('Expected empty-well QC to flag watch for Python drift threshold');
+}
+
+const emptyQcWarning = computeEmptyWellQcStatus(calibration.emptyWellPayload, [{ Ratio_median: Math.exp(0.25) }]);
+if (emptyQcWarning.status !== 'warning') {
+  throw new Error('Expected empty-well QC to flag warning for Python drift threshold');
+}
+
+const emptyQcMissing = computeEmptyWellQcStatus(undefined);
+if (emptyQcMissing.status !== 'not_available' || emptyQcMissing.n_empty_channels !== 0) {
+  throw new Error('Expected empty-well QC to match Python not_available behavior');
+}
+
 const storedSlope = resolveStoredCalibrationSlopeForCielabDescriptor('DeltaL', calibration);
 if (storedSlope === null || !Number.isFinite(storedSlope)) {
   throw new Error('Expected stored calibration slope lookup to resolve DeltaL');

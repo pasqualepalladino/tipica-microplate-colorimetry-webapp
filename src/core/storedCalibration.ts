@@ -14,6 +14,7 @@ import type {
   UnknownConcentrationResult,
   StoredEmptyWellPayload,
   StoredEmptyWellRow,
+  EmptyWellQcPayload,
 } from '../types/storedCalibration';
 import type { BackgroundModel, MethodMetadata, Rgb, RoiMode, RoiPixelStatisticsMode, WellMeasurement } from '../types/results';
 
@@ -70,6 +71,75 @@ function parseChannel(value: unknown): FitChannel {
   }
 
   throw new Error('Stored calibration fit channel must be R, G, or B.');
+}
+
+function numOrNaN(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
+}
+
+function median(values: number[]): number {
+  const finite = values.filter(Number.isFinite).sort((a, b) => a - b);
+
+  if (finite.length === 0) {
+    return Number.NaN;
+  }
+
+  const mid = Math.floor(finite.length / 2);
+
+  return finite.length % 2 === 0
+    ? (finite[mid - 1] + finite[mid]) / 2
+    : finite[mid];
+}
+
+export function computeEmptyWellQcStatus(
+  emptyWellPayload?: StoredEmptyWellPayload,
+  storedEmptyComparisonRows: Array<Record<string, unknown>> = [],
+): EmptyWellQcPayload {
+  const medRatios: number[] = [];
+  const robustSds: number[] = [];
+
+  for (const label of ['Red', 'Green', 'Blue'] as const) {
+    const item = emptyWellPayload?.[label];
+    const robustSd = numOrNaN(item?.robust_sd);
+
+    if (Number.isFinite(robustSd)) {
+      robustSds.push(robustSd);
+    }
+  }
+
+  for (const row of storedEmptyComparisonRows) {
+    const ratio = numOrNaN(row.Ratio_median);
+
+    if (Number.isFinite(ratio) && ratio > 0) {
+      medRatios.push(Math.abs(Math.log(ratio)));
+    }
+  }
+
+  const driftScore = medRatios.length
+    ? medRatios.reduce((total, value) => total + value, 0) / medRatios.length
+    : Number.NaN;
+  const sdMed = robustSds.length ? median(robustSds) : Number.NaN;
+
+  let status: EmptyWellQcPayload['status'];
+
+  if (medRatios.length && driftScore > 0.20) {
+    status = 'warning';
+  } else if (medRatios.length && driftScore > 0.10) {
+    status = 'watch';
+  } else if (Number.isFinite(sdMed) && sdMed > 0.06) {
+    status = 'watch';
+  } else if (robustSds.length) {
+    status = 'ok';
+  } else {
+    status = 'not_available';
+  }
+
+  return {
+    status,
+    empty_drift_score: driftScore,
+    empty_robust_sd_median: sdMed,
+    n_empty_channels: robustSds.length,
+  };
 }
 
 function parsePythonBundleChannelName(value: unknown): FitChannel | null {

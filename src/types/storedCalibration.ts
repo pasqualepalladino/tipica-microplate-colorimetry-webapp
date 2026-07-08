@@ -88,6 +88,13 @@ export interface StoredEmptyWellRow {
   [key: string]: unknown;
 }
 
+export interface EmptyWellQcPayload {
+  status: 'warning' | 'watch' | 'ok' | 'not_available';
+  empty_drift_score: number;
+  empty_robust_sd_median: number;
+  n_empty_channels: number;
+}
+
 export interface StoredCalibration {
   version: 1 | 2;
   sourceName: string;
