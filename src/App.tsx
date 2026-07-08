@@ -57,6 +57,8 @@ import {
 import {
   addCalibrationSlopeContextToStandardAddition,
   canCreateStoredCalibration,
+  buildReliabilityPayload,
+  computeEmptyWellQcStatus,
   createStoredCalibrationFromFits,
   downloadStoredCalibrationJson,
   estimateUnknownConcentrationsFromStoredCalibration,
@@ -2683,53 +2685,217 @@ function buildReportOverviewRows(
   selectedChannel: FitChannel,
   rankings: PythonResultsChannelRank[],
   methodComparisonRows: XlsxRow[],
+  fitRows: XlsxRow[],
+  plateMap: WellConfig[],
+  expectedRefs: ExpectedRef[],
+  storedCalibration: StoredCalibration | null,
+  imageQcInfo: PythonImageQcInfo | undefined,
+  methodMetadata: MethodMetadata,
 ): XlsxRow[] {
+  const rows: XlsxRow[] = [];
+  const cmpRows = [...methodComparisonRows];
+  const bestCmp = cmpRows.find((row) => Number(row.Selected) === 1) ?? cmpRows[0] ?? {};
+  const selectedName = stringRowValue(bestCmp, 'Method') || stringRowValue(bestCmp, 'Channel') || reportChannelName(selectedChannel);
   const selectedRgbMethod = reportChannelName(selectedChannel);
-  const selectedRgbRanking = rankings.find((ranking) => ranking.channel === selectedChannel) ?? rankings[0];
-  const selectedRgbRow = methodComparisonRows.find((row) => stringRowValue(row, 'Method') === selectedRgbMethod) ?? {};
-  const diagnosticBest = methodComparisonRows.find((row) => Number(row.Selected) === 1) ?? methodComparisonRows[0] ?? {};
 
-  const selectedRgbScore = selectedRgbRanking && Number.isFinite(selectedRgbRanking.score)
-    ? selectedRgbRanking.score
-    : selectedRgbRow.Score ?? '';
-  const selectedRgbFormula = selectedRgbRanking?.scoreFormula ?? selectedRgbRow.ScoreFormula ?? '';
-  const selectedRgbR2Cal = selectedRgbRow.R2_cal ?? selectedRgbRanking?.r2Cal ?? '';
-  const selectedRgbR2Std = selectedRgbRow.R2_std_mean ?? selectedRgbRanking?.r2Std ?? '';
-  const selectedRgbSlopeAgreement = selectedRgbRow.SlopeAgreement ?? selectedRgbRanking?.slopeAgreement ?? '';
-  const selectedRgbLod = selectedRgbRow.LOD ?? selectedRgbRanking?.lod ?? '';
-  const selectedRgbLoq = selectedRgbRow.LOQ ?? selectedRgbRanking?.loq ?? '';
+  const metadataCounts = countPlateMapMetadataTypes(plateMap);
+  const emptyQcPayload = computeEmptyWellQcStatus(storedCalibration?.emptyWellPayload);
+  const reliabilityPayload = buildReliabilityPayload(
+    metadataCounts,
+    fitRows,
+    { use_stored_calibration: Boolean(storedCalibration) },
+    {
+      status: imageQcInfo?.initial_image_qc ?? 'OK',
+      critical_wells: 0,
+      total_wells: plateMap.length || fitRows.length || 1,
+    },
+    emptyQcPayload,
+    {
+      ranking: methodComparisonRows,
+      best: bestCmp,
+    },
+    {
+      epsilon: undefined,
+      path_length: undefined,
+      liquid_volume_ul: undefined,
+      path_length_mm: undefined,
+      path_length_source: undefined,
+      well_bottom_diam_mm_for_pathlength: undefined,
+      well_bottom_area_mm2_for_pathlength: undefined,
+      plate_geometry_name: undefined,
+      plate_geometry_assumption: undefined,
+    },
+  );
 
-  return [
-    { Field: 'Report', Value: imageBase },
-    { Field: 'Unit', Value: unitLabel },
-    { Field: 'Mode', Value: calibrationAndStdAddModeLabel(methodComparisonRows) },
+  const addRow = (field: string, value: XlsxCellValue): void => {
+    if (value === null || value === undefined || value === '') {
+      return;
+    }
 
-    { Field: 'Selected quantitative channel', Value: selectedRgbMethod },
-    { Field: 'Selected quantitative family', Value: 'RGB' },
-    { Field: 'Selected quantitative domain', Value: 'RGB pseudo-absorbance' },
-    { Field: 'Selected quantitative score', Value: selectedRgbScore },
-    { Field: 'Selected quantitative score formula', Value: selectedRgbFormula },
-    { Field: 'R2 calibration', Value: selectedRgbR2Cal },
-    { Field: 'R2 std add', Value: selectedRgbR2Std },
-    { Field: 'Slope agreement', Value: selectedRgbSlopeAgreement },
-    { Field: 'C0 median', Value: selectedRgbRow.C0_median ?? '' },
-    { Field: 'C0 SD median', Value: selectedRgbRow.C0_sd_median ?? '' },
-    { Field: 'beta (mean)', Value: selectedRgbRow.beta_mean ?? '' },
-    { Field: 'Bias index (mean)', Value: selectedRgbRow.bias_index_mean ?? '' },
-    { Field: 'LOD', Value: selectedRgbLod },
-    { Field: 'LOQ', Value: selectedRgbLoq },
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      return;
+    }
 
-    { Field: 'Cross-method diagnostic selected descriptor', Value: diagnosticBest.Method ?? '' },
-    { Field: 'Cross-method diagnostic family', Value: diagnosticBest.Family ?? '' },
-    { Field: 'Cross-method diagnostic rank mode', Value: diagnosticBest.RankMode ?? '' },
-    { Field: 'Cross-method diagnostic score', Value: diagnosticBest.Score ?? '' },
-    { Field: 'Cross-method diagnostic note', Value: 'CIELAB/DeltaE descriptors are diagnostic and are not used to replace the primary RGB pseudo-absorbance quantitative channel.' },
+    rows.push({ Field: field, Value: value });
+  };
 
-    { Field: 'Quantification', Value: rankings.some((ranking) => ranking.score > 0) ? 'available' : 'not_available' },
-    { Field: 'Reliability score', Value: '' },
-    { Field: 'Confidence class', Value: '' },
-    { Field: 'Reliability note', Value: 'Python reliability scoring is not yet implemented in the webapp report.' },
-  ];
+  addRow('Quantification', reliabilityPayload.quantification_status);
+  addRow('Reliability score', reliabilityPayload.reliability_score);
+  addRow('Confidence class', reliabilityPayload.confidence_class);
+  addRow('Reliability note', reliabilityPayload.reason);
+  addRow('Empty-well QC status', reliabilityPayload.empty_qc_status);
+  addRow('Empty drift score', reliabilityPayload.empty_drift_score);
+
+  addRow('Configured epsilon (M-1 cm-1)', reliabilityPayload.epsilon);
+  addRow('Liquid volume per well (uL)', reliabilityPayload.liquid_volume_ul);
+  addRow('Calculated path length (cm)', reliabilityPayload.path_length);
+  addRow('Calculated liquid height (mm)', reliabilityPayload.path_length_mm);
+  addRow('Path-length source', reliabilityPayload.path_length_source);
+  addRow('Plate geometry for path length', reliabilityPayload.plate_geometry_name);
+  addRow('Plate geometry assumption', reliabilityPayload.plate_geometry_assumption);
+
+  addRow('Selected method from rank', selectedName);
+  addRow('Selected quantitative RGB channel', selectedRgbMethod);
+  addRow('Selected family', bestCmp.Family ?? methodFamilyFromReportMethod(selectedName));
+  addRow('Ranking mode', bestCmp.RankMode ?? bestCmp.Mode ?? '');
+  addRow('Selected method score', bestCmp.Score ?? '');
+
+  [
+    ['R2 calibration', 'R2_cal'],
+    ['R2 std add', 'R2_std_mean'],
+    ['Slope agreement', 'SlopeAgreement'],
+    ['C0 median', 'C0_median'],
+    ['C0 SD median', 'C0_sd_median'],
+    ['beta (mean)', 'beta_mean'],
+    ['Bias index (mean)', 'bias_index_mean'],
+    ['LOD', 'LOD'],
+    ['LOQ', 'LOQ'],
+  ].forEach(([label, key]) => addRow(label, bestCmp[key]));
+
+  fitRows
+    .filter((row) => stringRowValue(row, 'Channel') === selectedName)
+    .forEach((row) => {
+      const fitType = stringRowValue(row, 'FitType');
+      if (!['StdAdd', 'UnknownFromCal', 'UnknownFromEpsilon'].includes(fitType)) {
+        return;
+      }
+
+      const c0 = finiteNumber(row.C0, Number.NaN);
+      if (!Number.isFinite(c0)) {
+        return;
+      }
+
+      const id = stringRowValue(row, 'ID');
+      const df = row.DF ?? '';
+      addRow(`${fitType} ID=${id} DF=${df} C0 (${unitLabel})`, c0);
+
+      const c0sd = finiteNumber(row.C0_sd, Number.NaN);
+      if (Number.isFinite(c0sd)) {
+        addRow(`${fitType} ID=${id} DF=${df} C0 SD (${unitLabel})`, c0sd);
+      }
+    });
+
+  appendOverviewReferenceRows(rows, fitRows, selectedName, expectedRefs, unitLabel);
+
+  if (reliabilityPayload.notes.length > 0) {
+    addRow('Status notes', reliabilityPayload.notes.join('; '));
+  }
+
+  if (imageBase) {
+    addRow('Report', imageBase);
+  }
+
+  if (unitLabel) {
+    addRow('Unit', unitLabel);
+  }
+
+  if (rankings.length > 0) {
+    addRow('RGB ranking mode', calibrationAndStdAddModeLabel(methodComparisonRows));
+  }
+
+  return rows;
+}
+
+function finiteNumber(value: XlsxCellValue, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function methodFamilyFromReportMethod(method: string): string {
+  if (method.startsWith('PAbs_') || method.startsWith('Signal_') || ['Red', 'Green', 'Blue'].includes(method)) {
+    return 'RGB';
+  }
+
+  if (['L', 'a', 'b'].includes(method)) {
+    return 'CIELAB';
+  }
+
+  if (method.startsWith('Delta')) {
+    return 'DeltaCIELAB';
+  }
+
+  return 'other';
+}
+
+function countPlateMapMetadataTypes(plateMap: WellConfig[]): Record<string, number> {
+  const counts = { calibration: 0, stdadd: 0, unknown: 0 };
+  const typeCalibration = new Set(['CAL', 'STD', 'STANDARD', 'CALIBRATION', 'C']);
+  const typeStdAdd = new Set(['A', 'SA', 'STDADD', 'STANDARD_ADDITION', 'ADDITION']);
+  const typeUnknown = new Set(['UNK', 'UNKNOWN', 'U']);
+
+  plateMap.forEach((well) => {
+    const type = String(well.role ?? '').trim().toUpperCase();
+
+    if (typeCalibration.has(type)) {
+      counts.calibration += 1;
+    } else if (typeStdAdd.has(type)) {
+      counts.stdadd += 1;
+    } else if (typeUnknown.has(type)) {
+      counts.unknown += 1;
+    }
+  });
+
+  return counts;
+}
+
+function appendOverviewReferenceRows(
+  rows: XlsxRow[],
+  fitRows: XlsxRow[],
+  selectedName: string,
+  expectedRefs: ExpectedRef[],
+  unitLabel: string,
+): void {
+  if (!expectedRefs.length) {
+    return;
+  }
+
+  const selectedRows = fitRows.filter((row) => stringRowValue(row, 'Channel') === selectedName);
+
+  selectedRows.forEach((row) => {
+    expectedRefs.forEach((ref, index) => {
+      const label = ref.label?.trim() || ref.refId?.trim() || `Reference ${index + 1}`;
+      const value = typeof ref.value === 'number' ? ref.value : Number.NaN;
+
+      if (!Number.isFinite(value)) {
+        return;
+      }
+
+      rows.push({ Field: 'Reference label', Value: label });
+      rows.push({ Field: `Reference value (${unitLabel})`, Value: value });
+
+      if (typeof ref.sd === 'number' && Number.isFinite(ref.sd)) {
+        rows.push({ Field: `Reference SD (${unitLabel})`, Value: ref.sd });
+      }
+
+      const c0 = finiteNumber(row.C0, Number.NaN);
+      if (Number.isFinite(c0)) {
+        const rowTag = `${stringRowValue(row, 'FitType')} ID=${stringRowValue(row, 'ID')} DF=${row.DF ?? ''}`;
+        rows.push({ Field: `${rowTag} delta (${unitLabel})`, Value: c0 - value });
+        if (value !== 0) {
+          rows.push({ Field: `${rowTag} recovery (%)`, Value: 100 * c0 / value });
+        }
+      }
+    });
+  });
 }
 
 function calibrationAndStdAddModeLabel(methodComparisonRows: XlsxRow[]): string {
@@ -2956,6 +3122,12 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     options.selectedChannel,
     options.rankings,
     methodComparisonRows,
+    fitRows,
+    options.plateMap,
+    options.expectedRefs,
+    options.storedCalibration,
+    options.imageQcInfo,
+    options.methodMetadata,
   );
   const methodComparisonPreferred = [
     'Selected',
