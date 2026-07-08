@@ -783,7 +783,7 @@ function parseCsvLine(line: string, delim: string): string[] {
  * [0, ncol) are included; all other wells are silently skipped.
  *
  * Delimiter is auto-detected (comma / semicolon / tab).
- * Type aliases UNKNOWN/UNK → U.  Unrecognised or missing types → U.
+ * Type aliases UNKNOWN/UNK → U.  Missing or unrecognised types are skipped so structurally empty wells remain unconfigured.
  * Required column: Well.
  * Optional columns with aliases:
  *   Conc / Concentration
@@ -856,11 +856,13 @@ export function importPlateMapCsv(
     const id = idIdx   >= 0 ? (row[idIdx]   ?? '').trim() : '';
     const df = dfIdx   >= 0 ? (row[dfIdx]   ?? '').trim() : '';
 
-    // Normalize type — matches Python logic
+    // Normalize type. UNKNOWN/UNK are explicit unknown aliases; blank or
+    // unrecognised types are skipped so structurally empty wells remain
+    // unconfigured instead of being converted to unknown samples.
     if (typ === 'UNKNOWN' || typ === 'UNK') typ = 'U';
-    if (typ !== 'C' && typ !== 'A' && typ !== 'U') typ = 'U';
+    if (typ !== 'C' && typ !== 'A' && typ !== 'U') continue;
 
-    // Build cell token string — matches Python assembly
+    // Build cell token string.
     const tokens: string[] = [];
     if (typ === 'U' && !conc) {
       tokens.push('U');

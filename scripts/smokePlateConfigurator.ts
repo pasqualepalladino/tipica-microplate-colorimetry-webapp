@@ -198,7 +198,7 @@ function testImportPlateMapCsv(): void {
   assertEqual(grid['0_0'], '10 C cal1 2', 'import A1 as C');
   assertEqual(grid['0_1'], 'U unk1 3', 'UNKNOWN should normalize to U');
   assertEqual(grid['0_2'], 'U unk2 4', 'UNK should normalize to U');
-  assertEqual(grid['1_0'], '8 U badType 9', 'invalid type should normalize to U');
+  assert(!('1_0' in grid), 'invalid type should be skipped so the well remains unconfigured');
   assert(!('25_98' in grid), 'out-of-range wells should be omitted');
 }
 
