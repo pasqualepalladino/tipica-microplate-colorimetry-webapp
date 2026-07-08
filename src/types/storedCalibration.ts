@@ -95,6 +95,28 @@ export interface EmptyWellQcPayload {
   n_empty_channels: number;
 }
 
+export interface ReliabilityPayload {
+  reliability_score: number;
+  confidence_class: 'HIGH' | 'MEDIUM' | 'LOW' | 'NOT QUANTIFIABLE';
+  quantification_available: boolean;
+  quantification_status: 'available' | 'not available';
+  notes: string[];
+  reason: string;
+  empty_drift_score: number;
+  empty_qc_status: string;
+  epsilon: number;
+  path_length: number;
+  liquid_volume_ul: number;
+  path_length_mm: number;
+  path_length_source: string;
+  well_bottom_diam_mm: number;
+  well_bottom_area_mm2: number;
+  plate_geometry_name: string;
+  plate_geometry_assumption: string;
+  epsilon_valid: boolean;
+  path_length_valid: boolean;
+}
+
 export interface StoredCalibration {
   version: 1 | 2;
   sourceName: string;

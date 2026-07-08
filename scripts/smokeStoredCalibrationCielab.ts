@@ -1,5 +1,5 @@
 import { buildCielabDiagnosticPoints, computeCielabStdAddBetaBias, resolveStoredCalibrationSlopeForCielabDescriptor } from '../src/core/cielab.js';
-import { computeEmptyWellQcStatus, parseStoredCalibrationJson } from '../src/core/storedCalibration.js';
+import { buildReliabilityPayload, computeEmptyWellQcStatus, parseStoredCalibrationJson } from '../src/core/storedCalibration.js';
 
 const calibration = parseStoredCalibrationJson({
   channels: {
@@ -89,6 +89,64 @@ if (emptyQcWarning.status !== 'warning') {
 const emptyQcMissing = computeEmptyWellQcStatus(undefined);
 if (emptyQcMissing.status !== 'not_available' || emptyQcMissing.n_empty_channels !== 0) {
   throw new Error('Expected empty-well QC to match Python not_available behavior');
+}
+
+const reliabilityHigh = buildReliabilityPayload(
+  { calibration: 2, unknown: 1 },
+  [
+    { FitType: 'Calibration', m: 1, UsedFraction: 0.9 },
+    { FitType: 'StdAdd', C0: 1.2, UsedFraction: 0.9 },
+  ],
+  {},
+  { status: 'OK', critical_wells: 0, total_wells: 2 },
+  emptyQcOk,
+  { ranking: [{ Score: 1.0 }, { Score: 0.5 }], best: { Mode: 'available' } },
+  { epsilon: 1000, path_length: 0.5, path_length_source: 'configured' },
+);
+if (
+  reliabilityHigh.reliability_score !== 80 ||
+  reliabilityHigh.confidence_class !== 'HIGH' ||
+  reliabilityHigh.quantification_status !== 'available' ||
+  !reliabilityHigh.notes.includes('intraplate calibration present')
+) {
+  throw new Error('Expected Python reliability payload high-confidence calibration behavior');
+}
+
+const reliabilityStoredWarning = buildReliabilityPayload(
+  { unknown: 1 },
+  [{ FitType: 'UnknownFromCal', C0: 1.2, UsedFraction: 0.9 }],
+  { use_stored_calibration: true },
+  { status: 'OK', critical_wells: 0, total_wells: 1 },
+  emptyQcWarning,
+  { ranking: [{ Score: 1.0 }, { Score: 0.95 }], best: { Mode: 'available' } },
+  {},
+);
+if (
+  reliabilityStoredWarning.reliability_score !== 14 ||
+  reliabilityStoredWarning.confidence_class !== 'LOW' ||
+  !reliabilityStoredWarning.reason.includes('stored calibration is less reliable than intraplate calibration') ||
+  !reliabilityStoredWarning.reason.includes('empty-well drift indicates limited comparability') ||
+  !reliabilityStoredWarning.reason.includes('method ranking is not strongly separated')
+) {
+  throw new Error('Expected Python reliability payload stored/warning penalties');
+}
+
+const reliabilityUnavailable = buildReliabilityPayload(
+  { unknown: 1 },
+  [],
+  {},
+  { status: 'OK', critical_wells: 0, total_wells: 1 },
+  emptyQcMissing,
+  { ranking: [], best: { Mode: 'unavailable' } },
+  {},
+);
+if (
+  reliabilityUnavailable.reliability_score !== 15 ||
+  reliabilityUnavailable.confidence_class !== 'LOW' ||
+  reliabilityUnavailable.quantification_available !== false ||
+  reliabilityUnavailable.quantification_status !== 'not available'
+) {
+  throw new Error('Expected Python reliability payload unknown-only fallback behavior');
 }
 
 const storedSlope = resolveStoredCalibrationSlopeForCielabDescriptor('DeltaL', calibration);

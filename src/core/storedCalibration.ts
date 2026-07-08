@@ -15,6 +15,7 @@ import type {
   StoredEmptyWellPayload,
   StoredEmptyWellRow,
   EmptyWellQcPayload,
+  ReliabilityPayload,
 } from '../types/storedCalibration';
 import type { BackgroundModel, MethodMetadata, Rgb, RoiMode, RoiPixelStatisticsMode, WellMeasurement } from '../types/results';
 
@@ -139,6 +140,215 @@ export function computeEmptyWellQcStatus(
     empty_drift_score: driftScore,
     empty_robust_sd_median: sdMed,
     n_empty_channels: robustSds.length,
+  };
+}
+
+function cfgOptionalFloat(cfg: Record<string, unknown>, key: string): number {
+  return numOrNaN(cfg[key]);
+}
+
+function intOrZero(value: unknown): number {
+  const parsed = typeof value === 'number' && Number.isFinite(value)
+    ? value
+    : typeof value === 'string' && value.trim() !== ''
+      ? Number(value)
+      : 0;
+
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
+}
+
+function uniqueJoinedReasons(reasons: string[]): string {
+  return Array.from(new Set(reasons)).join('; ');
+}
+
+function clip(value: number, lower: number, upper: number): number {
+  return Math.min(upper, Math.max(lower, value));
+}
+
+export function buildReliabilityPayload(
+  metadataCounts: Record<string, unknown> = {},
+  fitRows: Array<Record<string, unknown>> = [],
+  fitOptions: Record<string, unknown> = {},
+  plateQcPayload: Record<string, unknown> = {},
+  emptyQcPayload: Record<string, unknown> | EmptyWellQcPayload = {},
+  selectionInfo: Record<string, unknown> = {},
+  cfg: Record<string, unknown> = {},
+): ReliabilityPayload {
+  const hasCalibrationRows = fitRows.some((row) => String(row.FitType ?? '') === 'Calibration' && Number.isFinite(numOrNaN(row.m)));
+  const hasStdAdd = fitRows.some((row) => String(row.FitType ?? '') === 'StdAdd' && Number.isFinite(numOrNaN(row.C0)));
+  const hasUnknownQuant = fitRows.some((row) => (
+    String(row.FitType ?? '') === 'UnknownFromCal' ||
+    String(row.FitType ?? '') === 'UnknownFromEpsilon'
+  ) && Number.isFinite(numOrNaN(row.C0)));
+  const hasUnknownInput = intOrZero(metadataCounts.unknown) > 0;
+  const epsilon = cfgOptionalFloat(cfg, 'epsilon');
+  const pathLength = cfgOptionalFloat(cfg, 'path_length');
+  const liquidVolumeUl = cfgOptionalFloat(cfg, 'liquid_volume_ul');
+  const pathLengthMm = cfgOptionalFloat(cfg, 'path_length_mm');
+  const wellBottomDiamMm = cfgOptionalFloat(cfg, 'well_bottom_diam_mm_for_pathlength');
+  const wellBottomAreaMm2 = cfgOptionalFloat(cfg, 'well_bottom_area_mm2_for_pathlength');
+  const pathLengthSource = String(cfg.path_length_source ?? '');
+  const plateGeometryName = String(cfg.plate_geometry_name ?? '');
+  const plateGeometryAssumption = String(cfg.plate_geometry_assumption ?? '');
+  const epsilonValid = Number.isFinite(epsilon) && epsilon > 0;
+  const pathValid = Number.isFinite(pathLength) && pathLength > 0;
+  const useStored = Boolean(fitOptions.use_stored_calibration);
+
+  const notes: string[] = [];
+  const reasons: string[] = [];
+  let score = 50.0;
+  let quantificationAvailable = Boolean(hasStdAdd || hasUnknownQuant || (hasCalibrationRows && intOrZero(metadataCounts.calibration) > 0));
+
+  if (hasCalibrationRows && intOrZero(metadataCounts.calibration) > 0) {
+    score += 30.0;
+    notes.push('intraplate calibration present');
+    reasons.push('calibration and samples can be compared within the same plate');
+  } else if (useStored && hasUnknownInput) {
+    score -= 8.0;
+    notes.push('stored calibration used');
+    reasons.push('stored calibration is less reliable than intraplate calibration');
+  } else if (hasUnknownInput && !hasUnknownQuant) {
+    notes.push('unknown-only fallback');
+    reasons.push('no valid calibration available for concentration estimation');
+  } else if (hasUnknownInput && hasUnknownQuant && !hasCalibrationRows && !useStored) {
+    notes.push('epsilon quantification used');
+    reasons.push('concentration estimated from PAbs with epsilon because no calibration was available');
+    score -= 18.0;
+  }
+
+  if (useStored) {
+    score -= 10.0;
+  }
+
+  if (String(plateQcPayload.status ?? 'OK').toUpperCase() !== 'OK') {
+    score -= 18.0;
+    reasons.push('plate QC warnings present');
+  }
+
+  const crit = intOrZero(plateQcPayload.critical_wells);
+  const total = Math.max(1, intOrZero(plateQcPayload.total_wells));
+
+  if (crit > 0) {
+    score -= Math.min(20.0, 30.0 * crit / total);
+    reasons.push('critical wells detected by optical QC');
+  }
+
+  const usedFracs = fitRows
+    .map((row) => numOrNaN(row.UsedFraction))
+    .filter(Number.isFinite);
+  const usedMed = usedFracs.length ? median(usedFracs) : Number.NaN;
+
+  if (Number.isFinite(usedMed) && usedMed < 0.70) {
+    score -= 12.0;
+    reasons.push('strong trimming or low used fraction');
+  }
+
+  const emptyStatus = String(emptyQcPayload.status ?? 'not_available');
+  const emptyDriftScore = numOrNaN(emptyQcPayload.empty_drift_score);
+
+  if (emptyStatus === 'warning') {
+    score -= 12.0;
+    reasons.push('empty-well drift indicates limited comparability');
+  } else if (emptyStatus === 'watch') {
+    score -= 6.0;
+    reasons.push('empty-well QC suggests moderate drift');
+  }
+
+  if (emptyStatus !== 'not_available') {
+    notes.push(`empty-well QC: ${emptyStatus}`);
+  }
+
+  const ranking = Array.isArray(selectionInfo.ranking)
+    ? selectionInfo.ranking.filter((row): row is Record<string, unknown> => isRecord(row))
+    : [];
+  const finiteScores = ranking
+    .map((row) => numOrNaN(row.Score))
+    .filter(Number.isFinite);
+
+  if (finiteScores.length >= 2) {
+    const best = Math.max(...finiteScores);
+    const second = [...finiteScores].sort((a, b) => b - a)[1];
+    const gap = Math.abs(best - second) / Math.max(Math.abs(best), 1e-12);
+
+    if (gap < 0.10) {
+      score -= 6.0;
+      reasons.push('method ranking is not strongly separated');
+    }
+  }
+
+  const bestRaw = isRecord(selectionInfo.best) ? selectionInfo.best : {};
+  const bestMode = String(bestRaw.Mode ?? '');
+
+  if (bestMode === 'unavailable') {
+    score -= 15.0;
+    reasons.push('no quantitative method was ranked as available');
+  }
+
+  if (epsilonValid) {
+    notes.push('epsilon configured');
+  }
+
+  if (pathValid) {
+    if (pathLengthSource) {
+      notes.push(`path length ${pathLengthSource}`);
+    } else {
+      notes.push('path length configured');
+    }
+  }
+
+  let confidenceClass: ReliabilityPayload['confidence_class'];
+
+  if (hasUnknownInput && !hasCalibrationRows && !useStored && !epsilonValid) {
+    quantificationAvailable = false;
+    confidenceClass = 'LOW';
+    score = Math.min(score, 15.0);
+    reasons.push('unknown-only fallback without calibration or valid epsilon');
+  } else if (hasUnknownInput && !hasCalibrationRows && !useStored && hasUnknownQuant) {
+    quantificationAvailable = true;
+    score = Math.min(score, 42.0);
+    confidenceClass = 'LOW';
+    reasons.push('epsilon-based quantification without calibration has intrinsically limited reliability');
+  } else if (!quantificationAvailable) {
+    confidenceClass = 'NOT QUANTIFIABLE';
+    score = Math.min(score, 10.0);
+  } else {
+    score = clip(score, 0.0, 100.0);
+
+    if (score >= 75.0) {
+      confidenceClass = 'HIGH';
+    } else if (score >= 45.0) {
+      confidenceClass = 'MEDIUM';
+    } else {
+      confidenceClass = 'LOW';
+    }
+  }
+
+  if (reasons.length === 0) {
+    reasons.push('no major reliability penalty detected');
+  }
+
+  const quantificationStatus = quantificationAvailable ? 'available' : 'not available';
+
+  return {
+    reliability_score: clip(score, 0.0, 100.0),
+    confidence_class: confidenceClass,
+    quantification_available: Boolean(quantificationAvailable),
+    quantification_status: quantificationStatus,
+    notes,
+    reason: uniqueJoinedReasons(reasons),
+    empty_drift_score: emptyDriftScore,
+    empty_qc_status: emptyStatus,
+    epsilon,
+    path_length: pathLength,
+    liquid_volume_ul: liquidVolumeUl,
+    path_length_mm: pathLengthMm,
+    path_length_source: pathLengthSource,
+    well_bottom_diam_mm: wellBottomDiamMm,
+    well_bottom_area_mm2: wellBottomAreaMm2,
+    plate_geometry_name: plateGeometryName,
+    plate_geometry_assumption: plateGeometryAssumption,
+    epsilon_valid: Boolean(epsilonValid),
+    path_length_valid: Boolean(pathValid),
   };
 }
 
