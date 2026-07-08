@@ -17,12 +17,59 @@ const calibration = parseStoredCalibrationJson({
     b_ref: -1,
     source: 'python_bundle',
   },
+
+  empty_well_payload: {
+    Red: {
+      n: 2,
+      mean: 0.1,
+      median: 0.1,
+      robust_sd: 0.01,
+    },
+    Green: {
+      n: 2,
+      mean: 0.2,
+      median: 0.2,
+      robust_sd: 0.02,
+    },
+    Blue: {
+      n: 2,
+      mean: 0.3,
+      median: 0.3,
+      robust_sd: 0.03,
+    },
+  },
+  empty_well_rows: [
+    {
+      Row: 'A',
+      Col: 1,
+      Well: 'A1',
+      Signal_Red: 0.1,
+      Signal_Green: 0.2,
+      Signal_Blue: 0.3,
+      UsedFraction: 1,
+    },
+  ],
+
 });
 
 if (!calibration.cielabReference) {
   throw new Error('Expected parsed stored calibration to include cielabReference');
 }
+if (!calibration.emptyWellPayload) {
+  throw new Error('Expected parsed stored calibration to include emptyWellPayload');
+}
 
+if (!calibration.emptyWellRows || calibration.emptyWellRows.length === 0) {
+  throw new Error('Expected parsed stored calibration to include emptyWellRows');
+}
+
+if (calibration.emptyWellPayload.Red?.robust_sd !== 0.01) {
+  throw new Error('Expected parsed stored calibration to preserve Red robust_sd');
+}
+
+if (calibration.emptyWellRows[0]?.Signal_Green !== 0.2) {
+  throw new Error('Expected parsed stored calibration to preserve empty-well row signals');
+}
 const storedSlope = resolveStoredCalibrationSlopeForCielabDescriptor('DeltaL', calibration);
 if (storedSlope === null || !Number.isFinite(storedSlope)) {
   throw new Error('Expected stored calibration slope lookup to resolve DeltaL');

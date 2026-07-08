@@ -62,6 +62,32 @@ export interface StoredCielabReference {
   source: string;
 }
 
+export interface StoredEmptyWellChannel {
+  n: number;
+  mean?: number;
+  median?: number;
+  sd?: number;
+  robust_sd?: number;
+  mad?: number;
+}
+
+export interface StoredEmptyWellPayload {
+  Red?: StoredEmptyWellChannel;
+  Green?: StoredEmptyWellChannel;
+  Blue?: StoredEmptyWellChannel;
+}
+
+export interface StoredEmptyWellRow {
+  Row: string;
+  Col: number;
+  Well: string;
+  Signal_Red?: number;
+  Signal_Green?: number;
+  Signal_Blue?: number;
+  UsedFraction?: number;
+  [key: string]: unknown;
+}
+
 export interface StoredCalibration {
   version: 1 | 2;
   sourceName: string;
@@ -73,6 +99,8 @@ export interface StoredCalibration {
   corrections?: RgbLowSignalCorrection[];
   methodMetadata?: MethodMetadata;
   cielabReference?: StoredCielabReference;
+  emptyWellPayload?: StoredEmptyWellPayload;
+  emptyWellRows?: StoredEmptyWellRow[];
 }
 
 export interface UnknownConcentrationResult {

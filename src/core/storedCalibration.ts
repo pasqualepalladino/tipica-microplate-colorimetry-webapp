@@ -12,6 +12,8 @@ import type {
   RgbLowSignalCorrection,
   StoredCielabReference,
   UnknownConcentrationResult,
+  StoredEmptyWellPayload,
+  StoredEmptyWellRow,
 } from '../types/storedCalibration';
 import type { BackgroundModel, MethodMetadata, Rgb, RoiMode, RoiPixelStatisticsMode, WellMeasurement } from '../types/results';
 
@@ -363,6 +365,12 @@ function parsePythonStoredCalibrationBundle(raw: Record<string, unknown>): Store
 
   const selectedChannel = parsePythonBundleChannelName(raw.selected_channel);
   const cielabReference = parseStoredCielabReference(raw);
+  const emptyWellPayload = isRecord(raw.empty_well_payload)
+    ? raw.empty_well_payload as StoredEmptyWellPayload
+    : undefined;
+  const emptyWellRows = Array.isArray(raw.empty_well_rows)
+    ? raw.empty_well_rows as StoredEmptyWellRow[]
+    : undefined;
 
   return {
     version: 2,
@@ -375,6 +383,8 @@ function parsePythonStoredCalibrationBundle(raw: Record<string, unknown>): Store
     ...(selectedChannel ? { selectedChannel } : {}),
     ...(corrections.length ? { corrections } : {}),
     ...(cielabReference ? { cielabReference } : {}),
+    ...(emptyWellPayload ? { emptyWellPayload } : {}),
+    ...(emptyWellRows ? { emptyWellRows } : {}),
     pythonChannels,
   };
 }
@@ -576,6 +586,13 @@ export function parseStoredCalibrationJson(raw: unknown): StoredCalibration {
           : undefined;
       })()
     : undefined;
+  const emptyWellPayload = isRecord(raw.empty_well_payload)
+    ? raw.empty_well_payload as StoredEmptyWellPayload
+    : undefined;
+
+  const emptyWellRows = Array.isArray(raw.empty_well_rows)
+    ? raw.empty_well_rows as StoredEmptyWellRow[]
+    : undefined;
 
   return {
     version,
@@ -586,6 +603,8 @@ export function parseStoredCalibrationJson(raw: unknown): StoredCalibration {
     corrections,
     methodMetadata: parseOptionalMethodMetadata(raw.methodMetadata),
     ...(cielabReference ? { cielabReference } : {}),
+    ...(emptyWellPayload ? { emptyWellPayload } : {}),
+    ...(emptyWellRows ? { emptyWellRows } : {}),
   };
 }
 
