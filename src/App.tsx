@@ -2926,8 +2926,13 @@ function buildReportOverviewRows(
   const rows: XlsxRow[] = [];
   const cmpRows = [...methodComparisonRows];
   const bestCmp = cmpRows.find((row) => Number(row.Selected) === 1) ?? cmpRows[0] ?? {};
-  const selectedName = stringRowValue(bestCmp, 'Method') || stringRowValue(bestCmp, 'Channel') || reportChannelName(selectedChannel);
   const selectedRgbMethod = reportChannelName(selectedChannel);
+  const selectedQuantitativeCmp = cmpRows.find((row) => (
+    stringRowValue(row, 'Method') === selectedRgbMethod
+    || stringRowValue(row, 'Channel') === selectedRgbMethod
+  )) ?? bestCmp;
+  const selectedName = selectedRgbMethod;
+  const bestComparisonName = stringRowValue(bestCmp, 'Method') || stringRowValue(bestCmp, 'Channel') || selectedRgbMethod;
 
   const metadataCounts = countPlateMapMetadataTypes(plateMap);
   const emptyQcPayload = computeEmptyWellQcStatus(storedCalibration?.emptyWellPayload);
@@ -2943,7 +2948,7 @@ function buildReportOverviewRows(
     emptyQcPayload,
     {
       ranking: methodComparisonRows,
-      best: bestCmp,
+      best: selectedQuantitativeCmp,
     },
     {
       epsilon: undefined,
@@ -2985,10 +2990,15 @@ function buildReportOverviewRows(
   addRow('Plate geometry for path length', reliabilityPayload.plate_geometry_name);
   addRow('Plate geometry assumption', reliabilityPayload.plate_geometry_assumption);
 
-  addRow('Selected method from rank', selectedName);
-  addRow('Selected family', bestCmp.Family ?? methodFamilyFromReportMethod(selectedName));
-  addRow('Ranking mode', bestCmp.RankMode ?? bestCmp.Mode ?? '');
-  addRow('Selected method score', bestCmp.Score ?? '');
+  addRow('Selected quantitative RGB method', selectedName);
+  addRow('Selected quantitative family', selectedQuantitativeCmp.Family ?? methodFamilyFromReportMethod(selectedName));
+  addRow('Selected quantitative ranking mode', selectedQuantitativeCmp.RankMode ?? selectedQuantitativeCmp.Mode ?? '');
+  addRow('Selected quantitative method score', selectedQuantitativeCmp.Score ?? '');
+
+  addRow('Best diagnostic/comparison method', bestComparisonName);
+  addRow('Best diagnostic/comparison family', bestCmp.Family ?? methodFamilyFromReportMethod(bestComparisonName));
+  addRow('Best diagnostic/comparison ranking mode', bestCmp.RankMode ?? bestCmp.Mode ?? '');
+  addRow('Best diagnostic/comparison score', bestCmp.Score ?? '');
 
   [
     ['R2 calibration', 'R2_cal'],
@@ -2998,7 +3008,7 @@ function buildReportOverviewRows(
     ['C0 SD median', 'C0_sd_median'],
     ['beta (mean)', 'beta_mean'],
     ['Bias index (mean)', 'bias_index_mean'],
-  ].forEach(([label, key]) => addRow(label, bestCmp[key]));
+  ].forEach(([label, key]) => addRow(label, selectedQuantitativeCmp[key]));
 
   fitRows
     .filter((row) => stringRowValue(row, 'Channel') === selectedName)
