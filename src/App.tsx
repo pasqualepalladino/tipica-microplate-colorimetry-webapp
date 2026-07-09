@@ -3404,7 +3404,7 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     {
       name: '05_REPLICATES_MEAN',
       rows: tableRows(
-        uniqueHeaders(['ID', 'DF', 'Type', 'Conc', 'PAbs_Red_median', 'PAbs_Red_sd', 'PAbs_Green_median', 'PAbs_Green_sd', 'PAbs_Blue_median', 'PAbs_Blue_sd', 'L_median', 'L_sd', 'a_median', 'a_sd', 'b_median', 'b_sd', 'DeltaL_median', 'DeltaL_sd', 'Deltaa_median', 'Deltaa_sd', 'Deltab_median', 'Deltab_sd', 'DeltaE_ab_median', 'DeltaE_ab_sd', 'DeltaE_ab_chroma_median', 'DeltaE_ab_chroma_sd', 'CIELAB_ref_source', 'NReplicates', 'QCFlagged', 'QCCritical'], replicateRows),
+        ['ID', 'DF', 'Type', 'Conc', 'PAbs_Red_median', 'PAbs_Red_sd', 'PAbs_Green_median', 'PAbs_Green_sd', 'PAbs_Blue_median', 'PAbs_Blue_sd', 'L_median', 'L_sd', 'a_median', 'a_sd', 'b_median', 'b_sd', 'DeltaL_median', 'DeltaL_sd', 'Deltaa_median', 'Deltaa_sd', 'Deltab_median', 'Deltab_sd', 'DeltaE_ab_median', 'DeltaE_ab_sd', 'DeltaE_ab_chroma_median', 'DeltaE_ab_chroma_sd', 'CIELAB_ref_source', 'NReplicates', 'QCFlagged', 'QCCritical'],
         replicateRows,
       ),
     },
