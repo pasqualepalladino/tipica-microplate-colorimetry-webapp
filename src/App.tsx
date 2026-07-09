@@ -3403,7 +3403,7 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
   const fitRows = [
     ...rgbFitRows,
     ...storedCalibrationDiagnosticFitRows(options.storedCalibration),
-    ...buildCielabFittingRows(cielabPoints, undefined, options.storedCalibration),
+    ...buildCielabFittingRows(cielabPoints, undefined, options.storedCalibration, pythonReportCielabChannelLabel),
   ];
   const methodComparisonRows = buildMethodComparisonRowsFromFitRows(fitRows, options.expectedRefs, true);
   const overviewRows = buildReportOverviewRows(
@@ -4214,10 +4214,21 @@ function groupedMedianCielabFitRows(points: CielabDiagnosticPoint[], getValue: (
     .sort((a, b) => a.x - b.x);
 }
 
+function pythonReportCielabChannelLabel(channel: string): string {
+  if (channel === 'DeltaE_ab') {
+    return 'DeltaE';
+  }
+  if (channel === 'DeltaE_ab_chroma') {
+    return 'DeltaE_chroma';
+  }
+  return channel;
+}
+
 function buildCielabFittingRows(
   points: CielabDiagnosticPoint[],
   descriptors: readonly CielabFittingDescriptor[] = CIELAB_REPORT_DESCRIPTORS,
   storedCalibration?: StoredCalibration | null,
+  channelLabel: (channel: string) => string = (channel) => channel,
 ): XlsxRow[] {
   const rows: XlsxRow[] = [];
   const calibrationPoints = diagnosticCielabPointsForRole(points, 'C');
@@ -4272,7 +4283,7 @@ function buildCielabFittingRows(
 
     if (calFit.n > 0) {
       rows.push({
-        Channel: descriptor.channel,
+        Channel: channelLabel(descriptor.channel),
         FitType: 'Calibration',
         ID: '',
         DF: '',
@@ -4309,7 +4320,7 @@ function buildCielabFittingRows(
         : '';
 
       rows.push({
-        Channel: descriptor.channel,
+        Channel: channelLabel(descriptor.channel),
         FitType: 'StdAdd',
         ID: group.sampleId,
         DF: group.dilutionFactor,
@@ -9569,3 +9580,5 @@ function App() {
 }
 
 export default App;
+
+
