@@ -4078,7 +4078,24 @@ const CIELAB_REPORT_DESCRIPTORS = [
   { channel: 'DeltaE_ab_chroma', getValue: (point: CielabDiagnosticPoint) => point.deltaEChroma },
 ] as const;
 
-const CIELAB_DIAGNOSTIC_DESCRIPTORS = CIELAB_REPORT_DESCRIPTORS.filter((descriptor) => descriptor.channel.startsWith('Delta'));
+const CIELAB_DIAGNOSTIC_DESCRIPTOR_SEQUENCE = [
+  'DeltaL',
+  'Deltaa',
+  'Deltab',
+  'DeltaE_ab',
+  'DeltaE_ab_chroma',
+  'DeltaL',
+] as const;
+
+const CIELAB_DIAGNOSTIC_DESCRIPTORS = CIELAB_DIAGNOSTIC_DESCRIPTOR_SEQUENCE.map((channel) => {
+  const descriptor = CIELAB_REPORT_DESCRIPTORS.find((candidate) => candidate.channel === channel);
+
+  if (!descriptor) {
+    throw new Error(`Missing CIELAB diagnostic descriptor: ${channel}`);
+  }
+
+  return descriptor;
+});
 
 type CielabFittingDescriptor = (typeof CIELAB_REPORT_DESCRIPTORS)[number];
 
