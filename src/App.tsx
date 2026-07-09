@@ -3801,54 +3801,152 @@ function buildDiagnosticsWellBottomRows(options: PythonDiagnosticsWorkbookOption
   });
 }
 
-function buildDiagnosticsPlateGeometryRows(options: PythonDiagnosticsWorkbookOptions): XlsxRow[] {
-  const geometry = options.geometry;
-  const diagnostics = options.backgroundDiagnostics?.diagnostics;
-  const rows: XlsxRow[] = [
-    { key: 'image_basename', value: options.imageBase },
-    { key: 'image_file', value: options.imageName ?? '' },
-    { key: 'application', value: 'TIPICA webapp' },
-    { key: 'application_version', value: packageJson.version },
-    { key: 'geometry_name', value: options.geometryName ?? '' },
-    { key: 'geometry_source', value: options.geometrySource },
-    { key: 'roi_mode', value: options.methodMetadata.roiMode },
-    { key: 'roi_pixel_statistics_mode', value: options.methodMetadata.roiPixelStatisticsMode },
-    { key: 'background_model', value: options.methodMetadata.backgroundModel },
-    { key: 'background_actual_model', value: options.methodMetadata.backgroundActualModel ?? '' },
-    { key: 'background_mask_algorithm', value: options.methodMetadata.backgroundMaskAlgorithm ?? diagnostics?.maskAlgorithm ?? '' },
-    { key: 'background_candidate_pixels', value: options.methodMetadata.backgroundCandidatePixels ?? diagnostics?.candidatePixels ?? '' },
-    { key: 'background_accepted_pixels', value: diagnostics?.acceptedPixels ?? '' },
-    { key: 'background_accepted_samples', value: options.methodMetadata.backgroundAcceptedSamples ?? diagnostics?.acceptedSamples ?? '' },
-    { key: 'background_fit_success', value: diagnostics?.fitSuccess === undefined ? '' : diagnostics.fitSuccess ? 1 : 0 },
-    { key: 'floor_geometry_available', value: options.floorGeometryAvailable ? 1 : 0 },
-    { key: 'shared_geometry_override_active', value: options.sharedGeometryOverride ? 1 : 0 },
-    { key: 'shared_geometry_override_source', value: options.sharedGeometryOverride?.sourceName ?? '' },
-    { key: 'shared_geometry_override_wells', value: options.sharedGeometryOverride?.wellCount ?? '' },
-    { key: 'shared_geometry_override_mapping', value: options.sharedGeometryOverride?.mappingSummary ?? '' },
-    { key: 'roi_radius_factor', value: options.radiusFactor },
-    { key: 'floor_roi_radius_factor', value: options.floorRoiRadiusFactor },
-    { key: 'unit_label', value: options.unitLabel },
-    { key: 'measurements', value: options.measurements.length },
-    { key: 'plate_map_entries', value: options.plateMap.length },
-    { key: 'missing_fields_note', value: 'Blank cells indicate Python diagnostic quantities not yet computed by the webapp.' },
-  ];
+type PythonLikePlateGeometryValue = string | number | [number, number];
 
-  if (geometry) {
-    rows.push(
-      { key: 'corner_a1_x', value: geometry.corner_a1.x },
-      { key: 'corner_a1_y', value: geometry.corner_a1.y },
-      { key: 'corner_a12_x', value: geometry.corner_a12.x },
-      { key: 'corner_a12_y', value: geometry.corner_a12.y },
-      { key: 'corner_h12_x', value: geometry.corner_h12.x },
-      { key: 'corner_h12_y', value: geometry.corner_h12.y },
-      { key: 'corner_h1_x', value: geometry.corner_h1.x },
-      { key: 'corner_h1_y', value: geometry.corner_h1.y },
-      { key: 'mouth_radius_px', value: geometry.mouth_radius_px ?? '' },
-      { key: 'geometry_roi_radius_factor', value: geometry.roi_radius_factor ?? '' },
-    );
+function formatPythonLikePlateGeometryValue(value: PythonLikePlateGeometryValue): string | number {
+  if (Array.isArray(value)) {
+    return `(${value[0]}, ${value[1]})`;
   }
 
-  return rows;
+  return value;
+}
+
+function inferPlateShapeFromWells(wells: WellCenter[]): { nrow: number; ncol: number } {
+  const maxRow = wells.reduce((current, well) => Math.max(current, well.row), -1);
+  const maxCol = wells.reduce((current, well) => Math.max(current, well.col), -1);
+
+  return {
+    nrow: maxRow >= 0 ? maxRow + 1 : 8,
+    ncol: maxCol >= 0 ? maxCol + 1 : 12,
+  };
+}
+
+function getPythonLikePlateGeometryRows(nrow: number, ncol: number): XlsxRow[] {
+  const plateGeometryDb: Record<string, Record<string, PythonLikePlateGeometryValue>> = {
+    '2x3': {
+      name: '6-well standard flat-bottom cell-culture plate',
+      footprint_length_mm: 127.76,
+      footprint_width_mm: 85.48,
+      pitch_mm: 39.12,
+      well_depth_mm_nominal: 17.5,
+      mouth_diam_mm_nominal: 35.0,
+      floor_diam_mm_nominal: 35.0,
+      standard_basis: 'approximate standard flat-bottom 6-well geometry; verify vendor-specific dimensions for quantitative path-length work',
+    },
+    '3x4': {
+      name: '12-well standard flat-bottom cell-culture plate',
+      footprint_length_mm: 127.76,
+      footprint_width_mm: 85.48,
+      pitch_mm: 26.0,
+      well_depth_mm_nominal: 17.5,
+      mouth_diam_mm_nominal: 22.1,
+      floor_diam_mm_nominal: 22.1,
+      standard_basis: 'approximate standard flat-bottom 12-well geometry; verify vendor-specific dimensions for quantitative path-length work',
+    },
+    '4x6': {
+      name: '24-well standard flat-bottom cell-culture plate',
+      footprint_length_mm: 127.76,
+      footprint_width_mm: 85.48,
+      pitch_mm: 19.3,
+      well_depth_mm_nominal: 17.5,
+      mouth_diam_mm_nominal: 15.6,
+      floor_diam_mm_nominal: 15.6,
+      standard_basis: 'approximate standard flat-bottom 24-well geometry; verify vendor-specific dimensions for quantitative path-length work',
+    },
+    '6x8': {
+      name: '48-well standard flat-bottom cell-culture plate',
+      footprint_length_mm: 127.76,
+      footprint_width_mm: 85.48,
+      pitch_mm: 13.0,
+      well_depth_mm_nominal: 17.5,
+      mouth_diam_mm_nominal: 11.0,
+      floor_diam_mm_nominal: 11.0,
+      standard_basis: 'approximate standard flat-bottom 48-well geometry; verify vendor-specific dimensions for quantitative path-length work',
+    },
+    '8x12': {
+      name: '96-well standard F-bottom / flat-bottom',
+      footprint_length_mm: 127.76,
+      footprint_width_mm: 85.48,
+      footprint_length_mm_range: [127.76, 127.8],
+      footprint_width_mm_range: [85.48, 85.5],
+      plate_height_mm_nominal: 14.4,
+      plate_height_mm_range: [14.2, 14.6],
+      a1_row_offset_mm: 11.24,
+      a1_row_offset_mm_range: [11.18, 11.24],
+      a1_col_offset_mm: 14.38,
+      a1_col_offset_mm_range: [14.29, 14.38],
+      pitch_mm: 9.0,
+      pitch_mm_range: '(9.0, 9.02)',
+      well_depth_mm: 10.9,
+      well_depth_mm_range: [10.67, 10.9],
+      mouth_diam_mm: 6.9,
+      mouth_diam_mm_range: [6.69, 6.96],
+      floor_diam_mm: 6.48,
+      floor_diam_mm_range: [6.35, 6.58],
+      outer_diam_mm: 7.75,
+      inner_diam_mm: 6.9,
+      bridge_width_mm: 0.6,
+      extra_optical_margin_mm: 0.2,
+      well_bottom_elevation_mm_nominal: 3.6,
+      well_bottom_elevation_mm_range: [3.5, 3.7],
+      flange_or_skirt_height_mm: 2.5,
+    },
+    '16x24': {
+      name: '384-well standard F-bottom / flat-bottom',
+      footprint_length_mm: 127.76,
+      footprint_width_mm: 85.48,
+      plate_height_mm_nominal: 14.2,
+      a1_row_offset_mm: 8.99,
+      a1_col_offset_mm: 12.13,
+      pitch_mm: 4.5,
+      well_depth_mm_nominal: 11.5,
+      mouth_diam_mm_nominal: 3.66,
+      floor_diam_mm_nominal: 3.05,
+      flange_or_skirt_height_mm: 2.5,
+    },
+    '32x48': {
+      name: '1536-well standard F-bottom / flat-bottom',
+      footprint_length_mm: 127.76,
+      footprint_width_mm: 85.48,
+      plate_height_mm_nominal: 10.4,
+      a1_row_offset_mm: 7.87,
+      a1_col_offset_mm: 11.01,
+      pitch_mm: 2.25,
+      well_depth_mm_nominal: 4.9,
+      mouth_diam_mm_nominal: 1.75,
+      floor_diam_mm_nominal: 1.56,
+      flange_or_skirt_height_mm: 2.0,
+    },
+  };
+
+  const geometry = {
+    ...(plateGeometryDb[`${nrow}x${ncol}`] ?? {
+      name: `generic ${nrow}x${ncol}`,
+      pitch_mm: nrow === 8 && ncol === 12 ? 9.0 : 1.0,
+      mouth_diam_mm: nrow === 8 && ncol === 12 ? 6.9 : 1.0,
+      floor_diam_mm: nrow === 8 && ncol === 12 ? 6.48 : 0.9,
+      well_depth_mm: nrow === 8 && ncol === 12 ? 10.9 : 1.0,
+      outer_diam_mm: nrow === 8 && ncol === 12 ? 7.75 : 1.1,
+      inner_diam_mm: nrow === 8 && ncol === 12 ? 6.9 : 1.0,
+      bridge_width_mm: nrow === 8 && ncol === 12 ? 0.6 : 0.05,
+      extra_optical_margin_mm: nrow === 8 && ncol === 12 ? 0.2 : 0.02,
+      standard_basis: 'generic geometry; not ANSI/SLAS-certified',
+    }),
+  };
+
+  if (!geometry.standard_basis) {
+    geometry.standard_basis = 'ANSI/SLAS-compatible flat-bottom geometry; vendor dimensions may vary by plate family';
+  }
+
+  return Object.keys(geometry)
+    .sort()
+    .map((key) => ({ key, value: formatPythonLikePlateGeometryValue(geometry[key]) }));
+}
+
+function buildDiagnosticsPlateGeometryRows(options: PythonDiagnosticsWorkbookOptions): XlsxRow[] {
+  const { nrow, ncol } = inferPlateShapeFromWells(options.wells);
+
+  return getPythonLikePlateGeometryRows(nrow, ncol);
 }
 
 function buildDiagnosticsEmptyWellRows(
