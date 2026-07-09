@@ -3397,7 +3397,7 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     {
       name: '04_RAW',
       rows: tableRows(
-        uniqueHeaders(['Row', 'Col', 'Well', 'ID', 'Type', 'Conc', 'DF', 'MeanW_Red', 'MeanW_Green', 'MeanW_Blue', 'MeanBG_Red', 'MeanBG_Green', 'MeanBG_Blue', 'SignalT_Red', 'SignalT_Green', 'SignalT_Blue', 'PAbs_Red', 'PAbs_Green', 'PAbs_Blue', 'L', 'a', 'b', 'DeltaL', 'Deltaa', 'Deltab', 'DeltaE_ab', 'DeltaE_ab_chroma', 'CIELAB_ref_source', 'ImageWarning'], rawRows),
+        ['Row', 'Col', 'Well', 'ID', 'Type', 'Conc', 'DF', 'MeanW_Red', 'MeanW_Green', 'MeanW_Blue', 'MeanBG_Red', 'MeanBG_Green', 'MeanBG_Blue', 'SignalT_Red', 'SignalT_Green', 'SignalT_Blue', 'PAbs_Red', 'PAbs_Green', 'PAbs_Blue', 'L', 'a', 'b', 'DeltaL', 'Deltaa', 'Deltab', 'DeltaE_ab', 'DeltaE_ab_chroma', 'CIELAB_ref_source', 'ImageWarning'],
         rawRows,
       ),
     },
