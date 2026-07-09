@@ -3813,8 +3813,8 @@ function buildDiagnosticsGeometryQcRows(options: PythonDiagnosticsWorkbookOption
       shift_frac_of_mouth_r: Number.isFinite(shiftPx) && typeof finiteMouthRadius === 'number' && finiteMouthRadius > 0 ? shiftPx / finiteMouthRadius : '',
       floor_to_mouth_r_ratio: finiteOrBlank(ratio),
       floor_to_mouth_area_ratio: Number.isFinite(ratio) ? ratio ** 2 : '',
-      D_warning: '',
-      D_critical: '',
+      D_warning: (Number.isFinite(shiftPx) && typeof finiteMouthRadius === 'number' && finiteMouthRadius > 1e-9 && shiftPx / finiteMouthRadius > 0.38) || (Number.isFinite(ratio) && (ratio < 0.55 || ratio > 1.02)) ? 1 : 0,
+      D_critical: (Number.isFinite(shiftPx) && typeof finiteMouthRadius === 'number' && finiteMouthRadius > 1e-9 && shiftPx / finiteMouthRadius > 0.50) || (Number.isFinite(ratio) && (ratio < 0.45 || ratio > 1.08)) ? 1 : 0,
     };
   });
 }
