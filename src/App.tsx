@@ -2712,7 +2712,37 @@ function buildReportFitRows(
     });
   });
 
-  return rows;
+  const channelOrder = new Map([
+    ['PAbs_Red', 0],
+    ['PAbs_Green', 1],
+    ['PAbs_Blue', 2],
+  ]);
+  const fitTypeOrder = new Map([
+    ['Calibration', 0],
+    ['StdAdd', 1],
+    ['UnknownFromCal', 2],
+    ['UnknownFromEpsilon', 3],
+    ['UnknownOnly', 4],
+  ]);
+
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const channelDelta = (channelOrder.get(stringRowValue(a.row, 'Channel')) ?? 99)
+        - (channelOrder.get(stringRowValue(b.row, 'Channel')) ?? 99);
+      if (channelDelta !== 0) {
+        return channelDelta;
+      }
+
+      const fitTypeDelta = (fitTypeOrder.get(stringRowValue(a.row, 'FitType')) ?? 99)
+        - (fitTypeOrder.get(stringRowValue(b.row, 'FitType')) ?? 99);
+      if (fitTypeDelta !== 0) {
+        return fitTypeDelta;
+      }
+
+      return a.index - b.index;
+    })
+    .map(({ row }) => row);
 }
 
 function numericRowValue(row: XlsxRow | undefined, key: string): number {
