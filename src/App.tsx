@@ -3180,7 +3180,11 @@ function buildReportMetadataRows(options: PythonReportWorkbookOptions): XlsxRow[
   addRow('Resize scale', info?.resize_scale ?? null, 'analysis_width / original_width, when a resized image is used');
   addRow('Initial image QC', info?.initial_image_qc ?? null, 'Rule-based result: FAIL if destructive=True; WARNING if quality_warning=True or borderline=True; otherwise OK. No image correction is applied.');
   addRow('Initial image QC class', info?.image_qc_class ?? null, 'non_correctable if destructive=True; quality_warning if flatfield_span > 0.18 and no destructive defect; usable_with_warnings if only borderline defects; good if no flags.');
-  addRow('Initial image QC messages', info?.image_qc_messages ?? null, 'Messages list the threshold rules triggered by the measured fields below.');
+  rows.push({
+    Field: 'Initial image QC messages',
+    Value: info?.image_qc_messages ?? '',
+    Notes: 'Messages list the threshold rules triggered by the measured fields below.',
+  });
   rows.push({ Field: 'Image QC decision rules', Value: 'thresholds', Notes: 'destructive = dead_channel OR saturation_fraction>0.003 OR saturation_all_channels_fraction>0.0008 OR specular_fraction>0.003 OR max_side<900 OR approx_roi_pixels<120; borderline = saturation_fraction>0.0005 OR specular_fraction>0.0005 OR blur_score<35; quality_warning = flatfield_span>0.18.' });
   addRow('Flat-field span', info?.flatfield_span ?? null, 'Flatfield_span = (P95 - P5) / median of the slow illumination field estimated from the grayscale image. Larger values indicate stronger illumination/background gradient.');
   addRow('Specular fraction', info?.specular_fraction ?? null, 'fraction of bright low-saturation pixels');
