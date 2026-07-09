@@ -4254,7 +4254,15 @@ function buildCielabFittingRows(
       groupedCalibration.set(point.x, values);
     });
 
-    const sigmaCal = medianFinite([...groupedCalibration.values()].map(sampleStandardDeviation).filter(Number.isFinite));
+    const sigmaEstimate = estimateSigmaForPythonResultsLoq(
+      [...groupedCalibration.entries()].map(([x, values]) => ({
+        x,
+        y: medianFinite(values),
+        yerr: sampleStandardDeviation(values),
+      })),
+    );
+    const sigmaCal = sigmaEstimate.sigma;
+    const sigmaSource = sigmaEstimate.source;
     const lod = Number.isFinite(sigmaCal) && sigmaCal > 0 && Number.isFinite(calFit.slope) && Math.abs(calFit.slope) > 1e-15
       ? (3 * sigmaCal) / Math.abs(calFit.slope)
       : Number.NaN;
@@ -4278,7 +4286,7 @@ function buildCielabFittingRows(
         C0: '',
         C0_sd: '',
         sigma_cal: finiteOrBlank(sigmaCal),
-        sigma_source: Number.isFinite(sigmaCal) ? 'median_calibration_sd' : 'unavailable',
+        sigma_source: sigmaSource,
         SNR: Number.isFinite(sigmaCal) && sigmaCal > 0 && Number.isFinite(calFit.slope) ? Math.abs(calFit.slope) / sigmaCal : '',
         beta_k: '',
         bias_index_k: '',
