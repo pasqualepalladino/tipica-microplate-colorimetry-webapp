@@ -2400,7 +2400,7 @@ function buildReportRawRows(
       Deltab: finiteOrBlank(typeof cielab?.deltaB === 'number' ? cielab.deltaB : Number.NaN),
       DeltaE_ab: finiteOrBlank(typeof cielab?.deltaE === 'number' ? cielab.deltaE : Number.NaN),
       DeltaE_ab_chroma: finiteOrBlank(typeof cielab?.deltaEChroma === 'number' ? cielab.deltaEChroma : Number.NaN),
-      CIELAB_ref_source: referenceSource,
+      CIELAB_ref_source: formatPythonCielabRefSource(referenceSource),
       ImageWarning: measurement.warnings.length > 0 || Boolean(measurement.roiStatisticsWarning || measurement.geometryAlignmentWarning) ? 1 : 0,
       ...auditFields,
     };
@@ -2528,7 +2528,7 @@ function buildReportReplicateRows(
         DeltaE_ab_sd: robustSdOrBlank(labValues.deltaE),
         DeltaE_ab_chroma_median: medianOrBlank(labValues.deltaEChroma),
         DeltaE_ab_chroma_sd: robustSdOrBlank(labValues.deltaEChroma),
-        CIELAB_ref_source: referenceSource,
+        CIELAB_ref_source: formatPythonCielabRefSource(referenceSource),
         NReplicates: groupMeasurements.length,
         QCFlagged: warningCount > 0 ? 1 : 0,
         QCCritical: criticalCount > 0 ? 1 : 0,
@@ -2986,7 +2986,6 @@ function buildReportOverviewRows(
   addRow('Plate geometry assumption', reliabilityPayload.plate_geometry_assumption);
 
   addRow('Selected method from rank', selectedName);
-  addRow('Selected quantitative RGB channel', selectedRgbMethod);
   addRow('Selected family', bestCmp.Family ?? methodFamilyFromReportMethod(selectedName));
   addRow('Ranking mode', bestCmp.RankMode ?? bestCmp.Mode ?? '');
   addRow('Selected method score', bestCmp.Score ?? '');
@@ -2999,8 +2998,6 @@ function buildReportOverviewRows(
     ['C0 SD median', 'C0_sd_median'],
     ['beta (mean)', 'beta_mean'],
     ['Bias index (mean)', 'bias_index_mean'],
-    ['LOD', 'LOD'],
-    ['LOQ', 'LOQ'],
   ].forEach(([label, key]) => addRow(label, bestCmp[key]));
 
   fitRows
@@ -3017,7 +3014,7 @@ function buildReportOverviewRows(
       }
 
       const id = stringRowValue(row, 'ID');
-      const df = row.DF ?? '';
+      const df = formatPythonOverviewDf(row.DF);
       addRow(`${fitType} ID=${id} DF=${df} C0 (${unitLabel})`, c0);
 
       const c0sd = finiteNumber(row.C0_sd, Number.NaN);
@@ -3032,23 +3029,38 @@ function buildReportOverviewRows(
     addRow('Status notes', reliabilityPayload.notes.join('; '));
   }
 
-  if (imageBase) {
-    addRow('Report', imageBase);
-  }
-
-  if (unitLabel) {
-    addRow('Unit', unitLabel);
-  }
-
-  if (rankings.length > 0) {
-    addRow('RGB ranking mode', calibrationAndStdAddModeLabel(methodComparisonRows));
-  }
 
   return rows;
 }
 
 function finiteNumber(value: XlsxCellValue, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function formatPythonOverviewDf(value: XlsxCellValue): string {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value.toFixed(1);
+  }
+
+  const text = String(value ?? '').trim();
+  if (!text) {
+    return '';
+  }
+
+  const numeric = Number(text);
+  return Number.isFinite(numeric) ? numeric.toFixed(1) : text;
+}
+
+function pythonOverviewFitTypeLabel(fitType: string, referenceComparison = false): string {
+  if (referenceComparison && fitType === 'StdAdd') {
+    return 'Std add';
+  }
+
+  return fitType;
+}
+
+function formatPythonCielabRefSource(source: string): string {
+  return source === 'plate_zero_calibration' ? 'zero_calibration' : source;
 }
 
 function methodFamilyFromReportMethod(method: string): string {
@@ -3110,6 +3122,11 @@ function appendOverviewReferenceRows(
         return;
       }
 
+      const c0 = finiteNumber(row.C0, Number.NaN);
+      if (!Number.isFinite(c0)) {
+        return;
+      }
+
       rows.push({ Field: 'Reference label', Value: label });
       rows.push({ Field: `Reference value (${unitLabel})`, Value: value });
 
@@ -3117,13 +3134,11 @@ function appendOverviewReferenceRows(
         rows.push({ Field: `Reference SD (${unitLabel})`, Value: ref.sd });
       }
 
-      const c0 = finiteNumber(row.C0, Number.NaN);
-      if (Number.isFinite(c0)) {
-        const rowTag = `${stringRowValue(row, 'FitType')} ID=${stringRowValue(row, 'ID')} DF=${row.DF ?? ''}`;
-        rows.push({ Field: `${rowTag} delta (${unitLabel})`, Value: c0 - value });
-        if (value !== 0) {
-          rows.push({ Field: `${rowTag} recovery (%)`, Value: 100 * c0 / value });
-        }
+      const fitTypeLabel = pythonOverviewFitTypeLabel(stringRowValue(row, 'FitType'), true);
+      const rowTag = `${fitTypeLabel} ID=${stringRowValue(row, 'ID')} DF=${formatPythonOverviewDf(row.DF)}`;
+      rows.push({ Field: `${rowTag} delta (${unitLabel})`, Value: c0 - value });
+      if (value !== 0) {
+        rows.push({ Field: `${rowTag} recovery (%)`, Value: 100 * c0 / value });
       }
     });
   });
@@ -3744,7 +3759,11 @@ function buildDiagnosticsGeometryQcRows(options: PythonDiagnosticsWorkbookOption
       Row: context.rowName,
       Col: context.colName,
       Well: measurement.wellId,
-      floor_source: overrideRecord ? `${overrideRecord.floorSource ?? 'manual_D_projection'}_override` : options.floorGeometryAvailable ? options.geometrySource : 'none',
+      floor_source: overrideRecord
+        ? `${overrideRecord.floorSource ?? 'manual_D_projection'}_override`
+        : options.floorGeometryAvailable
+          ? (options.geometrySource === 'manual' ? 'manual_D_projection' : options.geometrySource)
+          : 'none',
       local_pitch_px: Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
         ? overrideRecord?.localPitchPx ?? estimateLocalPitch(options.wells, context.row, context.col)
         : measurement.medianPitch ?? '',
@@ -4269,41 +4288,93 @@ function buildCielabFittingRows(
 
 function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
   return [
-    { Term: 'BG_STAT_MASK', Meaning: 'Overlay diagnostic image of accepted inter-well background pixels', Formula: 'accepted BG mask composited over source image', Unit: 'image', 'Where used': 'BG_STAT_MASK.png', Notes: 'The exact Python binary-mask rendering is not yet reproduced.' },
-    { Term: 'BG_Cell_Row/BG_Cell_Col', Meaning: 'Inter-well background-cell row/column index', Formula: '0-based grid index of the inter-well cell, not a well row/column', Unit: 'index', 'Where used': '02_BG_SAMPLES', Notes: 'Populated when physical inter-well cell diagnostics are available.' },
-    { Term: 'Associated_Wells', Meaning: 'Four wells surrounding an inter-well BG sample cell', Formula: 'well(r,c)-well(r,c+1)-well(r+1,c)-well(r+1,c+1)', Unit: 'well labels', 'Where used': '02_BG_SAMPLES', Notes: '' },
-    { Term: 'Row/Col/Well', Meaning: 'Human-readable well position', Formula: 'Row is A-based; Col is 1-based; Well = Row+Col', Unit: 'well label', 'Where used': '03_BG_WELL_FIT, 04_WELL_ROBUST_STATS, 05_GEOMETRY_QC, 06_WELL_BOTTOM, 08_EMPTY_WELLS', Notes: '' },
-    { Term: 'x/y', Meaning: 'Image coordinates', Formula: 'pixel coordinate in analyzed image', Unit: 'pixel', 'Where used': '02_BG_SAMPLES, 03_BG_WELL_FIT, 06_WELL_BOTTOM', Notes: 'For 02_BG_SAMPLES, x/y are the centroid of accepted background pixels when physical inter-well diagnostics are available.' },
-    { Term: 'area', Meaning: 'Accepted mask area', Formula: 'number of full-resolution accepted pixels in the BG sample mask', Unit: 'pixels', 'Where used': '02_BG_SAMPLES', Notes: 'Diagnostics-only parity field; the physical background fit still uses the existing sampled web model inputs.' },
-    { Term: 'Web_Sampled_Final_Accepted_Pixels', Meaning: 'Sampled BG points retained by the current web physical background model for this cell', Formula: 'count after sampled canonical-cell generation and per-cell robust filtering', Unit: 'sampled points', 'Where used': '02_BG_SAMPLES', Notes: 'Previously this sampled count was reported as area; retained to diagnose sampling versus mask-area differences.' },
-    { Term: 'Web_FullRes_After_Well_Exclusion', Meaning: 'Full-resolution candidate pixels remaining after canonical BG model and well exclusion', Formula: 'integer image pixels in the inter-well cell after model/background and neighboring-well exclusion', Unit: 'pixels', 'Where used': '02_BG_SAMPLES', Notes: 'Diagnostics only; not used to change quantitative outputs.' },
-    { Term: 'Web_FullRes_Final_Accepted_Pixels', Meaning: 'Full-resolution accepted pixels used for the Python-style area field', Formula: 'full-resolution cell candidates after web per-cell robust filtering', Unit: 'pixels', 'Where used': '02_BG_SAMPLES', Notes: 'Same value as area when available.' },
-    { Term: 'Web_Projected_Cell_Area_Px / Web_Raw_Canonical_Mask_Samples / Web_Sampled_After_*', Meaning: 'Intermediate web BG-cell validation counters', Formula: 'projected cell polygon area and sampled-candidate counts at major filtering stages', Unit: 'pixels or sampled points', 'Where used': '02_BG_SAMPLES', Notes: 'These are web validation extensions for diagnosing geometry/mask/sample-count differences.' },
-    { Term: 'Web_Zero_Reason', Meaning: 'Cell-level reason when the final accepted BG cell is empty', Formula: 'diagnostic category inferred from sampled/full-resolution cell counters', Unit: 'text', 'Where used': '02_BG_SAMPLES', Notes: 'Diagnostics only; not consumed by quantitative outputs.' },
-    { Term: 'Web_Geometry_Source', Meaning: 'Geometry provenance used for the current extraction/export run', Formula: 'same source label exported in metadata and geometry sheets', Unit: 'text', 'Where used': '02_BG_SAMPLES', Notes: 'Repeated per BG cell to simplify direct Python-vs-web comparison joins.' },
-    { Term: 'BG_Red_raw/BG_Green_raw/BG_Blue_raw', Meaning: 'Predicted or sampled local raw background at a well', Formula: 'background model value at well center', Unit: 'raw image intensity', 'Where used': '03_BG_WELL_FIT', Notes: 'Exported in standard RGB order.' },
-    { Term: 'n_roi/n_core/n_used', Meaning: 'Pixel counts used during well ROI filtering', Formula: 'ROI pixels, core pixels and retained pixels', Unit: 'pixels', 'Where used': '04_WELL_ROBUST_STATS', Notes: '' },
-    { Term: 'used_fraction/UsedFraction', Meaning: 'Fraction of ROI core pixels retained after filtering', Formula: 'n_used / n_core', Unit: 'dimensionless', 'Where used': '04_WELL_ROBUST_STATS, 08_EMPTY_WELLS', Notes: '' },
-    { Term: 'Red_median/Green_median/Blue_median', Meaning: 'Median well RGB intensities currently computed by the webapp', Formula: 'median over sampled ROI pixels after selected ROI statistics mode', Unit: 'raw image intensity', 'Where used': '04_WELL_ROBUST_STATS', Notes: 'Distribution percentiles and SD remain blank because the webapp does not retain them.' },
-    { Term: 'L/a/b', Meaning: 'CIELAB coordinates derived from extracted well RGB values', Formula: 'sRGB-like RGB to CIE L*a*b* conversion using D65 reference white', Unit: 'dimensionless', 'Where used': '04_WELL_ROBUST_STATS, 08_EMPTY_WELLS, 11_CIELAB_FITTING', Notes: 'Diagnostic descriptor, not the primary quantitative output.' },
-    { Term: 'DeltaL/Deltaa/Deltab/DeltaE_ab/DeltaE_ab_chroma', Meaning: 'CIELAB difference descriptors', Formula: 'Delta values relative to zero or lowest calibration reference; DeltaE_ab = sqrt(DeltaL^2 + Deltaa^2 + Deltab^2)', Unit: 'dimensionless', 'Where used': '11_CIELAB_FITTING, FIGURE_CIELAB_DELTAE.png', Notes: '' },
-    { Term: 'floor_source/local_pitch_px/px_per_mm/cyl_r_bg', Meaning: 'Geometry-source and local scale descriptors', Formula: 'reported source, local pitch, pixel/mm scale and background exclusion radius', Unit: 'mixed', 'Where used': '05_GEOMETRY_QC, 06_WELL_BOTTOM', Notes: 'px_per_mm assumes 9.0 mm 96-well pitch.' },
-    { Term: 'mouth_* / floor_*', Meaning: 'Mouth/floor circle center and radius descriptors', Formula: 'projected circle parameters from loaded geometry and current ROI settings', Unit: 'pixels', 'Where used': '06_WELL_BOTTOM', Notes: 'Mouth/floor scores are blank because the webapp does not compute Python detector scores.' },
-    { Term: 'shift_px/shift_frac_of_mouth_r/floor_to_mouth_r_ratio/floor_to_mouth_area_ratio', Meaning: 'Mouth-to-floor alignment descriptors', Formula: 'shift distance and relative floor/mouth radius or area ratios', Unit: 'pixels or dimensionless', 'Where used': '05_GEOMETRY_QC, 06_WELL_BOTTOM', Notes: '' },
-    { Term: 'D_warning/D_critical', Meaning: 'Floor-geometry warning and critical flags', Formula: 'Python threshold flags', Unit: '0/1', 'Where used': '05_GEOMETRY_QC', Notes: 'Blank because the webapp does not compute Python floor-geometry warning thresholds.' },
-    { Term: 'MeanW_*/MeanBG_*/PAbs_*', Meaning: 'Linearized well intensity, background intensity and RGB pseudo-absorbance', Formula: 'PAbs = log10(MeanBG / MeanW)', Unit: 'dimensionless', 'Where used': '08_EMPTY_WELLS, 10_METHOD_COMPARISON', Notes: '' },
-    { Term: 'Dataset/Status/Applicability/Reason', Meaning: 'Applicability status for optional spatial diagnostics', Formula: 'applied or not_applied with reason text', Unit: 'text', 'Where used': '09_SPATIAL_DIAGNOSTICS', Notes: 'Unknown spatial diagnostics use PAbs_Red when unknown wells are available; empty spatial diagnostics require Python-style structural empty rows and remain not_applied in the webapp.' },
-    { Term: 'n/intercept/slope_col/slope_row/R2/corr_col/corr_row', Meaning: 'Spatial-trend descriptors', Formula: 'linear trend of PAbs_Red versus row/column position', Unit: 'mixed', 'Where used': '09_SPATIAL_DIAGNOSTICS', Notes: 'Diagnostic only; does not alter quantitative results.' },
-    { Term: 'Method/Family/ComparableGroup/CommonFactorsN/RankMode', Meaning: 'Method-comparison identifiers and comparable-score grouping', Formula: 'text labels and number of factors defining score comparability', Unit: 'mixed', 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: 'Scores are directly comparable only within the same ComparableGroup.' },
-    { Term: 'Score/ScoreFormula', Meaning: 'Common method-ranking score and formula descriptor', Formula: 'slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ) when LOQ is available', Unit: `1/${unitLabel}`, 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: 'Expected/reference values, SNR and clipping are not part of Score.' },
-    { Term: 'R2_cal/R2_std_mean/m_cal/m_std_mean/SlopeAgreement', Meaning: 'Fit-quality and slope-agreement descriptors for method comparison', Formula: 'SlopeAgreement = min(abs(m_cal), abs(m_std_mean)) / max(abs(m_cal), abs(m_std_mean))', Unit: 'mixed', 'Where used': '10_METHOD_COMPARISON, METHOD_COMPARISON.png', Notes: '' },
-    { Term: 'C0_mean/C0_median/C0_sd_median', Meaning: 'Summary of available original-concentration estimates', Formula: 'mean/median of C0 estimates and median of associated C0_sd values', Unit: unitLabel, 'Where used': '10_METHOD_COMPARISON', Notes: 'C0_sd is populated from the robust IRLS covariance when the rewired fit path exposes it.' },
-    { Term: 'Channel/FitType/ID/DF/n_points/m/q/R2/RMSE', Meaning: 'Diagnostic fitting identifiers and robust IRLS descriptors', Formula: 'y = m x + q; R2 = 1 - SSE/SST; RMSE = sqrt(mean(residual^2))', Unit: 'mixed', 'Where used': '11_CIELAB_FITTING', Notes: 'CIELAB/DeltaE exported fitting rows use the Python robust IRLS port; full CIELAB parity still depends on descriptor-input parity.' },
-    { Term: 'LOD/LOQ', Meaning: 'Detection and quantification limits', Formula: 'LOD = 3 sigma_cal / abs(m); LOQ = 10 sigma_cal / abs(m)', Unit: unitLabel, 'Where used': '10_METHOD_COMPARISON, 11_CIELAB_FITTING', Notes: '' },
-    { Term: 'sigma_cal/sigma_source/SNR', Meaning: 'Calibration noise estimate, source and slope-to-noise ratio', Formula: 'SNR = abs(m) / sigma_cal', Unit: 'mixed', 'Where used': '10_METHOD_COMPARISON, 11_CIELAB_FITTING', Notes: 'SNR is diagnostic and is not part of the common Score.' },
-    { Term: 'beta_k/bias_index_k', Meaning: 'Per-fit slope ratio and relative slope-bias index', Formula: 'beta_k = m_std / m_cal; bias_index_k = abs(beta_k - 1)', Unit: 'dimensionless', 'Where used': '11_CIELAB_FITTING', Notes: '' },
-    { Term: 'Blank cells', Meaning: 'Unavailable Python diagnostic quantities', Formula: 'left blank when the webapp does not currently compute the Python field', Unit: 'mixed', 'Where used': 'all sheets', Notes: 'No placeholder or fake values are generated.' },
-    { Term: 'Code implementation', Meaning: 'Main computational libraries and code provenance', Formula: 'browser TypeScript using built-in Canvas, XML and ZIP helpers', Unit: 'software provenance', 'Where used': 'DIAGNOSTICS.xlsx and diagnostic PNG files', Notes: 'Workbook uses the existing browser-side XLSX writer; no new dependency was added.' },
+    { Term: "area", Meaning: "Accepted background-mask area", Formula: "number of accepted pixels in the background sample mask", Unit: "pixels", 'Where used': "02_BG_SAMPLES", Notes: "Area after model-based and robust statistical background-mask filtering." },
+    { Term: "Associated_Wells", Meaning: "Four wells surrounding an inter-well background cell", Formula: "well(r,c)-well(r,c+1)-well(r+1,c)-well(r+1,c+1)", Unit: "well labels", 'Where used': "02_BG_SAMPLES", Notes: "Clarifies that BG samples are inter-well regions rather than wells." },
+    { Term: "B_*/G_*/R_*", Meaning: "Robust statistics of raw well-channel intensities in OpenCV order", Formula: "computed over retained well ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "OpenCV internal channel order is B,G,R." },
+    { Term: "B_bg/G_bg/R_bg", Meaning: "Predicted local raw background at a well", Formula: "2D background surface evaluated at well center", Unit: "raw image intensity", 'Where used': "03_BG_WELL_FIT", Notes: "OpenCV internal channel order is B,G,R." },
+    { Term: "B_med/G_med/R_med", Meaning: "Median raw OpenCV-channel value in accepted BG-mask pixels", Formula: "median over accepted background-mask pixels", Unit: "raw image intensity", 'Where used': "02_BG_SAMPLES", Notes: "OpenCV internal channel order is B,G,R." },
+    { Term: "beta_k/bias_index_k", Meaning: "Per-fit slope ratio and relative slope-bias index", Formula: "beta_k = m_std/m_cal; bias_index_k = |beta_k - 1|", Unit: "dimensionless", 'Where used': "11_CIELAB_FITTING", Notes: "" },
+    { Term: "beta_mean", Meaning: "Mean standard-addition/calibration slope ratio", Formula: "mean(m_std / m_cal)", Unit: "dimensionless", 'Where used': "10_METHOD_COMPARISON", Notes: "1 indicates equal slopes on average." },
+    { Term: "beta_mean/bias_index_mean", Meaning: "Mean slope ratio and mean relative slope bias", Formula: "beta_mean = mean(m_std/m_cal); bias_index_mean = mean(|m_std/m_cal - 1|)", Unit: "dimensionless", 'Where used': "10_METHOD_COMPARISON", Notes: "" },
+    { Term: "BG_Cell_Row/BG_Cell_Col", Meaning: "Inter-well background-cell row and column index", Formula: "0-based index of the inter-well cell, not a well coordinate", Unit: "index", 'Where used': "02_BG_SAMPLES", Notes: "BG_Cell_Row=0 and BG_Cell_Col=0 are surrounded by A1, A2, B1 and B2." },
+    { Term: "BG_Red_raw/BG_Green_raw/BG_Blue_raw", Meaning: "Predicted local raw background at a well", Formula: "2D background surface evaluated at well center", Unit: "raw image intensity", 'Where used': "03_BG_WELL_FIT", Notes: "Exported in standard RGB order; used to compute per-well MeanBG after linearization." },
+    { Term: "BG_STAT_MASK", Meaning: "Binary diagnostic mask of accepted inter-well background pixels", Formula: "white pixels = accepted for background sampling; black pixels = rejected", Unit: "image", 'Where used': "BG_STAT_MASK.png, RAW_DATA_DETAILS_CAPTION.txt", Notes: "Useful for auditability and troubleshooting of background sampling." },
+    { Term: "bias_index_mean", Meaning: "Mean relative slope bias", Formula: "mean(|m_std/m_cal - 1|)", Unit: "dimensionless", 'Where used': "10_METHOD_COMPARISON", Notes: "0 indicates no slope bias." },
+    { Term: "BrightExcessMeanGray", Meaning: "Mean excess brightness above the local bright threshold", Formula: "mean(max(Gray - bright_threshold, 0)) over bright-excluded pixels", Unit: "raw grayscale intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Used with BrightExcludedFraction to form HighlightIndex." },
+    { Term: "BrightExcludedFraction", Meaning: "Fraction of core ROI rejected as bright", Formula: "n_bright_excluded / n_core", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Part of optical quality diagnostics." },
+    { Term: "BrightExcludedFraction/BrightExcludedMeanGray/BrightExcessMeanGray/HighlightIndex", Meaning: "Highlight and bright-pixel QC descriptors", Formula: "HighlightIndex = BrightExcludedFraction x BrightExcessMeanGray", Unit: "mixed", 'Where used': "04_WELL_ROBUST_STATS, 08_EMPTY_WELLS", Notes: "" },
+    { Term: "BrightExcludedMeanGray", Meaning: "Mean grayscale intensity of bright-excluded pixels", Formula: "mean(Gray) over pixels excluded as overly bright", Unit: "raw grayscale intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Blank if no bright pixels were excluded." },
+    { Term: "C0/C0_sd", Meaning: "Estimated original concentration and associated SD", Formula: "standard-addition or calibration projection depending on FitType", Unit: unitLabel, 'Where used': "11_CIELAB_FITTING", Notes: "Diagnostic for CIELAB/DeltaE fits." },
+    { Term: "C0_mean/C0_median/C0_sd_median", Meaning: "Summary of available original-concentration estimates", Formula: "mean/median of C0 estimates and median of associated C0_sd values", Unit: unitLabel, 'Where used': "10_METHOD_COMPARISON", Notes: "" },
+    { Term: "C0_median/C0_sd_median", Meaning: "Median estimated original concentration and median associated SD", Formula: "median over available standard-addition or unknown estimates", Unit: unitLabel, 'Where used': "10_METHOD_COMPARISON", Notes: "Reported for diagnostic comparison; expected/reference values are external checks." },
+    { Term: "Channel", Meaning: "Fitted diagnostic descriptor", Formula: "L, a, b, DeltaL, Deltaa, Deltab, DeltaE or DeltaE_chroma", Unit: "text", 'Where used': "11_CIELAB_FITTING", Notes: "CIELAB/DeltaE descriptors are diagnostic, not primary quantitative outputs." },
+    { Term: "Channel/FitType/ID/DF/n_points/m/q/R2/RMSE", Meaning: "Diagnostic fitting identifiers and linear-fit descriptors", Formula: "y = m x + q; R2 = 1 - SSE/SST; RMSE = sqrt(mean(residual^2))", Unit: "mixed", 'Where used': "11_CIELAB_FITTING", Notes: "" },
+    { Term: "Code implementation", Meaning: "Main computational libraries and code provenance", Formula: "custom Python code using NumPy, OpenCV, openpyxl and matplotlib", Unit: "software provenance", 'Where used': "DIAGNOSTICS.xlsx and diagnostic PNG files", Notes: "Sources/libraries: OpenCV for masks and BGR-to-Lab conversion; NumPy for numerical fitting; openpyxl for xlsx export; matplotlib for PNG figures." },
+    { Term: "CommonFactorsN", Meaning: "Number of common factors used in the score", Formula: "4 for R2_cal, R2_std, SlopeAgreement and LOQ; 1 for calibration-only or stdadd-only fallbacks", Unit: "integer", 'Where used': "10_METHOD_COMPARISON", Notes: "Used to avoid comparing scores obtained from different formulas." },
+    { Term: "ComparableGroup", Meaning: "Set of methods scored with the same formula", Formula: "calibration_plus_stdadd, calibration_only, stdadd_only, or not_ranked", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Scores are directly comparable only within the same group." },
+    { Term: "corr_col/corr_row", Meaning: "Correlation with column/row position", Formula: "Pearson correlation", Unit: "dimensionless", 'Where used': "09_SPATIAL_DIAGNOSTICS", Notes: "Diagnostic only." },
+    { Term: "D_warning/D_critical", Meaning: "Floor-geometry warning and critical flags", Formula: "rule-based thresholds on floor/mouth geometry descriptors", Unit: "0/1", 'Where used': "05_GEOMETRY_QC", Notes: "Critical is stricter than warning." },
+    { Term: "dataset", Meaning: "Dataset used for spatial trend", Formula: "unknown or empty", Unit: "text", 'Where used': "09_SPATIAL_DIAGNOSTICS", Notes: "Spatial diagnostics are descriptive and do not alter results." },
+    { Term: "Dataset/Status/Applicability/Reason", Meaning: "Applicability status for optional spatial diagnostics", Formula: "applied or not_applied with reason text", Unit: "text", 'Where used': "09_SPATIAL_DIAGNOSTICS", Notes: "The sheet is retained even when spatial diagnostics cannot be applied." },
+    { Term: "DeltaE_ab", Meaning: "Total CIELAB color difference", Formula: "sqrt(DeltaL^2 + Deltaa^2 + Deltab^2)", Unit: "dimensionless", 'Where used': "REPORT, 10_METHOD_COMPARISON, 11_CIELAB_FITTING, FIGURE_CIELAB_DELTAE.png", Notes: "Reference source is reported in CIELAB_ref_source in the main report." },
+    { Term: "DeltaE_ab_chroma", Meaning: "Chromatic CIELAB difference", Formula: "sqrt(Deltaa^2 + Deltab^2)", Unit: "dimensionless", 'Where used': "REPORT, 10_METHOD_COMPARISON, 11_CIELAB_FITTING, FIGURE_CIELAB_DELTAE.png", Notes: "Excludes the lightness term DeltaL." },
+    { Term: "DeltaL/Deltaa/Deltab/DeltaE_ab/DeltaE_ab_chroma", Meaning: "CIELAB difference descriptors", Formula: "DeltaL = L - L_ref; Deltaa = a - a_ref; Deltab = b - b_ref; DeltaE_ab = sqrt(DeltaL^2 + Deltaa^2 + Deltab^2); DeltaE_ab_chroma = sqrt(Deltaa^2 + Deltab^2)", Unit: "dimensionless", 'Where used': "FIGURE_CIELAB_DELTAE.png, RAW_DATA_DETAILS_CAPTION.txt, 10_METHOD_COMPARISON, 11_CIELAB_FITTING", Notes: "Reference: CIE 1976 L*a*b* color-difference form." },
+    { Term: "estimate_for_expected_*/delta_expected_*/recovery_pct_*/rel_error_*", Meaning: "External-reference comparison metrics", Formula: "delta = estimate - reference; recovery = 100 x estimate/reference; relative error = 100 x (estimate - reference)/reference", Unit: `${unitLabel} or %`, 'Where used': "METHOD_COMPARISON.png, 10_METHOD_COMPARISON", Notes: "" },
+    { Term: "Estimate_source", Meaning: "Source of the representative concentration estimate", Formula: "standard_addition, unknown_from_calibration, epsilon or unavailable", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Identifies how Estimate_value was obtained." },
+    { Term: "Estimate_value/Estimate_sd", Meaning: "Representative diagnostic concentration estimate and associated SD", Formula: "derived according to Estimate_source", Unit: unitLabel, 'Where used': "10_METHOD_COMPARISON", Notes: "" },
+    { Term: "Estimate_value/Estimate_sd/Estimate_source", Meaning: "Representative diagnostic concentration estimate, SD and source", Formula: "derived according to Estimate_source", Unit: `${unitLabel} and text`, 'Where used': "METHOD_COMPARISON.png, 10_METHOD_COMPARISON", Notes: "" },
+    { Term: "expected_label_*/expected_id_*/expected_value_*/expected_sd_*", Meaning: "External reference metadata", Formula: "user/configurator input", Unit: `text or ${unitLabel}`, 'Where used': "METHOD_COMPARISON.png, 10_METHOD_COMPARISON", Notes: "External reference values are checks only and are not part of Score." },
+    { Term: "Family", Meaning: "Method family", Formula: "RGB, CIELAB, DeltaCIELAB or other", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Used to separate method families." },
+    { Term: "FitType", Meaning: "Type of fit row", Formula: "Calibration, StdAdd, UnknownFromCal, UnknownOnly", Unit: "text", 'Where used': "11_CIELAB_FITTING", Notes: "Same convention as main fitting output." },
+    { Term: "floor_source/local_pitch_px/px_per_mm/cyl_r_bg", Meaning: "Geometry-source and local scale descriptors", Formula: "reported source, local pitch, pixel/mm scale and background distance-transform radius", Unit: "mixed", 'Where used': "05_GEOMETRY_QC, 06_WELL_BOTTOM", Notes: "" },
+    { Term: "floor_to_mouth_r_ratio", Meaning: "Relative floor radius", Formula: "floor_r / mouth_r", Unit: "dimensionless", 'Where used': "05_GEOMETRY_QC", Notes: "Used to flag abnormal floor geometry." },
+    { Term: "Geometry and epsilon/path-length quantification", Meaning: "Assumption used when epsilon-based unknown quantification is enabled", Formula: "l_cm = (volume_uL / well_bottom_area_mm2) / 10; C_M = PAbs / (epsilon x l_cm)", Unit: "cm and M", 'Where used': "RESULTS_CAPTION.txt, RAW_DATA_DETAILS_CAPTION.txt, REPORT", Notes: "Assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation." },
+    { Term: "Gray_*", Meaning: "Robust statistics of grayscale intensity", Formula: "computed over retained ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Diagnostic descriptor used for optical QC." },
+    { Term: "highlight_fraction_roi/highlight_fraction_core", Meaning: "Fraction of very bright pixels in ROI/core", Formula: "fraction of pixels with grayscale above the highlight threshold", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Optical QC descriptor for highlights/specular artifacts." },
+    { Term: "HighlightIndex", Meaning: "Combined highlight severity index", Formula: "BrightExcludedFraction x BrightExcessMeanGray", Unit: "gray-level weighted fraction", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Higher values indicate more severe bright artifacts." },
+    { Term: "ImageWarning/WarningReason", Meaning: "Well-level optical QC warning and triggering reason", Formula: "rule-based flags from highlights, trimming and intensity SD", Unit: "0/1 and text", 'Where used': "04_WELL_ROBUST_STATS", Notes: "WarningReason lists the triggering conditions." },
+    { Term: "IRLS", Meaning: "Iteratively reweighted least-squares robust linear regression with residual-based weights", Formula: "minimize sum_i w_i (y_i - (m x_i + q))^2; w_i is updated iteratively from residual magnitude", Unit: "dimensionless", 'Where used': "METHOD_COMPARISON.png, FIGURE_CIELAB_DELTAE.png, 10_METHOD_COMPARISON, 11_CIELAB_FITTING", Notes: "Reference: Huber, P. J. (1964), Robust Estimation of a Location Parameter. Implementation: custom NumPy-based IRLS using repeated least-squares solves." },
+    { Term: "key/value", Meaning: "Plate-geometry metadata key and value", Formula: "embedded plate-geometry database entry", Unit: "mixed", 'Where used': "07_PLATE_GEOMETRY", Notes: "Geometry is assumed to be ANSI/SLAS-compatible flat-bottom geometry unless stated otherwise." },
+    { Term: "L_*/a_*/b_*", Meaning: "Robust statistics of CIELAB coordinates", Formula: "computed from OpenCV CIELAB conversion over retained ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS", Notes: "CIELAB values are diagnostic descriptors derived from RGB image data." },
+    { Term: "local_pitch_px / px_per_mm / cyl_r_bg", Meaning: "Local geometry scale descriptors", Formula: "local plate pitch, pixel-to-mm conversion and cylindrical background radius", Unit: "pixels or pixels/mm", 'Where used': "06_WELL_BOTTOM", Notes: "Technical geometry diagnostics." },
+    { Term: "LOD/LOQ", Meaning: "Detection and quantification limits", Formula: "LOD = 3 sigma_cal / |m|; LOQ = 10 sigma_cal / |m|", Unit: unitLabel, 'Where used': "11_CIELAB_FITTING, 10_METHOD_COMPARISON", Notes: "Diagnostic for CIELAB/DeltaE fits." },
+    { Term: "m/q/R2/RMSE", Meaning: "Linear-fit parameters and fit quality", Formula: "y = m x + q; R2 coefficient of determination; RMSE root-mean-square error", Unit: "descriptor units", 'Where used': "11_CIELAB_FITTING", Notes: "Diagnostic CIELAB/DeltaE fitting only." },
+    { Term: "m_cal/m_std_mean", Meaning: "Calibration slope and mean standard-addition slope", Formula: "slope from linear fit y = m x + q", Unit: `signal/${unitLabel}`, 'Where used': "10_METHOD_COMPARISON, 11_CIELAB_FITTING", Notes: "Used to compute slope agreement." },
+    { Term: "MeanBG_*", Meaning: "Linearized local background intensity", Formula: "background surface value after gamma linearization", Unit: "dimensionless", 'Where used': "REPORT", Notes: "The asterisk denotes Red, Green or Blue." },
+    { Term: "MeanBG_Red/MeanBG_Green/MeanBG_Blue", Meaning: "Linearized local background intensity for each RGB channel", Formula: "local background value after gamma linearization", Unit: "dimensionless", 'Where used': "08_EMPTY_WELLS", Notes: "" },
+    { Term: "MeanW_*", Meaning: "Linearized median well intensity", Formula: "median well ROI intensity after gamma linearization", Unit: "dimensionless", 'Where used': "REPORT", Notes: "The asterisk denotes Red, Green or Blue." },
+    { Term: "MeanW_Red/MeanW_Green/MeanW_Blue", Meaning: "Linearized median well intensity for each RGB channel", Formula: "median ROI channel intensity after gamma linearization", Unit: "dimensionless", 'Where used': "08_EMPTY_WELLS", Notes: "" },
+    { Term: "Method", Meaning: "Compared analytical descriptor", Formula: "PAbs_*, L/a/b, Delta* or DeltaE*", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "PAbs_* are RGB; CIELAB and DeltaCIELAB are derived diagnostics." },
+    { Term: "Method/Family/ComparableGroup/CommonFactorsN/RankMode", Meaning: "Method-comparison identifiers and comparable-score grouping", Formula: "text labels and number of factors defining score comparability", Unit: "mixed", 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Scores are directly comparable only within the same ComparableGroup." },
+    { Term: "mouth_* / floor_*", Meaning: "Mouth/floor circle center, radius and score descriptors", Formula: "projected or refined circle parameters", Unit: "pixels or score", 'Where used': "06_WELL_BOTTOM", Notes: "Used for ROI and geometry QC." },
+    { Term: "n/intercept/slope_col/slope_row/R2/corr_col/corr_row", Meaning: "Spatial-trend fit descriptors", Formula: "linear trend of the diagnostic signal versus row/column position", Unit: "mixed", 'Where used': "09_SPATIAL_DIAGNOSTICS", Notes: "Diagnostic only; does not alter quantitative results." },
+    { Term: "n_roi/n_core/n_used", Meaning: "Pixel counts used during well ROI filtering", Formula: "ROI pixels, core pixels and retained pixels", Unit: "pixels", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Used to audit well-level pixel filtering." },
+    { Term: "PAbs_*", Meaning: "RGB pseudo-absorbance", Formula: "log10(MeanBG_*/MeanW_*)", Unit: "dimensionless", 'Where used': "REPORT, 10_METHOD_COMPARISON", Notes: "Primary RGB analytical descriptor." },
+    { Term: "PAbs_Red/PAbs_Green/PAbs_Blue", Meaning: "RGB pseudo-absorbance channels", Formula: "log10(MeanBG_channel / MeanW_channel)", Unit: "dimensionless", 'Where used': "08_EMPTY_WELLS, 10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Primary quantitative RGB descriptor; diagnostic sheets may include it for comparison." },
+    { Term: "Purple_*", Meaning: "Robust statistics of the internal purple-color index", Formula: "Purple = 0.5 x (Red + Blue) - Green; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Diagnostic color index, not the primary quantitative signal." },
+    { Term: "Purpose", Meaning: "Short description of the sheet role", Formula: "free-text description", Unit: "text", 'Where used': "01_CONTENTS", Notes: "" },
+    { Term: "R2_cal/R2_std_mean", Meaning: "Calibration and mean standard-addition coefficient of determination", Formula: "R2 from linear fits; R2_std_mean is averaged over standard-addition curves", Unit: "dimensionless", 'Where used': "10_METHOD_COMPARISON, 11_CIELAB_FITTING", Notes: "Higher values indicate better linear fit quality." },
+    { Term: "R2_cal/R2_std_mean/m_cal/m_std_mean/SlopeAgreement", Meaning: "Fit-quality and slope-agreement descriptors for method comparison", Formula: "SlopeAgreement = min(|m_cal|, |m_std_mean|) / max(|m_cal|, |m_std_mean|)", Unit: "mixed", 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "" },
+    { Term: "RankMode", Meaning: "Data basis available for ranking", Formula: "calibration_plus_stdadd, calibration_only, stdadd_only, or unavailable", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Only rows with the same comparable group should be directly compared." },
+    { Term: "Red_*/Green_*/Blue_*", Meaning: "Robust statistics of raw well-channel intensities", Formula: "computed over retained well ROI pixels; *=mean, median, sd, p10, p25, p50, p75, p90, iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Exported in standard RGB order." },
+    { Term: "Red_median_raw/Green_median_raw/Blue_median_raw", Meaning: "Median raw channel value in accepted BG-mask pixels", Formula: "median over accepted mask pixels", Unit: "raw image intensity", 'Where used': "02_BG_SAMPLES", Notes: "Exported in standard RGB order; internally OpenCV stores images in BGR order." },
+    { Term: "reference_*/delta_reference_*/recovery_pct_*", Meaning: "External reference checks used in diagnostic comparison", Formula: "delta = estimate - reference; recovery = 100 x estimate/reference", Unit: `${unitLabel} or %`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Reference values are external checks and are not part of Score." },
+    { Term: "RGB to CIELAB", Meaning: "Diagnostic conversion from RGB/BGR to CIE L*a*b*", Formula: "OpenCV BGR->Lab for 8-bit sRGB-like images; reference form: linearized sRGB -> XYZ using the standard sRGB-to-XYZ matrix and D65 reference white -> CIE L*a*b*", Unit: "dimensionless", 'Where used': "FIGURE_CIELAB_DELTAE.png, RAW_DATA_DETAILS_CAPTION.txt, 04_WELL_ROBUST_STATS, 11_CIELAB_FITTING", Notes: "References: OpenCV color conversions; IEC 61966-2-1:1999 sRGB; CIE 1976 L*a*b*; CIE standard illuminant D65." },
+    { Term: "Row/Col/Well", Meaning: "Human-readable well position", Formula: "Row is A-based; Col is 1-based; Well = Row + Col", Unit: "well label", 'Where used': "03_BG_WELL_FIT, 04_WELL_ROBUST_STATS, 05_GEOMETRY_QC, 06_WELL_BOTTOM, 08_EMPTY_WELLS", Notes: "Used for true well-level records, not for inter-well BG cells." },
+    { Term: "Score", Meaning: "Common ranking score", Formula: "for calibration+standard addition: SlopeAgreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ); fallback groups use the formula stated in ScoreFormula", Unit: `1/${unitLabel}`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Expected/reference values, SNR and clipping are excluded." },
+    { Term: "Score/ScoreFormula", Meaning: "Common method-ranking score and formula descriptor", Formula: "SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ) for calibration_plus_stdadd rows", Unit: `1/${unitLabel} and text`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Expected/reference values, SNR and clipping are not part of Score." },
+    { Term: "ScoreFormula", Meaning: "Formula used to compute Score", Formula: "text descriptor", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Documents which score formula was applied to the row." },
+    { Term: "Sheet", Meaning: "Workbook sheet name", Formula: "worksheet name", Unit: "text", 'Where used': "01_CONTENTS", Notes: "" },
+    { Term: "shift_frac_of_mouth_r", Meaning: "Relative mouth-to-floor center shift", Formula: "shift_px / mouth_r", Unit: "dimensionless", 'Where used': "05_GEOMETRY_QC", Notes: "Large values indicate poor floor/mouth alignment." },
+    { Term: "shift_px", Meaning: "Mouth-to-floor center shift", Formula: "Euclidean distance between fitted mouth and floor centers", Unit: "pixels", 'Where used': "06_WELL_BOTTOM, 05_GEOMETRY_QC", Notes: "Large values indicate poor floor/mouth alignment." },
+    { Term: "shift_px/shift_frac_of_mouth_r/floor_to_mouth_r_ratio/floor_to_mouth_area_ratio", Meaning: "Mouth-to-floor alignment descriptors", Formula: "shift distance and relative floor/mouth radius or area ratios", Unit: "pixels or dimensionless", 'Where used': "05_GEOMETRY_QC, 06_WELL_BOTTOM", Notes: "" },
+    { Term: "sigma_cal/sigma_source/SNR", Meaning: "Calibration noise estimate, its source and slope-to-noise ratio", Formula: "SNR = |m|/sigma_cal", Unit: "mixed", 'Where used': "11_CIELAB_FITTING, 10_METHOD_COMPARISON", Notes: "SNR is diagnostic and is not part of the common Score." },
+    { Term: "slope_col/slope_row", Meaning: "Spatial trend coefficients", Formula: "linear trend versus column and row", Unit: "signal/index", 'Where used': "09_SPATIAL_DIAGNOSTICS", Notes: "Used to identify plate-position effects." },
+    { Term: "SlopeAgreement", Meaning: "Agreement between calibration and standard-addition slopes", Formula: "min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|)", Unit: "dimensionless", 'Where used': "10_METHOD_COMPARISON", Notes: "1 indicates identical slope magnitude." },
+    { Term: "Status/Applicability/Reason", Meaning: "Applicability statement for optional spatial diagnostics", Formula: "applied/not_applied with reason text", Unit: "text", 'Where used': "09_SPATIAL_DIAGNOSTICS", Notes: "The sheet is retained even when spatial diagnostics cannot be applied." },
+    { Term: "used_fraction/UsedFraction", Meaning: "Fraction of ROI core pixels retained after filtering", Formula: "n_used / n_core", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS, 08_EMPTY_WELLS", Notes: "" },
+    { Term: "UsedFraction", Meaning: "Fraction of core ROI retained", Formula: "n_used / n_core", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Low values indicate strong trimming." },
+    { Term: "x/y", Meaning: "Image coordinates of a background sample or well center", Formula: "pixel coordinate in the analyzed image", Unit: "pixels", 'Where used': "02_BG_SAMPLES, 03_BG_WELL_FIT", Notes: "Coordinate system follows the image array." },
   ];
 }
 
