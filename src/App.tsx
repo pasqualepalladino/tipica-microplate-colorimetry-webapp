@@ -4081,7 +4081,7 @@ function buildSpatialDiagnosticRow(dataset: string, measurements: WellMeasuremen
       Dataset: dataset,
       Status: 'not_applied',
       Applicability: 'requires usable unknown or empty wells distributed across rows/columns',
-      Reason: 'fewer than 3 usable wells available for this spatial-trend dataset',
+      Reason: 'no usable wells available for this spatial-trend dataset',
       n: points.length,
       intercept: '',
       slope_col: '',
