@@ -4022,7 +4022,10 @@ function buildDiagnosticsEmptyWellRows(
   const labByWell = new Map(cielabPoints.map((point) => [point.wellId, point]));
 
   return options.measurements
-    .filter((measurement) => configByWell.get(measurement.wellId)?.role === 'EMPTY')
+    .filter((measurement) => {
+      const role = configByWell.get(measurement.wellId)?.role;
+      return role !== 'C' && role !== 'A' && role !== 'U';
+    })
     .map((measurement) => {
       const display = displayByWell.get(measurement.wellId) ?? measurement;
       const context = diagnosticWellContext(measurement.wellId, wellsById);
@@ -4047,8 +4050,8 @@ function buildDiagnosticsEmptyWellRows(
         a: lab?.a ?? '',
         b: lab?.b ?? '',
         UsedFraction: measurement?.roiUsedFraction ?? '',
-        BrightExcludedFraction: '',
-        HighlightIndex: '',
+        BrightExcludedFraction: measurement.brightExcludedFraction ?? '',
+        HighlightIndex: measurement.highlightIndex ?? '',
       };
     });
 }
