@@ -3788,8 +3788,8 @@ function buildDiagnosticsGeometryQcRows(options: PythonDiagnosticsWorkbookOption
       ? estimateRoiRadius(options.wells, context.row, context.col, options.radiusFactor)
       : measurement.mouthRadiusUsed;
     const fallbackFloorRadius = floor && Number.isFinite(floor.r) ? floor.r : measurement.floorRadiusUsed;
-    const mouthRadius = overrideRecord?.mouthRadius ?? measurement.mouthRadiusUsed ?? fallbackMouthRadius;
-    const floorRadius = overrideRecord?.floorRadius ?? measurement.floorRadiusUsed ?? fallbackFloorRadius;
+    const mouthRadius = measurement.mouthRadiusUsed ?? overrideRecord?.mouthRadius ?? fallbackMouthRadius;
+    const floorRadius = measurement.floorRadiusUsed ?? overrideRecord?.floorRadius ?? fallbackFloorRadius;
     const finiteMouthRadius = finiteOrBlank(mouthRadius);
     const finiteFloorRadius = finiteOrBlank(floorRadius);
     const shiftPx = floor && context.center ? Math.hypot(floor.x - context.center.x, floor.y - context.center.y) : Number.NaN;
@@ -3838,8 +3838,8 @@ function buildDiagnosticsWellBottomRows(options: PythonDiagnosticsWorkbookOption
       ? estimateRoiRadius(options.wells, context.row, context.col, options.radiusFactor)
       : measurement.mouthRadiusUsed;
     const fallbackFloorRadius = floor && Number.isFinite(floor.r) ? floor.r : measurement.floorRadiusUsed;
-    const mouthRadius = overrideRecord?.mouthRadius ?? measurement.mouthRadiusUsed ?? fallbackMouthRadius;
-    const floorRadius = overrideRecord?.floorRadius ?? measurement.floorRadiusUsed ?? fallbackFloorRadius;
+    const mouthRadius = measurement.mouthRadiusUsed ?? overrideRecord?.mouthRadius ?? fallbackMouthRadius;
+    const floorRadius = measurement.floorRadiusUsed ?? overrideRecord?.floorRadius ?? fallbackFloorRadius;
     const shiftPx = floor && context.center ? Math.hypot(floor.x - context.center.x, floor.y - context.center.y) : Number.NaN;
 
     return {
