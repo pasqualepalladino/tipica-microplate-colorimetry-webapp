@@ -94,6 +94,7 @@ export interface WellMeasurement {
   floorGeometryAvailable?: boolean;
   floorRadiusUsed?: number;
   mouthRadiusUsed?: number;
+  mouthScore?: number;
   geometryA1MismatchPx?: number;
   geometryA12MismatchPx?: number;
   geometryH12MismatchPx?: number;

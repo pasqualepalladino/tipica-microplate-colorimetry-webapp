@@ -45,6 +45,7 @@ import {
 } from './core/plateMap';
 import type { ExpectedRef, PlateEditorSnapshot } from './core/plateConfigurator';
 import { estimateLocalBackground, sampleCircularRoi, sampleCircleIntersectionRoi } from './core/sampling';
+import { buildWellBottomGradientImage, ringScore } from './core/wellBottomScoring';
 import {
   buildBackgroundVisualDiagnostics,
   estimateBackground,
@@ -3854,7 +3855,7 @@ function buildDiagnosticsWellBottomRows(options: PythonDiagnosticsWorkbookOption
       mouth_cx: finiteOrBlank(context.center?.x),
       mouth_cy: finiteOrBlank(context.center?.y),
       mouth_r: finiteOrBlank(mouthRadius),
-      mouth_score: '',
+      mouth_score: measurement.mouthScore ?? '',
       floor_cx: finiteOrBlank(floor?.x),
       floor_cy: finiteOrBlank(floor?.y),
       floor_r: finiteOrBlank(floorRadius),
@@ -4408,7 +4409,7 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "MeanW_Red/MeanW_Green/MeanW_Blue", Meaning: "Linearized median well intensity for each RGB channel", Formula: "median ROI channel intensity after gamma linearization", Unit: "dimensionless", 'Where used': "08_EMPTY_WELLS", Notes: "" },
     { Term: "Method", Meaning: "Compared analytical descriptor", Formula: "PAbs_*, L/a/b, Delta* or DeltaE*", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "PAbs_* are RGB; CIELAB and DeltaCIELAB are derived diagnostics." },
     { Term: "Method/Family/ComparableGroup/CommonFactorsN/RankMode", Meaning: "Method-comparison identifiers and comparable-score grouping", Formula: "text labels and number of factors defining score comparability", Unit: "mixed", 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Scores are directly comparable only within the same ComparableGroup." },
-    { Term: "mouth_* / floor_*", Meaning: "Mouth/floor circle center, radius and optional score descriptors", Formula: "centers/radii from TypeScript geometry, ROI settings or shared geometry override; score columns are reserved and left blank when no browser-side ring-score refinement is performed", Unit: "pixels or score", 'Where used': "06_WELL_BOTTOM", Notes: "Used for ROI and geometry QC. Blank mouth_score/floor_score cells indicate that no TypeScript image-gradient ring-score was computed for that export." },
+    { Term: "mouth_* / floor_*", Meaning: "Mouth/floor circle center, radius and image-gradient score descriptors", Formula: "centers/radii from TypeScript geometry, ROI settings or shared geometry override; mouth_score is a browser-side mean ring-gradient score on the estimated mouth/interface radius computed on a blurred Purple image without moving the ROI geometry; floor_score is reserved for future browser-side auto-refined floor scoring and remains blank for projected/manual floor geometry", Unit: "pixels or score", 'Where used': "06_WELL_BOTTOM", Notes: "Used for ROI and geometry QC. Blank floor_score cells indicate that no TypeScript auto-refined floor ring-score was computed, not a change to quantitative ROI extraction." },
     { Term: "n/intercept/slope_col/slope_row/R2/corr_col/corr_row", Meaning: "Spatial-trend fit descriptors", Formula: "linear trend of the diagnostic signal versus row/column position", Unit: "mixed", 'Where used': "09_SPATIAL_DIAGNOSTICS", Notes: "Diagnostic only; does not alter quantitative results." },
     { Term: "n_roi/n_core/n_used", Meaning: "Pixel counts used during well ROI filtering", Formula: "ROI pixels, core pixels and retained pixels", Unit: "pixels", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Used to audit well-level pixel filtering." },
     { Term: "PAbs_*", Meaning: "RGB pseudo-absorbance", Formula: "log10(MeanBG_*/MeanW_*)", Unit: "dimensionless", 'Where used': "REPORT, 10_METHOD_COMPARISON", Notes: "Primary RGB analytical descriptor." },
@@ -8248,6 +8249,7 @@ function App() {
           const extractionFloorCircles = sharedGeometryOverride ? effectiveFloorCircles : floorCircles;
           const extractionFloorGeometryAvailable = sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable;
           const imageData = createAnalysisImageData(image, extractionWells);
+          const wellBottomGradientImage = buildWellBottomGradientImage(imageData);
           const floorCirclesForBackground = extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length
             ? extractionFloorCircles
             : undefined;
@@ -8262,6 +8264,9 @@ function App() {
           let mouthRadiusUsed = 0;
           let roiModeUsed: 'simple' | 'floor-aware' | 'mouth-floor-intersection' = 'simple';
           const roiWarnings: string[] = [];
+          const diagnosticFloorCircle = extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length
+            ? extractionFloorCircles[well.row * 12 + well.col]
+            : null;
 
           if (selectedRoiMode === 'mouth-floor-intersection' && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length) {
             const projectedFloorCircle = extractionFloorCircles[well.row * 12 + well.col];
@@ -8355,6 +8360,16 @@ function App() {
               sharedGeometryExclusionRadiiByWell,
             );
           }
+          const diagnosticMouthRadius = mouthRadiusUsed > 0
+            ? mouthRadiusUsed
+            : overrideRecord
+              ? Math.max(1, overrideRecord.mouthRadius)
+              : estimateRoiRadius(extractionWells, well.row, well.col, radiusFactor);
+          const diagnosticInterfaceRadius = Math.min(
+            Math.max(0.885 * diagnosticMouthRadius, 0.74 * diagnosticMouthRadius),
+            0.92 * diagnosticMouthRadius,
+          );
+          const mouthScore = ringScore(wellBottomGradientImage, well.x, well.y, diagnosticInterfaceRadius, 1.10);
           const pabsResult = computePAbs(roiSample, backgroundSample.rgbBackground);
 
           return {
@@ -8407,6 +8422,7 @@ function App() {
             floorGeometryAvailable: extractionFloorGeometryAvailable,
             floorRadiusUsed,
             mouthRadiusUsed,
+            mouthScore: mouthScore ?? undefined,
             geometryA1MismatchPx: geometryAlignmentDiagnostics?.a1MismatchPx ?? Number.NaN,
             geometryA12MismatchPx: geometryAlignmentDiagnostics?.a12MismatchPx ?? Number.NaN,
             geometryH12MismatchPx: geometryAlignmentDiagnostics?.h12MismatchPx ?? Number.NaN,
