@@ -4,6 +4,13 @@ export interface WellBottomGradientImage {
   data: Float32Array;
 }
 
+export interface RefinedCircle {
+  cx: number;
+  cy: number;
+  radius: number;
+  score: number;
+}
+
 const GAUSSIAN_5_KERNEL = [1, 4, 6, 4, 1].map((value) => value / 16);
 
 function clampIndex(value: number, maxInclusive: number): number {
@@ -123,4 +130,70 @@ export function ringScore(
   }
 
   return sum / count;
+}
+
+
+export function refineCircleFast(
+  gradientImage: WellBottomGradientImage,
+  cx0: number,
+  cy0: number,
+  radius0: number,
+  options: {
+    maxShift?: number;
+    drValues?: number[];
+    band?: number;
+    radiusLo?: number;
+    radiusHi?: number;
+  } = {},
+): RefinedCircle | null {
+  const maxShift = Math.max(0, Math.floor(options.maxShift ?? 2));
+  const drValues = options.drValues ?? [-2, -1, 0, 1, 2];
+  const band = options.band ?? 1.25;
+  const radiusLo = options.radiusLo;
+  const radiusHi = options.radiusHi;
+
+  if (!Number.isFinite(cx0) || !Number.isFinite(cy0) || !Number.isFinite(radius0)) {
+    return null;
+  }
+
+  let best: RefinedCircle | null = null;
+
+  for (const dr of drValues) {
+    const radius = radius0 + dr;
+
+    if (!Number.isFinite(radius) || radius < 2) {
+      continue;
+    }
+
+    if (radiusLo !== undefined && radius < radiusLo) {
+      continue;
+    }
+
+    if (radiusHi !== undefined && radius > radiusHi) {
+      continue;
+    }
+
+    for (let dy = -maxShift; dy <= maxShift; dy += 1) {
+      for (let dx = -maxShift; dx <= maxShift; dx += 1) {
+        const cx = cx0 + dx;
+        const cy = cy0 + dy;
+        const score = ringScore(gradientImage, cx, cy, radius, band);
+
+        if (score === null) {
+          continue;
+        }
+
+        if (best === null || score > best.score) {
+          best = {
+            cx,
+            cy,
+            radius,
+            score,
+          };
+        }
+      }
+    }
+  }
+
+  return best;
 }

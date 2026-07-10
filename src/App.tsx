@@ -26,6 +26,7 @@ import {
   computeGeometryAlignmentDiagnostics,
   estimateLocalPitch,
   estimateRoiRadius,
+  estimateStandardMouthRadius,
   generate96WellGrid,
   getCanvasCoordinateSize,
   getImageAnalysisSize,
@@ -45,7 +46,7 @@ import {
 } from './core/plateMap';
 import type { ExpectedRef, PlateEditorSnapshot } from './core/plateConfigurator';
 import { estimateLocalBackground, sampleCircularRoi, sampleCircleIntersectionRoi } from './core/sampling';
-import { buildWellBottomGradientImage, ringScore } from './core/wellBottomScoring';
+import { buildWellBottomGradientImage, refineCircleFast } from './core/wellBottomScoring';
 import {
   buildBackgroundVisualDiagnostics,
   estimateBackground,
@@ -334,7 +335,7 @@ function parseSharedGeometryOverrideJson(
     wellCount: recordsByWell.size,
     missingWells,
     ignoredFields: [...ignoredFields].sort(),
-    mappingSummary: 'Extraction mapping: mouth_cx/mouth_cy/mouth_r drive mouth ROI; floor_cx/floor_cy/floor_r drive floor ROI; cyl_r_bg drives background well exclusion when present; local_pitch_px and floor_source are diagnostic/reporting fields.',
+    mappingSummary: 'Extraction mapping: mouth_cx/mouth_cy define the mouth center. For mouth-floor-intersection ROI, the quantitative mouth radius is derived from local_pitch_px and the standard 96-well mouth diameter rather than from the free manual radius; floor_cx/floor_cy/floor_r define the projected floor circle with radius clipping against the standardized mouth radius. cyl_r_bg drives background well exclusion when present; local_pitch_px and floor_source are diagnostic/reporting fields.',
   };
 }
 
@@ -4389,8 +4390,8 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "expected_label_*/expected_id_*/expected_value_*/expected_sd_*", Meaning: "External reference metadata", Formula: "user/configurator input", Unit: `text or ${unitLabel}`, 'Where used': "METHOD_COMPARISON.png, 10_METHOD_COMPARISON", Notes: "External reference values are checks only and are not part of Score." },
     { Term: "Family", Meaning: "Method family", Formula: "RGB, CIELAB, DeltaCIELAB or other", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Used to separate method families." },
     { Term: "FitType", Meaning: "Type of fit row", Formula: "Calibration, StdAdd, UnknownFromCal, UnknownOnly", Unit: "text", 'Where used': "11_CIELAB_FITTING", Notes: "Same convention as main fitting output." },
-    { Term: "floor_source/local_pitch_px/px_per_mm/cyl_r_bg", Meaning: "Geometry-source and local scale descriptors", Formula: "reported source, local pitch, pixel/mm scale and well-exclusion/background radius approximation", Unit: "mixed", 'Where used': "05_GEOMETRY_QC, 06_WELL_BOTTOM", Notes: "In the browser implementation these fields derive from TypeScript geometry, shared geometry overrides and background-model diagnostics." },
-    { Term: "floor_to_mouth_r_ratio", Meaning: "Relative floor radius", Formula: "floor_r / mouth_r", Unit: "dimensionless", 'Where used': "05_GEOMETRY_QC", Notes: "Used to flag abnormal floor geometry." },
+    { Term: "floor_source/local_pitch_px/px_per_mm/cyl_r_bg", Meaning: "Geometry-source and local scale descriptors", Formula: "reported source, local pitch, pixel/mm scale and well-exclusion/background radius approximation", Unit: "mixed", 'Where used': "05_GEOMETRY_QC, 06_WELL_BOTTOM", Notes: "In mouth-floor-intersection ROI, local_pitch_px is also used to derive the standardized quantitative mouth radius from 96-well physical geometry." },
+    { Term: "floor_to_mouth_r_ratio", Meaning: "Relative floor radius", Formula: "floor_r / mouth_r", Unit: "dimensionless", 'Where used': "05_GEOMETRY_QC", Notes: "For mouth-floor-intersection ROI, mouth_r is the standardized quantitative mouth radius derived from local pitch and 96-well physical geometry." },
     { Term: "Geometry and epsilon/path-length quantification", Meaning: "Assumption used when epsilon-based unknown quantification is enabled", Formula: "l_cm = (volume_uL / well_bottom_area_mm2) / 10; C_M = PAbs / (epsilon x l_cm)", Unit: "cm and M", 'Where used': "RESULTS_CAPTION.txt, RAW_DATA_DETAILS_CAPTION.txt, REPORT", Notes: "Assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation." },
     { Term: "Gray_*", Meaning: "Robust statistics of grayscale intensity", Formula: "computed over retained ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Diagnostic descriptor used for optical QC." },
     { Term: "highlight_fraction_roi/highlight_fraction_core", Meaning: "Fraction of very bright pixels in ROI/core", Formula: "fraction of pixels with grayscale above the highlight threshold", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Optical QC descriptor for highlights/specular artifacts." },
@@ -4399,7 +4400,7 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "IRLS", Meaning: "Iteratively reweighted least-squares robust linear regression with residual-based weights", Formula: "minimize sum_i w_i (y_i - (m x_i + q))^2; w_i is updated iteratively from residual magnitude", Unit: "dimensionless", 'Where used': "METHOD_COMPARISON.png, FIGURE_CIELAB_DELTAE.png, 10_METHOD_COMPARISON, 11_CIELAB_FITTING", Notes: "Reference: Huber, P. J. (1964), Robust Estimation of a Location Parameter. Implementation: custom TypeScript IRLS using repeated weighted least-squares solves, median-centered residual weights and covariance propagation." },
     { Term: "key/value", Meaning: "Plate-geometry metadata key and value", Formula: "embedded plate-geometry database entry", Unit: "mixed", 'Where used': "07_PLATE_GEOMETRY", Notes: "Geometry is assumed to be ANSI/SLAS-compatible flat-bottom geometry unless stated otherwise." },
     { Term: "L_*/a_*/b_*", Meaning: "Robust statistics of CIELAB coordinates", Formula: "computed from the TypeScript sRGB/D65 CIELAB conversion over retained ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS", Notes: "CIELAB values are diagnostic descriptors derived from RGB image data." },
-    { Term: "local_pitch_px / px_per_mm / cyl_r_bg", Meaning: "Local geometry scale descriptors", Formula: "local plate pitch, pixel-to-mm conversion and well-exclusion/background radius approximation", Unit: "pixels or pixels/mm", 'Where used': "06_WELL_BOTTOM", Notes: "Technical geometry diagnostics produced by the TypeScript geometry/background pipeline." },
+    { Term: "local_pitch_px / px_per_mm / cyl_r_bg", Meaning: "Local geometry scale descriptors", Formula: "local plate pitch, pixel-to-mm conversion and well-exclusion/background radius approximation", Unit: "pixels or pixels/mm", 'Where used': "06_WELL_BOTTOM", Notes: "In mouth-floor-intersection ROI, local_pitch_px is also used to derive the standardized quantitative mouth radius from 96-well physical geometry." },
     { Term: "LOD/LOQ", Meaning: "Detection and quantification limits", Formula: "LOD = 3 sigma_cal / |m|; LOQ = 10 sigma_cal / |m|", Unit: unitLabel, 'Where used': "11_CIELAB_FITTING, 10_METHOD_COMPARISON", Notes: "Diagnostic for CIELAB/DeltaE fits." },
     { Term: "m/q/R2/RMSE", Meaning: "Linear-fit parameters and fit quality", Formula: "y = m x + q; R2 coefficient of determination; RMSE root-mean-square error", Unit: "descriptor units", 'Where used': "11_CIELAB_FITTING", Notes: "Diagnostic CIELAB/DeltaE fitting only." },
     { Term: "m_cal/m_std_mean", Meaning: "Calibration slope and mean standard-addition slope", Formula: "slope from linear fit y = m x + q", Unit: `signal/${unitLabel}`, 'Where used': "10_METHOD_COMPARISON, 11_CIELAB_FITTING", Notes: "Used to compute slope agreement." },
@@ -4409,7 +4410,7 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "MeanW_Red/MeanW_Green/MeanW_Blue", Meaning: "Linearized median well intensity for each RGB channel", Formula: "median ROI channel intensity after gamma linearization", Unit: "dimensionless", 'Where used': "08_EMPTY_WELLS", Notes: "" },
     { Term: "Method", Meaning: "Compared analytical descriptor", Formula: "PAbs_*, L/a/b, Delta* or DeltaE*", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "PAbs_* are RGB; CIELAB and DeltaCIELAB are derived diagnostics." },
     { Term: "Method/Family/ComparableGroup/CommonFactorsN/RankMode", Meaning: "Method-comparison identifiers and comparable-score grouping", Formula: "text labels and number of factors defining score comparability", Unit: "mixed", 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Scores are directly comparable only within the same ComparableGroup." },
-    { Term: "mouth_* / floor_*", Meaning: "Mouth/floor circle center, radius and image-gradient score descriptors", Formula: "centers/radii from TypeScript geometry, ROI settings or shared geometry override; mouth_score is a browser-side mean ring-gradient score on the estimated mouth/interface radius computed on a blurred Purple image without moving the ROI geometry; floor_score is reserved for future browser-side auto-refined floor scoring and remains blank for projected/manual floor geometry", Unit: "pixels or score", 'Where used': "06_WELL_BOTTOM", Notes: "Used for ROI and geometry QC. Blank floor_score cells indicate that no TypeScript auto-refined floor ring-score was computed, not a change to quantitative ROI extraction." },
+    { Term: "mouth_* / floor_*", Meaning: "Mouth/floor circle center, radius and image-gradient score descriptors", Formula: "mouth-floor-intersection ROI uses the mouth center with a standardized quantitative mouth radius derived from local pitch and 96-well physical geometry; projected floor radii are clipped against that standardized mouth radius. mouth_score is a browser-side locally refined mean ring-gradient score on a blurred Purple image without moving the exported ROI geometry; floor_score is reserved for future browser-side auto-refined floor scoring and remains blank for projected/manual floor geometry", Unit: "pixels or score", 'Where used': "06_WELL_BOTTOM", Notes: "Used for ROI and geometry QC. The free manual mouth radius supports picking/overlay/projection, while the quantitative intersection ROI is standardized to reduce run-to-run sensitivity. Blank floor_score cells indicate that no TypeScript auto-refined floor ring-score was computed." },
     { Term: "n/intercept/slope_col/slope_row/R2/corr_col/corr_row", Meaning: "Spatial-trend fit descriptors", Formula: "linear trend of the diagnostic signal versus row/column position", Unit: "mixed", 'Where used': "09_SPATIAL_DIAGNOSTICS", Notes: "Diagnostic only; does not alter quantitative results." },
     { Term: "n_roi/n_core/n_used", Meaning: "Pixel counts used during well ROI filtering", Formula: "ROI pixels, core pixels and retained pixels", Unit: "pixels", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Used to audit well-level pixel filtering." },
     { Term: "PAbs_*", Meaning: "RGB pseudo-absorbance", Formula: "log10(MeanBG_*/MeanW_*)", Unit: "dimensionless", 'Where used': "REPORT, 10_METHOD_COMPARISON", Notes: "Primary RGB analytical descriptor." },
@@ -4428,7 +4429,7 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "Score/ScoreFormula", Meaning: "Common method-ranking score and formula descriptor", Formula: "SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ) for calibration_plus_stdadd rows", Unit: `1/${unitLabel} and text`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Expected/reference values, SNR and clipping are not part of Score." },
     { Term: "ScoreFormula", Meaning: "Formula used to compute Score", Formula: "text descriptor", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Documents which score formula was applied to the row." },
     { Term: "Sheet", Meaning: "Workbook sheet name", Formula: "worksheet name", Unit: "text", 'Where used': "01_CONTENTS", Notes: "" },
-    { Term: "shift_frac_of_mouth_r", Meaning: "Relative mouth-to-floor center shift", Formula: "shift_px / mouth_r", Unit: "dimensionless", 'Where used': "05_GEOMETRY_QC", Notes: "Large values indicate poor floor/mouth alignment." },
+    { Term: "shift_frac_of_mouth_r", Meaning: "Relative mouth-to-floor center shift", Formula: "shift_px / mouth_r", Unit: "dimensionless", 'Where used': "05_GEOMETRY_QC", Notes: "Large values indicate poor floor/mouth alignment; in mouth-floor-intersection ROI, mouth_r is standardized from local pitch and physical 96-well mouth diameter." },
     { Term: "shift_px", Meaning: "Mouth-to-floor center shift", Formula: "Euclidean distance between mouth center and floor center used by the TypeScript geometry/ROI pipeline", Unit: "pixels", 'Where used': "06_WELL_BOTTOM, 05_GEOMETRY_QC", Notes: "Large values indicate poor floor/mouth alignment." },
     { Term: "shift_px/shift_frac_of_mouth_r/floor_to_mouth_r_ratio/floor_to_mouth_area_ratio", Meaning: "Mouth-to-floor alignment descriptors", Formula: "shift distance and relative floor/mouth radius or area ratios", Unit: "pixels or dimensionless", 'Where used': "05_GEOMETRY_QC, 06_WELL_BOTTOM", Notes: "" },
     { Term: "sigma_cal/sigma_source/SNR", Meaning: "Calibration noise estimate, its source and slope-to-noise ratio", Formula: "SNR = |m|/sigma_cal", Unit: "mixed", 'Where used': "11_CIELAB_FITTING, 10_METHOD_COMPARISON", Notes: "SNR is diagnostic and is not part of the common Score. For RGB/PAbs descriptors, sigma_cal supports the primary quantitative workflow. For CIELAB/DeltaE descriptors, sigma_cal, sigma_source, LOD/LOQ and SNR are diagnostic/comparative quality indicators and do not override the selected quantitative RGB/PAbs method." },
@@ -8270,8 +8271,10 @@ function App() {
 
           if (selectedRoiMode === 'mouth-floor-intersection' && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length) {
             const projectedFloorCircle = extractionFloorCircles[well.row * 12 + well.col];
-            const floorRadius = overrideRecord ? Math.max(1, overrideRecord.floorRadius) : Math.max(1, projectedFloorCircle.r);
-            const mouthRadius = overrideRecord ? Math.max(1, overrideRecord.mouthRadius) : estimateRoiRadius(extractionWells, well.row, well.col, radiusFactor);
+            const standardMouthRadius = estimateStandardMouthRadius(extractionWells, well.row, well.col);
+            const floorRadiusRaw = overrideRecord ? Math.max(1, overrideRecord.floorRadius) : Math.max(1, projectedFloorCircle.r);
+            const floorRadius = Math.min(Math.max(floorRadiusRaw, 0.50 * standardMouthRadius), 1.05 * standardMouthRadius);
+            const mouthRadius = standardMouthRadius;
             floorRadiusUsed = floorRadius;
             mouthRadiusUsed = mouthRadius;
             roiModeUsed = 'mouth-floor-intersection';
@@ -8365,11 +8368,22 @@ function App() {
             : overrideRecord
               ? Math.max(1, overrideRecord.mouthRadius)
               : estimateRoiRadius(extractionWells, well.row, well.col, radiusFactor);
+          const diagnosticCylRadius = overrideRecord?.cylRadiusBg ?? backgroundSample.wellExclusionRadiusApprox ?? Number.NaN;
+          const diagnosticInterfaceRadius0 = Number.isFinite(diagnosticCylRadius) && diagnosticCylRadius > 2
+            ? Math.min(0.885 * diagnosticMouthRadius, 0.84 * diagnosticCylRadius)
+            : 0.885 * diagnosticMouthRadius;
           const diagnosticInterfaceRadius = Math.min(
-            Math.max(0.885 * diagnosticMouthRadius, 0.74 * diagnosticMouthRadius),
-            0.92 * diagnosticMouthRadius,
+            Math.max(diagnosticInterfaceRadius0, 0.76 * diagnosticMouthRadius),
+            0.91 * diagnosticMouthRadius,
           );
-          const mouthScore = ringScore(wellBottomGradientImage, well.x, well.y, diagnosticInterfaceRadius, 1.10);
+          const refinedInterface = refineCircleFast(wellBottomGradientImage, well.x, well.y, diagnosticInterfaceRadius, {
+            maxShift: 2,
+            drValues: [-2, -1, 0, 1, 2],
+            band: 1.10,
+            radiusLo: 0.74 * diagnosticMouthRadius,
+            radiusHi: 0.92 * diagnosticMouthRadius,
+          });
+          const mouthScore = refinedInterface?.score ?? null;
           const pabsResult = computePAbs(roiSample, backgroundSample.rgbBackground);
 
           return {

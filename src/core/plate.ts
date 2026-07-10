@@ -297,7 +297,7 @@ export function hasFloorGeometry(geometry: PlateGeometry): boolean {
 export function generate96WellFloorCircles(
   geometry: PlateGeometry,
   wells: WellCenter[] | null = null,
-  radiusFactor: number | null = null,
+  _radiusFactor: number | null = null,
 ): FloorCircle[] | null {
   if (!hasFloorGeometry(geometry)) {
     return null;
@@ -331,8 +331,8 @@ export function generate96WellFloorCircles(
         : null;
       const center = projectedCenter ?? lerpPoint(leftEdge, rightEdge, colT);
       const interpolatedRadius = Math.max(1, lerp(leftRadius, rightRadius, colT));
-      const mouthRadius = wells && radiusFactor !== null
-        ? estimateRoiRadius(wells, row, col, radiusFactor)
+      const mouthRadius = wells
+        ? estimateStandardMouthRadius(wells, row, col)
         : Number.NaN;
       const radius = Number.isFinite(mouthRadius)
         ? Math.min(Math.max(interpolatedRadius, 0.50 * mouthRadius), 1.05 * mouthRadius)
@@ -383,6 +383,18 @@ export function estimateRoiRadius(
 ): number {
   const safeRadiusFactor = Number.isFinite(radiusFactor) ? radiusFactor : 0.3;
   return Math.max(1, estimateLocalPitch(wells, row, col) * safeRadiusFactor);
+}
+
+const STANDARD_96_WELL_PITCH_MM = 9.0;
+const STANDARD_96_WELL_MOUTH_DIAMETER_MM = 6.90;
+const STANDARD_96_WELL_MOUTH_RADIUS_FACTOR = 0.5 * STANDARD_96_WELL_MOUTH_DIAMETER_MM / STANDARD_96_WELL_PITCH_MM;
+
+export function estimateStandardMouthRadius(
+  wells: WellCenter[],
+  row: number,
+  col: number,
+): number {
+  return Math.max(1, estimateLocalPitch(wells, row, col) * STANDARD_96_WELL_MOUTH_RADIUS_FACTOR);
 }
 
 export function drawOverlay(
