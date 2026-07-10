@@ -1,4 +1,5 @@
-import type { Rgb, RoiPixelStatisticsMode } from '../types/results';
+import { rgbToLab } from './cielab';
+import type { Rgb, RoiPixelStatisticsMode, WellRobustChannelStats, WellRobustPixelStats } from '../types/results';
 
 const MIN_BACKGROUND_PIXELS = 32;
 const ROBUST_TRIM_DARK_Q = 8;
@@ -18,6 +19,7 @@ const HIGHLIGHT_FRACTION_WARNING_THRESHOLD = 0.05;
 
 export interface RgbSampleStats extends Rgb {
   pixels: number;
+  wellRobustPixelStats?: WellRobustPixelStats;
   warnings: string[];
   roiPixelStatisticsMode?: RoiPixelStatisticsMode;
   roiFullPixels?: number;
@@ -86,6 +88,56 @@ function percentile(values: number[], q: number): number {
 
   const fraction = rank - lower;
   return sorted[lower] * (1 - fraction) + sorted[upper] * fraction;
+}
+
+function mean(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function sampleSd(values: number[]): number {
+  if (values.length <= 1) {
+    return 0;
+  }
+
+  const center = mean(values);
+  const variance = values.reduce((sum, value) => sum + ((value - center) ** 2), 0) / (values.length - 1);
+  return Math.sqrt(Math.max(variance, 0));
+}
+
+function channelSummary(values: number[]): WellRobustChannelStats {
+  const p25 = percentile(values, 25);
+  const p75 = percentile(values, 75);
+
+  return {
+    mean: mean(values),
+    median: median(values),
+    sd: sampleSd(values),
+    p10: percentile(values, 10),
+    p25,
+    p50: percentile(values, 50),
+    p75,
+    p90: percentile(values, 90),
+    iqr: p75 - p25,
+  };
+}
+
+function buildWellRobustPixelStats(pixels: SampledPixel[]): WellRobustPixelStats {
+  const labValues = pixels.map((pixel) => rgbToLab(pixel));
+
+  return {
+    red: channelSummary(pixels.map((pixel) => pixel.r)),
+    green: channelSummary(pixels.map((pixel) => pixel.g)),
+    blue: channelSummary(pixels.map((pixel) => pixel.b)),
+    gray: channelSummary(pixels.map((pixel) => pixel.gray)),
+    purple: channelSummary(pixels.map((pixel) => 0.5 * (pixel.r + pixel.b) - pixel.g)),
+    l: channelSummary(labValues.map((value) => value.l)),
+    a: channelSummary(labValues.map((value) => value.a)),
+    b: channelSummary(labValues.map((value) => value.b)),
+  };
 }
 
 function grayscale(rgb: Rgb): number {
@@ -390,6 +442,7 @@ function simpleRoiStats(
     roiCorePixels: pixels.length,
     roiUsedPixels: pixels.length,
     roiUsedFraction: pixels.length > 0 ? 1 : 0,
+    wellRobustPixelStats: buildWellRobustPixelStats(pixels),
     roiTrimDarkQ: null,
     roiTrimBrightQ: null,
     roiStatisticsWarnings: warnings,
@@ -498,6 +551,7 @@ function robustTrimmedRoiStats(
     brightExcludedMeanGray,
     brightExcessMeanGray,
     highlightIndex,
+    wellRobustPixelStats: buildWellRobustPixelStats(usedPixels),
     ...(includeDiagnosticPixels ? {
       roiFullPixelCoordinates: fullDiagnosticPixels,
       roiCorePixelCoordinates: coreDiagnosticPixels,

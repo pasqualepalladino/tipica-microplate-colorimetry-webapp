@@ -26,6 +26,29 @@ export interface MethodMetadata {
   geometrySource?: string;
 }
 
+export interface WellRobustChannelStats {
+  mean: number;
+  median: number;
+  sd: number;
+  p10: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p90: number;
+  iqr: number;
+}
+
+export interface WellRobustPixelStats {
+  red: WellRobustChannelStats;
+  green: WellRobustChannelStats;
+  blue: WellRobustChannelStats;
+  gray: WellRobustChannelStats;
+  purple: WellRobustChannelStats;
+  l: WellRobustChannelStats;
+  a: WellRobustChannelStats;
+  b: WellRobustChannelStats;
+}
+
 export interface WellMeasurement {
   wellId: string;
   row: number;
@@ -67,6 +90,7 @@ export interface WellMeasurement {
   brightExcludedMeanGray?: number | null;
   brightExcessMeanGray?: number;
   highlightIndex?: number;
+  wellRobustPixelStats?: WellRobustPixelStats;
   floorGeometryAvailable?: boolean;
   floorRadiusUsed?: number;
   mouthRadiusUsed?: number;
