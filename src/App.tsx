@@ -359,7 +359,7 @@ function estimateInitialManualMouthRadius(wells: WellCenter[], radiusFactor: num
   return clampManualMouthRadiusPx(estimateRoiRadius(wells, a1.row, a1.col, radiusFactor));
 }
 
-function getReferenceMouthCircle(wells: WellCenter[], referenceIndex: number, radiusFactor: number): FloorCircle | null {
+function getReferenceMouthCircle(wells: WellCenter[], referenceIndex: number): FloorCircle | null {
   const reference = FLOOR_CIRCLE_REFERENCES[referenceIndex];
 
   if (!reference) {
@@ -375,7 +375,7 @@ function getReferenceMouthCircle(wells: WellCenter[], referenceIndex: number, ra
   return {
     x: well.x,
     y: well.y,
-    r: estimateRoiRadius(wells, well.row, well.col, radiusFactor),
+    r: estimateStandardMouthRadius(wells, well.row, well.col),
   };
 }
 
@@ -1159,6 +1159,14 @@ function createAnalysisRunConfigMetadata(options: {
         corner_h12: options.geometry.corner_h12,
         corner_h1: options.geometry.corner_h1,
         mouth_radius_px: options.geometry.mouth_radius_px ?? null,
+      }
+      : null,
+    manualFloorGeometry: options.geometry && hasFloorGeometry(options.geometry)
+      ? {
+        floor_a1_circle_img: options.geometry.floor_a1_circle_img ?? null,
+        floor_a12_circle_img: options.geometry.floor_a12_circle_img ?? null,
+        floor_h12_circle_img: options.geometry.floor_h12_circle_img ?? null,
+        floor_h1_circle_img: options.geometry.floor_h1_circle_img ?? null,
       }
       : null,
     floorCircles: options.floorGeometryAvailable && options.floorCircles && options.floorCircles.length === options.wells.length
@@ -3551,7 +3559,7 @@ function associatedWellsForBackgroundCell(cellRow: number, cellCol: number): str
 function buildDiagnosticsContentsRows(): XlsxRow[] {
   return [
     { Sheet: '01_CONTENTS', Purpose: 'Index of diagnostic sheets.' },
-    { Sheet: '02_BG_SAMPLES', Purpose: 'Accepted inter-well background samples used to fit the BG surface.' },
+    { Sheet: '02_BG_SAMPLES', Purpose: 'Accepted inter-well background-cell diagnostics; for the web physical BG model, exact polynomial fit inputs are exported separately in WEB_BG_MODEL_PROOF.xlsx.' },
     { Sheet: '03_BG_WELL_FIT', Purpose: 'Predicted local background at each well.' },
     { Sheet: '04_WELL_ROBUST_STATS', Purpose: 'Well-level robust pixel statistics and optical QC.' },
     { Sheet: '05_GEOMETRY_QC', Purpose: 'Floor/mouth geometry quality-control descriptors.' },
@@ -4352,11 +4360,11 @@ function buildCielabFittingRows(
 
 function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
   return [
-    { Term: "area", Meaning: "Accepted background-mask area", Formula: "number of accepted pixels in the background sample mask", Unit: "pixels", 'Where used': "02_BG_SAMPLES", Notes: "Area after model-based and robust statistical background-mask filtering." },
+    { Term: "area", Meaning: "Accepted background-mask area or fit-input sample area, depending on sheet", Formula: "number of accepted pixels represented by the BG cell record", Unit: "pixels", 'Where used': "02_BG_SAMPLES, 13_BG_MODEL_INPUTS", Notes: "In DIAGNOSTICS/02_BG_SAMPLES this is the background-cell diagnostic area; in WEB_BG_MODEL_PROOF/13_BG_MODEL_INPUTS it is the area represented by the actual polynomial fit input sample." },
     { Term: "Associated_Wells", Meaning: "Four wells surrounding an inter-well background cell", Formula: "well(r,c)-well(r,c+1)-well(r+1,c)-well(r+1,c+1)", Unit: "well labels", 'Where used': "02_BG_SAMPLES", Notes: "Clarifies that BG samples are inter-well regions rather than wells." },
     { Term: "B_*/G_*/R_*", Meaning: "Robust statistics of raw well-channel intensities", Formula: "computed over retained well ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Browser image data are handled and exported in standard RGB order." },
     { Term: "B_bg/G_bg/R_bg", Meaning: "Predicted local raw background at a well", Formula: "2D background surface evaluated at well center", Unit: "raw image intensity", 'Where used': "03_BG_WELL_FIT", Notes: "Browser image data are handled and exported in standard RGB order." },
-    { Term: "B_med/G_med/R_med", Meaning: "Median raw RGB-channel value in accepted BG-mask pixels", Formula: "median over accepted background-mask pixels", Unit: "raw image intensity", 'Where used': "02_BG_SAMPLES", Notes: "Browser image data are handled and exported in standard RGB order." },
+    { Term: "B_med/G_med/R_med", Meaning: "Median raw RGB-channel value for a background-cell record", Formula: "median over accepted background pixels represented by the record", Unit: "raw image intensity", 'Where used': "02_BG_SAMPLES, 13_BG_MODEL_INPUTS", Notes: "Browser image data are handled and exported in standard RGB order. WEB_BG_MODEL_PROOF/13_BG_MODEL_INPUTS contains the exact web polynomial fit inputs." },
     { Term: "beta_k/bias_index_k", Meaning: "Per-fit slope ratio and relative slope-bias index", Formula: "beta_k = m_std/m_cal; bias_index_k = |beta_k - 1|", Unit: "dimensionless", 'Where used': "11_CIELAB_FITTING", Notes: "" },
     { Term: "beta_mean", Meaning: "Mean standard-addition/calibration slope ratio", Formula: "mean(m_std / m_cal)", Unit: "dimensionless", 'Where used': "10_METHOD_COMPARISON", Notes: "1 indicates equal slopes on average." },
     { Term: "beta_mean/bias_index_mean", Meaning: "Mean slope ratio and mean relative slope bias", Formula: "beta_mean = mean(m_std/m_cal); bias_index_mean = mean(|m_std/m_cal - 1|)", Unit: "dimensionless", 'Where used': "10_METHOD_COMPARISON", Notes: "" },
@@ -4559,7 +4567,7 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
 
 async function createWebBgModelProofWorkbookBlob(options: PythonDiagnosticsWorkbookOptions): Promise<Blob> {
   const contentsRows: XlsxRow[] = [
-    { Sheet: '13_BG_MODEL_INPUTS', Purpose: 'Proof-only BG polynomial fit inputs exported by the web path.' },
+    { Sheet: '13_BG_MODEL_INPUTS', Purpose: 'Proof-only BG polynomial fit inputs actually used by the web physical BG model.' },
     { Sheet: '14_BG_MODEL_COEFFICIENTS', Purpose: 'Proof-only BG polynomial coefficients and robust-fit summaries exported by the web path.' },
     { Sheet: '15_BG_MODEL_PREDICTIONS', Purpose: 'Proof-only per-well raw BG predictions from the fitted web BG model before downstream transformations.' },
   ];
@@ -7414,8 +7422,8 @@ function App() {
     [geometry],
   );
   const currentReferenceMouthCircle = useMemo(
-    () => getReferenceMouthCircle(wells, manualFloorCircles.length, radiusFactor),
-    [manualFloorCircles.length, radiusFactor, wells],
+    () => getReferenceMouthCircle(wells, manualFloorCircles.length),
+    [manualFloorCircles.length, wells],
   );
   const manualFloorCirclePreview = useMemo<FloorCircle | null>(() => {
     if (!floorCirclePickingActive || !currentReferenceMouthCircle) {
