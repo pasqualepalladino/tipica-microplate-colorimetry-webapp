@@ -101,6 +101,7 @@ export interface BackgroundCellDiagnostic {
   finalAcceptedPixels: number;
   sampledFinalAcceptedPixels?: number;
   fullResolutionPixelsAfterWellDiskExclusion?: number;
+  fullResolutionRefinedBeforeMadPixels?: number;
   fullResolutionFinalAcceptedPixels?: number;
   acceptedCentroidX?: number;
   acceptedCentroidY?: number;
@@ -1054,13 +1055,15 @@ function createPhysicalInterwellCandidates(
       cellDiagnostic.pixelsAfterWellDiskExclusion = modelPixels.length;
       rawPixels.push(...modelPixels);
       const refinedPixels = refinePhysicalCellCandidates(modelPixels);
-      const fullResolutionAcceptedPixels = robustFilterPhysicalCell(refinePhysicalCellCandidates(fullResolutionModelPixels));
+      const fullResolutionRefinedPixels = refinePhysicalCellCandidates(fullResolutionModelPixels);
+      const fullResolutionAcceptedPixels = robustFilterPhysicalCell(fullResolutionRefinedPixels);
       const fullResolutionStatsPixels = fullResolutionAcceptedPixels.length >= PHYSICAL_MIN_CELL_PIXELS
         ? fullResolutionAcceptedPixels
         : refinedPixels;
       pixels.push(...fullResolutionStatsPixels);
       cellDiagnostic.sampledFinalAcceptedPixels = refinedPixels.length;
       cellDiagnostic.fullResolutionPixelsAfterWellDiskExclusion = fullResolutionModelPixels.length;
+      cellDiagnostic.fullResolutionRefinedBeforeMadPixels = fullResolutionRefinedPixels.length;
       cellDiagnostic.fullResolutionFinalAcceptedPixels = fullResolutionStatsPixels.length;
       cellDiagnostic.finalAcceptedPixels = fullResolutionStatsPixels.length;
       if (fullResolutionStatsPixels.length > 0) {
