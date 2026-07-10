@@ -25,7 +25,7 @@ const PHYSICAL_MIN_CELL_PIXELS = 30;
 const PHYSICAL_MIN_POLY_SAMPLES = 40;
 const PHYSICAL_MASK_ALGORITHM = 'python-like inter-well cell mask';
 const PHYSICAL_POLY_COEFFICIENTS = 6;
-const PHYSICAL_POLY_MAX_ITERATIONS = 4;
+const PHYSICAL_POLY_MAX_ITERATIONS = 6;
 const PHYSICAL_POLY_CLIP_K = 2.5;
 const RGB_MIN = 1;
 const RGB_MAX = 255;
@@ -1058,6 +1058,7 @@ function createPhysicalInterwellCandidates(
       const fullResolutionStatsPixels = fullResolutionAcceptedPixels.length >= PHYSICAL_MIN_CELL_PIXELS
         ? fullResolutionAcceptedPixels
         : refinedPixels;
+      pixels.push(...fullResolutionStatsPixels);
       cellDiagnostic.sampledFinalAcceptedPixels = refinedPixels.length;
       cellDiagnostic.fullResolutionPixelsAfterWellDiskExclusion = fullResolutionModelPixels.length;
       cellDiagnostic.fullResolutionFinalAcceptedPixels = fullResolutionStatsPixels.length;
@@ -1071,7 +1072,6 @@ function createPhysicalInterwellCandidates(
       }
       cellDiagnostic.zeroReason = describeCellZeroReason(cellDiagnostic);
       cellDiagnostics.push(cellDiagnostic);
-      pixels.push(...refinedPixels);
     }
   }
 
