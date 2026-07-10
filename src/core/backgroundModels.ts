@@ -27,6 +27,8 @@ const PHYSICAL_MASK_ALGORITHM = 'python-like inter-well cell mask';
 const PHYSICAL_POLY_COEFFICIENTS = 6;
 const PHYSICAL_POLY_MAX_ITERATIONS = 6;
 const PHYSICAL_POLY_CLIP_K = 2.5;
+const PHYSICAL_CANONICAL_MASK_SIZE = 220;
+const PHYSICAL_CANONICAL_REFINE_ERODE_PX = 1;
 const RGB_MIN = 1;
 const RGB_MAX = 255;
 
@@ -327,6 +329,10 @@ function medianRgb(pixels: CandidatePixel[]): Rgb {
 
 function luminance(rgb: Rgb): number {
   return 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b;
+}
+
+function opencvGrayLuminance(rgb: Rgb): number {
+  return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
 }
 
 function clampRgb(value: number): number {
@@ -660,30 +666,384 @@ function keepCanonicalComponentNearCenter(pixels: CandidatePixel[]): CandidatePi
   return scored[0].component.length >= 8 ? scored[0].component : pixels;
 }
 
+function canonicalIndexFromUnit(value: number, size = PHYSICAL_CANONICAL_MASK_SIZE): number {
+  return clamp(Math.round(value * (size - 1)), 0, size - 1);
+}
+
+function createBooleanGrid(size: number, initial = false): boolean[][] {
+  return Array.from({ length: size }, () => Array<boolean>(size).fill(initial));
+}
+
+function createNumberGrid(size: number, initial = 0): number[][] {
+  return Array.from({ length: size }, () => Array<number>(size).fill(initial));
+}
+
+function buildPhysicalCanonicalRaster(
+  pixels: CandidatePixel[],
+  size = PHYSICAL_CANONICAL_MASK_SIZE,
+): { gray: number[][]; mask: boolean[][]; buckets: Map<string, CandidatePixel[]> } {
+  const sums = createNumberGrid(size, 0);
+  const counts = createNumberGrid(size, 0);
+  const gray = createNumberGrid(size, 0);
+  const mask = createBooleanGrid(size, false);
+  const buckets = new Map<string, CandidatePixel[]>();
+
+  pixels.forEach((pixel) => {
+    const u = pixel.canonicalU ?? 0.5;
+    const v = pixel.canonicalV ?? 0.5;
+    const x = canonicalIndexFromUnit(u, size);
+    const y = canonicalIndexFromUnit(v, size);
+    const key = `${x}:${y}`;
+
+    sums[y][x] += pixel.luminance;
+    counts[y][x] += 1;
+    mask[y][x] = true;
+
+    const bucket = buckets.get(key);
+    if (bucket) {
+      bucket.push(pixel);
+    } else {
+      buckets.set(key, [pixel]);
+    }
+  });
+
+  const fallback = pixels.length > 0 ? median(pixels.map((pixel) => pixel.luminance)) : 0;
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      gray[y][x] = counts[y][x] > 0 ? sums[y][x] / counts[y][x] : fallback;
+    }
+  }
+
+  return { gray, mask, buckets };
+}
+
+function maskedValues(grid: number[][], mask: boolean[][]): number[] {
+  const values: number[] = [];
+
+  for (let y = 0; y < grid.length; y += 1) {
+    for (let x = 0; x < grid[y].length; x += 1) {
+      if (mask[y][x]) {
+        values.push(grid[y][x]);
+      }
+    }
+  }
+
+  return values;
+}
+
+function gaussianBlur5x5(grid: number[][]): number[][] {
+  const size = grid.length;
+  const kernel = [1, 4, 6, 4, 1];
+  const tmp = createNumberGrid(size, 0);
+  const out = createNumberGrid(size, 0);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      let sum = 0;
+      let weight = 0;
+
+      for (let dx = -2; dx <= 2; dx += 1) {
+        const xx = clamp(x + dx, 0, size - 1);
+        const k = kernel[dx + 2];
+        sum += grid[y][xx] * k;
+        weight += k;
+      }
+
+      tmp[y][x] = sum / weight;
+    }
+  }
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      let sum = 0;
+      let weight = 0;
+
+      for (let dy = -2; dy <= 2; dy += 1) {
+        const yy = clamp(y + dy, 0, size - 1);
+        const k = kernel[dy + 2];
+        sum += tmp[yy][x] * k;
+        weight += k;
+      }
+
+      out[y][x] = sum / weight;
+    }
+  }
+
+  return out;
+}
+
+function ellipseOffsets(radiusX: number, radiusY = radiusX): Array<[number, number]> {
+  const offsets: Array<[number, number]> = [];
+
+  for (let dy = -radiusY; dy <= radiusY; dy += 1) {
+    for (let dx = -radiusX; dx <= radiusX; dx += 1) {
+      if ((dx * dx) / Math.max(1, radiusX * radiusX) + (dy * dy) / Math.max(1, radiusY * radiusY) <= 1) {
+        offsets.push([dx, dy]);
+      }
+    }
+  }
+
+  return offsets;
+}
+
+function erodeMask(mask: boolean[][], radius: number): boolean[][] {
+  if (radius <= 0) {
+    return mask.map((row) => [...row]);
+  }
+
+  const size = mask.length;
+  const out = createBooleanGrid(size, false);
+  const offsets = ellipseOffsets(radius);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      if (!mask[y][x]) {
+        continue;
+      }
+
+      let keep = true;
+
+      for (const [dx, dy] of offsets) {
+        const xx = x + dx;
+        const yy = y + dy;
+
+        if (xx < 0 || xx >= size || yy < 0 || yy >= size || !mask[yy][xx]) {
+          keep = false;
+          break;
+        }
+      }
+
+      out[y][x] = keep;
+    }
+  }
+
+  return out;
+}
+
+function dilateMask(mask: boolean[][], radius: number): boolean[][] {
+  const size = mask.length;
+  const out = createBooleanGrid(size, false);
+  const offsets = ellipseOffsets(radius);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      if (!mask[y][x]) {
+        continue;
+      }
+
+      for (const [dx, dy] of offsets) {
+        const xx = x + dx;
+        const yy = y + dy;
+
+        if (xx >= 0 && xx < size && yy >= 0 && yy < size) {
+          out[yy][xx] = true;
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
+function openMask(mask: boolean[][], radius: number): boolean[][] {
+  return dilateMask(erodeMask(mask, radius), radius);
+}
+
+function closeMask(mask: boolean[][], radius: number): boolean[][] {
+  return erodeMask(dilateMask(mask, radius), radius);
+}
+
+function grayscaleDilation(grid: number[][], radius: number): number[][] {
+  const size = grid.length;
+  const out = createNumberGrid(size, 0);
+  const offsets = ellipseOffsets(radius);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      let best = -Infinity;
+
+      for (const [dx, dy] of offsets) {
+        const xx = clamp(x + dx, 0, size - 1);
+        const yy = clamp(y + dy, 0, size - 1);
+        best = Math.max(best, grid[yy][xx]);
+      }
+
+      out[y][x] = best;
+    }
+  }
+
+  return out;
+}
+
+function grayscaleErosion(grid: number[][], radius: number): number[][] {
+  const size = grid.length;
+  const out = createNumberGrid(size, 0);
+  const offsets = ellipseOffsets(radius);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      let best = Infinity;
+
+      for (const [dx, dy] of offsets) {
+        const xx = clamp(x + dx, 0, size - 1);
+        const yy = clamp(y + dy, 0, size - 1);
+        best = Math.min(best, grid[yy][xx]);
+      }
+
+      out[y][x] = best;
+    }
+  }
+
+  return out;
+}
+
+function blackHat9x9(grid: number[][]): number[][] {
+  const closed = grayscaleErosion(grayscaleDilation(grid, 4), 4);
+  const size = grid.length;
+  const out = createNumberGrid(size, 0);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      out[y][x] = Math.max(0, closed[y][x] - grid[y][x]);
+    }
+  }
+
+  return out;
+}
+
+function countMaskPixels(mask: boolean[][]): number {
+  let count = 0;
+
+  mask.forEach((row) => {
+    row.forEach((value) => {
+      if (value) {
+        count += 1;
+      }
+    });
+  });
+
+  return count;
+}
+
+function keepCanonicalMaskComponentNearCenter(mask: boolean[][]): boolean[][] {
+  const size = mask.length;
+  const visited = createBooleanGrid(size, false);
+  const components: Array<{ pixels: Array<[number, number]>; score: number }> = [];
+  const neighbors = [
+    [-1, -1], [0, -1], [1, -1],
+    [-1, 0], [1, 0],
+    [-1, 1], [0, 1], [1, 1],
+  ];
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      if (!mask[y][x] || visited[y][x]) {
+        continue;
+      }
+
+      const stack: Array<[number, number]> = [[x, y]];
+      const pixels: Array<[number, number]> = [];
+      visited[y][x] = true;
+
+      while (stack.length > 0) {
+        const [cx, cy] = stack.pop() as [number, number];
+        pixels.push([cx, cy]);
+
+        for (const [dx, dy] of neighbors) {
+          const nx = cx + dx;
+          const ny = cy + dy;
+
+          if (nx < 0 || nx >= size || ny < 0 || ny >= size || visited[ny][nx] || !mask[ny][nx]) {
+            continue;
+          }
+
+          visited[ny][nx] = true;
+          stack.push([nx, ny]);
+        }
+      }
+
+      const centerX = mean(pixels.map(([px]) => px / Math.max(1, size - 1)));
+      const centerY = mean(pixels.map(([, py]) => py / Math.max(1, size - 1)));
+      const d2 = (centerX - 0.5) ** 2 + (centerY - 0.5) ** 2;
+      components.push({ pixels, score: pixels.length - 30 * d2 });
+    }
+  }
+
+  if (components.length === 0) {
+    return mask;
+  }
+
+  components.sort((a, b) => b.score - a.score);
+  const out = createBooleanGrid(size, false);
+
+  components[0].pixels.forEach(([x, y]) => {
+    out[y][x] = true;
+  });
+
+  return out;
+}
+
 function refinePhysicalCellCandidates(modelPixels: CandidatePixel[]): CandidatePixel[] {
   if (modelPixels.length < PHYSICAL_MIN_CELL_PIXELS) {
     return modelPixels;
   }
 
-  const grayValues = modelPixels.map((pixel) => pixel.luminance);
-  const thresholdOtsu = otsuThreshold(grayValues);
-  const thresholdP55 = percentile(grayValues, 55);
-  const thresholdP60 = percentile(grayValues, 60);
-  const threshold = Math.min(Math.max(thresholdOtsu, thresholdP55), thresholdP60 + 6);
-  const darkThreshold = percentile(grayValues, 30);
-  const brightThreshold = percentile(grayValues, 95);
-  const selected = modelPixels.filter((pixel) => (
-    pixel.luminance >= threshold &&
-    pixel.luminance >= darkThreshold &&
-    pixel.luminance <= brightThreshold
-  ));
+  const { gray, mask: modelMask, buckets } = buildPhysicalCanonicalRaster(modelPixels);
+  const modelValues = maskedValues(gray, modelMask);
 
-  if (selected.length < 20) {
+  if (modelValues.length < 32) {
     return modelPixels;
   }
 
-  const centralComponent = keepCanonicalComponentNearCenter(selected);
-  return centralComponent.length >= 20 ? centralComponent : modelPixels;
+  const grayBlur = gaussianBlur5x5(gray);
+  const blurredValues = maskedValues(grayBlur, modelMask);
+  const thresholdOtsu = otsuThreshold(blurredValues);
+  const thresholdP55 = percentile(blurredValues, 55);
+  const thresholdP60 = percentile(blurredValues, 60);
+  const threshold = Math.min(Math.max(thresholdOtsu, thresholdP55), thresholdP60 + 6);
+  const darkThreshold = percentile(blurredValues, 30);
+  const brightThreshold = percentile(blurredValues, 95);
+  const blackHat = blackHat9x9(grayBlur);
+  const blackHatThreshold = percentile(maskedValues(blackHat, modelMask), 80);
+  const size = PHYSICAL_CANONICAL_MASK_SIZE;
+  let candidateMask = createBooleanGrid(size, false);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      candidateMask[y][x] = (
+        modelMask[y][x] &&
+        grayBlur[y][x] >= threshold &&
+        grayBlur[y][x] >= darkThreshold &&
+        grayBlur[y][x] <= brightThreshold &&
+        blackHat[y][x] <= blackHatThreshold
+      );
+    }
+  }
+
+  candidateMask = openMask(candidateMask, 1);
+  candidateMask = closeMask(candidateMask, 2);
+  candidateMask = keepCanonicalMaskComponentNearCenter(candidateMask);
+
+  if (countMaskPixels(candidateMask) < 20) {
+    candidateMask = modelMask;
+  }
+
+  candidateMask = erodeMask(candidateMask, PHYSICAL_CANONICAL_REFINE_ERODE_PX);
+
+  const selected: CandidatePixel[] = [];
+
+  buckets.forEach((bucket, key) => {
+    const [xText, yText] = key.split(':');
+    const x = Number(xText);
+    const y = Number(yText);
+
+    if (candidateMask[y]?.[x]) {
+      selected.push(...bucket);
+    }
+  });
+
+  return selected.length >= 20 ? selected : modelPixels;
 }
 
 function computeCandidateSampleStride(regionWidth: number, regionHeight: number): number {
@@ -975,7 +1335,7 @@ function createPhysicalInterwellCandidates(
             x: px,
             y: py,
             rgb,
-            luminance: luminance(rgb),
+            luminance: opencvGrayLuminance(rgb),
             cellRow: row,
             cellCol: col,
             canonicalU: canonical.u,
@@ -1043,7 +1403,7 @@ function createPhysicalInterwellCandidates(
             x: px,
             y: py,
             rgb,
-            luminance: luminance(rgb),
+            luminance: opencvGrayLuminance(rgb),
             cellRow: row,
             cellCol: col,
             canonicalU: canonical.u,
