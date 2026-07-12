@@ -139,7 +139,6 @@ function drawMouthCircleLabel(
   point: Point,
   label: string,
   radius: number,
-  state: 'picked' | 'preview',
 ): void {
   const lineWidth = Math.max(2.5, radius * 0.055);
   const centerRadius = Math.max(3, Math.min(7, radius * 0.16));
@@ -147,14 +146,9 @@ function drawMouthCircleLabel(
 
   ctx.save();
 
-  if (state === 'preview') {
-    ctx.setLineDash([Math.max(6, radius * 0.18), Math.max(5, radius * 0.14)]);
-    ctx.fillStyle = 'rgba(255, 193, 7, 0.08)';
-    ctx.strokeStyle = 'rgba(255, 193, 7, 0.98)';
-  } else {
-    ctx.fillStyle = 'rgba(0, 122, 90, 0.1)';
-    ctx.strokeStyle = 'rgba(0, 122, 90, 0.98)';
-  }
+  ctx.setLineDash([Math.max(6, radius * 0.18), Math.max(5, radius * 0.14)]);
+  ctx.fillStyle = 'rgba(255, 193, 7, 0.08)';
+  ctx.strokeStyle = 'rgba(255, 193, 7, 0.98)';
 
   ctx.lineWidth = lineWidth;
   ctx.beginPath();
@@ -165,8 +159,8 @@ function drawMouthCircleLabel(
 
   ctx.beginPath();
   ctx.arc(point.x, point.y, centerRadius, 0, Math.PI * 2);
-  ctx.fillStyle = state === 'preview' ? 'rgba(255, 193, 7, 0.95)' : 'rgba(0, 122, 90, 0.95)';
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.96)';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.82)';
   ctx.lineWidth = Math.max(1.5, centerRadius * 0.35);
   ctx.fill();
   ctx.stroke();
@@ -199,13 +193,13 @@ function drawManualMouthMarkers(
 
   points.forEach((point, index) => {
     const radius = manualMouthRadiusPx ?? estimateManualMouthRadius(points, wells, radiusFactor, index);
-    drawMouthCircleLabel(ctx, point, MANUAL_MOUTH_REFERENCES[index]?.label ?? String(index + 1), radius, 'picked');
+    drawMouthCircleLabel(ctx, point, MANUAL_MOUTH_REFERENCES[index]?.label ?? String(index + 1), radius);
   });
 
   if (previewPoint && points.length < MANUAL_MOUTH_REFERENCES.length) {
     const previewIndex = points.length;
     const radius = manualMouthRadiusPx ?? estimateManualMouthRadius(points, wells, radiusFactor, previewIndex, previewPoint);
-    drawMouthCircleLabel(ctx, previewPoint, MANUAL_MOUTH_REFERENCES[previewIndex].label, radius, 'preview');
+    drawMouthCircleLabel(ctx, previewPoint, MANUAL_MOUTH_REFERENCES[previewIndex].label, radius);
   }
 
   ctx.restore();
@@ -232,29 +226,35 @@ function drawFloorCircleMarkers(
   circles.forEach((circle, index) => {
     ctx.beginPath();
     ctx.arc(circle.x, circle.y, circle.r, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(0, 137, 180, 0.12)';
-    ctx.strokeStyle = 'rgba(0, 137, 180, 0.98)';
+    ctx.fillStyle = 'rgba(255, 193, 7, 0.08)';
+    ctx.strokeStyle = 'rgba(255, 193, 7, 0.98)';
     ctx.lineWidth = Math.max(2, markerRadius * 0.16);
+    ctx.setLineDash([Math.max(5, markerRadius * 0.8), Math.max(4, markerRadius * 0.5)]);
     ctx.fill();
     ctx.stroke();
+    ctx.setLineDash([]);
 
     ctx.beginPath();
     ctx.arc(circle.x, circle.y, markerRadius, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
-    ctx.strokeStyle = 'rgba(0, 91, 122, 0.95)';
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.82)';
     ctx.lineWidth = Math.max(2, markerRadius * 0.14);
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = '#003f52';
-    ctx.fillText(FLOOR_CIRCLE_LABELS[index] ?? String(index + 1), circle.x, circle.y + 0.5);
+    const label = FLOOR_CIRCLE_LABELS[index] ?? String(index + 1);
+    ctx.lineWidth = Math.max(2, fontSize * 0.18);
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.82)';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.98)';
+    ctx.strokeText(label, circle.x, circle.y + 0.5);
+    ctx.fillText(label, circle.x, circle.y + 0.5);
   });
 
   if (previewCircle) {
     ctx.beginPath();
     ctx.arc(previewCircle.x, previewCircle.y, previewCircle.r, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(0, 137, 180, 0.08)';
-    ctx.strokeStyle = 'rgba(0, 137, 180, 0.98)';
+    ctx.fillStyle = 'rgba(255, 193, 7, 0.08)';
+    ctx.strokeStyle = 'rgba(255, 193, 7, 0.98)';
     ctx.lineWidth = Math.max(2, markerRadius * 0.18);
     ctx.setLineDash([Math.max(5, markerRadius * 0.8), Math.max(4, markerRadius * 0.5)]);
     ctx.fill();
@@ -264,7 +264,7 @@ function drawFloorCircleMarkers(
     ctx.beginPath();
     ctx.arc(previewCircle.x, previewCircle.y, markerRadius, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
-    ctx.strokeStyle = 'rgba(0, 91, 122, 0.98)';
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.82)';
     ctx.lineWidth = Math.max(2, markerRadius * 0.14);
     ctx.fill();
     ctx.stroke();
@@ -274,7 +274,7 @@ function drawFloorCircleMarkers(
     ctx.lineTo(previewCircle.x + markerRadius * 1.6, previewCircle.y);
     ctx.moveTo(previewCircle.x, previewCircle.y - markerRadius * 1.6);
     ctx.lineTo(previewCircle.x, previewCircle.y + markerRadius * 1.6);
-    ctx.strokeStyle = 'rgba(0, 91, 122, 0.98)';
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.82)';
     ctx.lineWidth = Math.max(1.5, markerRadius * 0.1);
     ctx.stroke();
   }
