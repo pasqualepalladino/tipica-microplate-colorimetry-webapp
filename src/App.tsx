@@ -3030,15 +3030,10 @@ function buildReportOverviewRows(
   addRow('Plate geometry for path length', reliabilityPayload.plate_geometry_name);
   addRow('Plate geometry assumption', reliabilityPayload.plate_geometry_assumption);
 
-  addRow('Selected quantitative RGB method', selectedName);
-  addRow('Selected quantitative family', selectedQuantitativeCmp.Family ?? methodFamilyFromReportMethod(selectedName));
-  addRow('Selected quantitative ranking mode', selectedQuantitativeCmp.RankMode ?? selectedQuantitativeCmp.Mode ?? '');
-  addRow('Selected quantitative method score', selectedQuantitativeCmp.Score ?? '');
-
-  addRow('Best diagnostic/comparison method', bestComparisonName);
-  addRow('Best diagnostic/comparison family', bestCmp.Family ?? methodFamilyFromReportMethod(bestComparisonName));
-  addRow('Best diagnostic/comparison ranking mode', bestCmp.RankMode ?? bestCmp.Mode ?? '');
-  addRow('Best diagnostic/comparison score', bestCmp.Score ?? '');
+  addRow('Selected method from rank', selectedName);
+  addRow('Selected family', selectedQuantitativeCmp.Family ?? methodFamilyFromReportMethod(selectedName));
+  addRow('Ranking mode', selectedQuantitativeCmp.RankMode ?? selectedQuantitativeCmp.Mode ?? '');
+  addRow('Selected method score', selectedQuantitativeCmp.Score ?? '');
 
   [
     ['R2 calibration', 'R2_cal'],
