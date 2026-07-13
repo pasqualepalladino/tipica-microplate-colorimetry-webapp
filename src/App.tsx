@@ -1612,10 +1612,13 @@ function createPythonRawDataDetailsCaptionText(imageBase: string, unitLabel: str
   return `RAW_DATA_DETAILS caption - diagnostics and method-development outputs
 
 File scope
-This caption applies to diagnostic outputs in RAW_DATA_DETAILS for ${imageBase}: BG_STAT_MASK.png, FIGURE_CIELAB_DELTAE.png, METHOD_COMPARISON.png and DIAGNOSTICS.xlsx.
+This caption applies to diagnostic outputs in RAW_DATA_DETAILS for ${imageBase}: BG_STAT_MASK.png, FIGURE_CIELAB_DELTAE.png, METHOD_COMPARISON.png, DIAGNOSTICS.xlsx and analysis_run_config.json.
 
 BG_STAT_MASK.png
 The web export shows the accepted inter-well background sampling mask overlaid on the analyzed image for auditability. Accepted background pixels are selected from inter-well regions after model-based geometric exclusion, including the projected well volume from mouth to floor when floor geometry is available, followed by robust intensity filtering. The overlay is a visual diagnostic of the same background-sampling step used by the calculations.
+
+analysis_run_config.json
+Web-specific reproducibility and audit metadata for the exported run. It records the app-side configuration, selected analysis options and geometry/background settings needed to understand or reproduce how this ZIP was generated. It is not a Python-canonical result table and does not change concentration calculations; it is included to help users, reviewers or support personnel verify the analysis context after export.
 
 FIGURE_CIELAB_DELTAE.png
 Python-style CIELAB/DeltaE fitting/report figure with plate preview, descriptor fitting panels, reference values, C0/Score/Delta/Recovery tables, calibration and standard-addition summaries. The exported CIELAB/DeltaE fit rows use the robust IRLS helper, but full CIELAB parity also depends on descriptor-input parity.
