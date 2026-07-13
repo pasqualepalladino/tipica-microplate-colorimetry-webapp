@@ -1627,10 +1627,7 @@ METHOD_COMPARISON.png
 Cross-method diagnostic comparison for currently available webapp methods. Score uses common fit-quality factors; external reference values and recovery checks are displayed as checks and do not affect ranking.
 
 DIAGNOSTICS.xlsx
-Python-style diagnostic workbook with available background, ROI, geometry, spatial, method-comparison and CIELAB fitting tables. Fields not computed by the webapp are left blank.
-
-WEB_BG_MODEL_PROOF.xlsx
-Supplemental web-only workbook preserving browser background-model proof tables that are not part of the Python DIAGNOSTICS.xlsx schema. These tables support auditability of the web background-model implementation and do not change calculations.
+Diagnostic workbook with available background, ROI, geometry, spatial, method-comparison and CIELAB fitting tables. The web export also includes two web-specific physical-background audit sheets: 13_BG_MODEL_INPUTS, which records the final background samples actually used by the polynomial BG fit, and 14_BG_MODEL_COEFFICIENTS, which records polynomial coefficients and robust residual summaries. These sheets support reproducibility and troubleshooting of the web physical BG model and do not change concentration calculations.
 
 Geometry and epsilon/path-length quantification
 When epsilon-based unknown quantification is used, the Python desktop estimates optical path length from configured liquid volume and nominal flat-bottom well area. This web milestone does not implement epsilon/path-length quantification; non-flat or non-certified geometries require separate validation.
@@ -3557,7 +3554,7 @@ function associatedWellsForBackgroundCell(cellRow: number, cellCol: number): str
 function buildDiagnosticsContentsRows(): XlsxRow[] {
   return [
     { Sheet: '01_CONTENTS', Purpose: 'Index of diagnostic sheets.' },
-    { Sheet: '02_BG_SAMPLES', Purpose: 'Accepted inter-well background-cell diagnostics; for the web physical BG model, exact polynomial fit inputs are exported separately in WEB_BG_MODEL_PROOF.xlsx.' },
+    { Sheet: '02_BG_SAMPLES', Purpose: 'Accepted inter-well background-cell diagnostics.' },
     { Sheet: '03_BG_WELL_FIT', Purpose: 'Predicted local background at each well.' },
     { Sheet: '04_WELL_ROBUST_STATS', Purpose: 'Well-level robust pixel statistics and optical QC.' },
     { Sheet: '05_GEOMETRY_QC', Purpose: 'Floor/mouth geometry quality-control descriptors.' },
@@ -3568,6 +3565,8 @@ function buildDiagnosticsContentsRows(): XlsxRow[] {
     { Sheet: '10_METHOD_COMPARISON', Purpose: 'Cross-method diagnostic comparison using common score factors.' },
     { Sheet: '11_CIELAB_FITTING', Purpose: 'CIELAB/DeltaE diagnostic fit rows.' },
     { Sheet: '12_LEGENDS', Purpose: 'Definitions for diagnostic workbook fields and figures.' },
+    { Sheet: '13_BG_MODEL_INPUTS', Purpose: 'Web physical-BG polynomial fit inputs actually used after final sampling/filtering.' },
+    { Sheet: '14_BG_MODEL_COEFFICIENTS', Purpose: 'Web physical-BG polynomial coefficients and robust residual summaries.' },
   ];
 }
 
@@ -4343,11 +4342,15 @@ function buildCielabFittingRows(
 
 function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
   return [
-    { Term: "area", Meaning: "Accepted background-mask area or fit-input sample area, depending on sheet", Formula: "number of accepted pixels represented by the BG cell record", Unit: "pixels", 'Where used': "02_BG_SAMPLES, 13_BG_MODEL_INPUTS", Notes: "In DIAGNOSTICS/02_BG_SAMPLES this is the background-cell diagnostic area; in WEB_BG_MODEL_PROOF/13_BG_MODEL_INPUTS it is the area represented by the actual polynomial fit input sample." },
+    { Term: "area", Meaning: "Accepted background-mask area or fit-input sample area, depending on sheet", Formula: "number of accepted pixels represented by the BG cell record", Unit: "pixels", 'Where used': "02_BG_SAMPLES, 13_BG_MODEL_INPUTS", Notes: "In DIAGNOSTICS/02_BG_SAMPLES this is the background-cell diagnostic area; in DIAGNOSTICS/13_BG_MODEL_INPUTS it is the area represented by the actual polynomial fit input sample." },
     { Term: "Associated_Wells", Meaning: "Four wells surrounding an inter-well background cell", Formula: "well(r,c)-well(r,c+1)-well(r+1,c)-well(r+1,c+1)", Unit: "well labels", 'Where used': "02_BG_SAMPLES", Notes: "Clarifies that BG samples are inter-well regions rather than wells." },
     { Term: "B_*/G_*/R_*", Meaning: "Robust statistics of raw well-channel intensities", Formula: "computed over retained well ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Browser image data are handled and exported in standard RGB order." },
     { Term: "B_bg/G_bg/R_bg", Meaning: "Predicted local raw background at a well", Formula: "2D background surface evaluated at well center", Unit: "raw image intensity", 'Where used': "03_BG_WELL_FIT", Notes: "Browser image data are handled and exported in standard RGB order." },
-    { Term: "B_med/G_med/R_med", Meaning: "Median raw RGB-channel value for a background-cell record", Formula: "median over accepted background pixels represented by the record", Unit: "raw image intensity", 'Where used': "02_BG_SAMPLES, 13_BG_MODEL_INPUTS", Notes: "Browser image data are handled and exported in standard RGB order. WEB_BG_MODEL_PROOF/13_BG_MODEL_INPUTS contains the exact web polynomial fit inputs." },
+    { Term: "B_med/G_med/R_med", Meaning: "Median raw RGB-channel value for a background-cell record", Formula: "median over accepted background pixels represented by the record", Unit: "raw image intensity", 'Where used': "02_BG_SAMPLES, 13_BG_MODEL_INPUTS", Notes: "Browser image data are handled and exported in standard RGB order. DIAGNOSTICS/13_BG_MODEL_INPUTS contains the exact web polynomial fit inputs." },
+    { Term: "coef_0..coef_5", Meaning: "Polynomial coefficients of the web physical background model", Formula: "coefficients for the stated Basis_Order after centering/scaling by x0, y0, sx and sy", Unit: "raw image intensity", 'Where used': "14_BG_MODEL_COEFFICIENTS", Notes: "Used for auditability of the web physical BG model." },
+    { Term: "x0/y0/sx/sy", Meaning: "Coordinate centering and scaling parameters for the web BG polynomial model", Formula: "normalized coordinates are derived from image x/y using these center and scale values", Unit: "pixels", 'Where used': "14_BG_MODEL_COEFFICIENTS", Notes: "Needed to interpret coef_0..coef_5." },
+    { Term: "samples_total/samples_retained/samples_rejected", Meaning: "Input-sample counts for the robust web BG polynomial fit", Formula: "total fit-input samples, retained samples and rejected samples after robust filtering", Unit: "count", 'Where used': "14_BG_MODEL_COEFFICIENTS", Notes: "Supports audit of BG model robustness." },
+    { Term: "residual_median/residual_mad/residual_sigma/residual_max_abs", Meaning: "Residual diagnostics of the web BG polynomial fit", Formula: "residual = observed BG sample median - polynomial prediction; residual_sigma = 1.4826 x MAD", Unit: "raw image intensity", 'Where used': "14_BG_MODEL_COEFFICIENTS", Notes: "Summarizes BG model fit quality per RGB channel." },
     { Term: "beta_k/bias_index_k", Meaning: "Per-fit slope ratio and relative slope-bias index", Formula: "beta_k = m_std/m_cal; bias_index_k = |beta_k - 1|", Unit: "dimensionless", 'Where used': "11_CIELAB_FITTING", Notes: "" },
     { Term: "beta_mean", Meaning: "Mean standard-addition/calibration slope ratio", Formula: "mean(m_std / m_cal)", Unit: "dimensionless", 'Where used': "10_METHOD_COMPARISON", Notes: "1 indicates equal slopes on average." },
     { Term: "beta_mean/bias_index_mean", Meaning: "Mean slope ratio and mean relative slope bias", Formula: "beta_mean = mean(m_std/m_cal); bias_index_mean = mean(|m_std/m_cal - 1|)", Unit: "dimensionless", 'Where used': "10_METHOD_COMPARISON", Notes: "" },
@@ -4555,18 +4558,6 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
       name: '12_LEGENDS',
       rows: tableRows(['Term', 'Meaning', 'Formula', 'Unit', 'Where used', 'Notes'], buildDiagnosticsLegendRows(options.unitLabel)),
     },
-  ]);
-}
-
-async function createWebBgModelProofWorkbookBlob(options: PythonDiagnosticsWorkbookOptions): Promise<Blob> {
-  const contentsRows: XlsxRow[] = [
-    { Sheet: '13_BG_MODEL_INPUTS', Purpose: 'Proof-only BG polynomial fit inputs actually used by the web physical BG model.' },
-    { Sheet: '14_BG_MODEL_COEFFICIENTS', Purpose: 'Proof-only BG polynomial coefficients and robust-fit summaries exported by the web path.' },
-    { Sheet: '15_BG_MODEL_PREDICTIONS', Purpose: 'Proof-only per-well raw BG predictions from the fitted web BG model before downstream transformations.' },
-  ];
-
-  return createXlsxWorkbookBlob([
-    { name: '01_CONTENTS', rows: tableRows(['Sheet', 'Purpose'], contentsRows) },
     {
       name: '13_BG_MODEL_INPUTS',
       rows: tableRows(
@@ -4579,13 +4570,6 @@ async function createWebBgModelProofWorkbookBlob(options: PythonDiagnosticsWorkb
       rows: tableRows(
         ['Channel', 'Basis_Order', 'x0', 'y0', 'sx', 'sy', 'coef_0', 'coef_1', 'coef_2', 'coef_3', 'coef_4', 'coef_5', 'samples_total', 'samples_retained', 'samples_rejected', 'residual_median', 'residual_mad', 'residual_sigma', 'residual_max_abs'],
         buildDiagnosticsBgModelCoefficientRows(options),
-      ),
-    },
-    {
-      name: '15_BG_MODEL_PREDICTIONS',
-      rows: tableRows(
-        ['Row', 'Col', 'Well', 'x', 'y', 'BG_Red_raw_model', 'BG_Green_raw_model', 'BG_Blue_raw_model'],
-        buildDiagnosticsBgModelPredictionRows(options),
       ),
     },
   ]);
@@ -9791,42 +9775,6 @@ function App() {
         files,
         `${pythonRawDataDetailsPrefix}_DIAGNOSTICS.xlsx`,
         await createPythonDiagnosticsWorkbookBlob({
-          imageBase: pythonResultsBase,
-          imageName,
-          unitLabel: plateMapUnit,
-          selectedChannel: bestChannel,
-          generatedAt: new Date().toISOString(),
-          measurements,
-          displayMeasurements,
-          plateMap,
-          calibrationFits: effectiveCalibrationFits,
-          standardAdditionFits: standardAdditionFitsWithSlopeContext,
-          unknownResults,
-          expectedRefs,
-          rankings,
-          methodMetadata: currentMethodMetadata,
-          geometryName,
-          geometrySource: currentMethodMetadata.geometrySource ?? 'unknown',
-          floorGeometryAvailable: sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable,
-          correctionApplied: lowSignalCorrectionEffective,
-          lowSignalCorrections: activeLowSignalCorrections,
-          correctionApplications: correctedMeasurementSet.applications,
-          sharedGeometryOverride,
-          wells: sharedGeometryOverride ? effectiveWells : wells,
-          geometry,
-          backgroundDiagnostics: backgroundVisualDiagnostics,
-          radiusFactor,
-          floorRoiRadiusFactor,
-          floorCircles: (sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable)
-            ? sharedGeometryOverride ? effectiveFloorCircles : floorCircles
-            : null,
-          storedCalibration,
-        }),
-      );
-      addZipBlob(
-        files,
-        `${pythonRawDataDetailsPrefix}_WEB_BG_MODEL_PROOF.xlsx`,
-        await createWebBgModelProofWorkbookBlob({
           imageBase: pythonResultsBase,
           imageName,
           unitLabel: plateMapUnit,
