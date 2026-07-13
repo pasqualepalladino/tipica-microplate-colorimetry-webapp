@@ -1615,7 +1615,7 @@ File scope
 This caption applies to diagnostic outputs in RAW_DATA_DETAILS for ${imageBase}: BG_STAT_MASK.png, FIGURE_CIELAB_DELTAE.png, METHOD_COMPARISON.png and DIAGNOSTICS.xlsx.
 
 BG_STAT_MASK.png
-Current web export shows the accepted inter-well background sampling mask overlaid on the analyzed image. It supports auditability of background sampling and does not change calculations; the exact Python binary-mask rendering is not yet reproduced.
+The web export shows the accepted inter-well background sampling mask overlaid on the analyzed image for auditability. Accepted background pixels are selected from inter-well regions after model-based geometric exclusion, including the projected well volume from mouth to floor when floor geometry is available, followed by robust intensity filtering. The overlay is a visual diagnostic of the same background-sampling step used by the calculations.
 
 FIGURE_CIELAB_DELTAE.png
 Python-style CIELAB/DeltaE fitting/report figure with plate preview, descriptor fitting panels, reference values, C0/Score/Delta/Recovery tables, calibration and standard-addition summaries. The exported CIELAB/DeltaE fit rows use the robust IRLS helper, but full CIELAB parity also depends on descriptor-input parity.
