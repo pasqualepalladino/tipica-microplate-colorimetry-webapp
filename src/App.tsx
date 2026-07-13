@@ -6853,6 +6853,347 @@ function buildPythonStyleFigureRgbCanvas({
   return canvas;
 }
 
+
+function drawPythonBestChannelPlot(
+  ctx: CanvasRenderingContext2D,
+  bounds: { x: number; y: number; width: number; height: number },
+  channel: FitChannel,
+  calibrationFit: CalibrationFit | undefined,
+  standardGroups: PythonResultsStandardAdditionGroup[],
+  calibrationPoints: PythonResultsPlotPoint[],
+  unitLabel: string,
+  expectedRefs: ExpectedRef[],
+): void {
+  const color = '#111111';
+  const ptToPx = 220 / 72;
+  const fontFamily = '"DejaVu Sans", Arial, sans-serif';
+  const titleFontPx = 12 * ptToPx;
+  const axisFontPx = 12 * ptToPx;
+  const tickFontPx = 10 * ptToPx;
+  const legendFontPx = 10 * ptToPx;
+  const markerPx = 7.2 * ptToPx;
+  const refMarkerPx = 7.4 * ptToPx;
+
+  const stdMarkerCycle = ['s', 'D', '^', 'v', 'P', 'X', 'o'];
+  const stdKeyOrder: string[] = [];
+  standardGroups.forEach((group) => {
+    const key = `${group.fit.sampleId}|${group.fit.dilutionFactor}`;
+    if (!stdKeyOrder.includes(key)) {
+      stdKeyOrder.push(key);
+    }
+  });
+  const stdMarker = (fit: StandardAdditionFit): string => {
+    const key = `${fit.sampleId}|${fit.dilutionFactor}`;
+    const index = stdKeyOrder.includes(key) ? stdKeyOrder.indexOf(key) : stdKeyOrder.length;
+    return stdMarkerCycle[index % stdMarkerCycle.length];
+  };
+
+  const referenceX: number[] = [];
+  standardGroups.forEach(({ fit }) => {
+    expectedRefs.forEach((ref) => {
+      if (!referenceMatchesSample(ref, fit.sampleId)) {
+        return;
+      }
+      const df = Number.isFinite(fit.dilutionFactor) && fit.dilutionFactor > 0 ? fit.dilutionFactor : 1;
+      referenceX.push(-ref.value / df);
+      if (ref.sd !== null && Number.isFinite(ref.sd) && ref.sd > 0) {
+        referenceX.push(-(ref.value - ref.sd) / df, -(ref.value + ref.sd) / df);
+      }
+    });
+  });
+
+  const xData = [
+    ...calibrationPoints.map((point) => point.x),
+    ...standardGroups.flatMap((group) => group.points.map((point) => point.x)),
+    ...referenceX,
+  ].filter(Number.isFinite);
+  const yData = [
+    ...calibrationPoints.flatMap((point) => {
+      const err = Number.isFinite(point.yerr ?? Number.NaN) ? point.yerr ?? 0 : 0;
+      return [point.y, point.y - err, point.y + err];
+    }),
+    ...standardGroups.flatMap((group) => group.points.flatMap((point) => {
+      const err = Number.isFinite(point.yerr ?? Number.NaN) ? point.yerr ?? 0 : 0;
+      return [point.y, point.y - err, point.y + err];
+    })),
+    ...(referenceX.length > 0 ? [0] : []),
+  ].filter(Number.isFinite);
+
+  if (xData.length === 0) {
+    return;
+  }
+
+  const xMin = Math.min(...xData);
+  const xMax = Math.max(...xData);
+  const xSpan = Math.max(xMax - xMin, 1e-6);
+  const xRange = { min: xMin - 0.10 * xSpan, max: xMax + 0.10 * xSpan };
+  const yMin = yData.length > 0 ? Math.min(...yData) : 0;
+  const yMax = yData.length > 0 ? Math.max(...yData) : 1;
+  const ySpan = Math.max(yMax - yMin, 0.05);
+  const yRange = { min: yMin - 0.10 * ySpan, max: yMax + 0.10 * ySpan };
+
+  const plot = {
+    x: bounds.x + Math.round(bounds.width * 0.170),
+    y: bounds.y + Math.round(bounds.height * 0.085),
+    width: Math.round(bounds.width * 0.740),
+    height: Math.round(bounds.height * 0.690),
+  };
+  const xToPx = (value: number) => plot.x + ((value - xRange.min) / (xRange.max - xRange.min)) * plot.width;
+  const yToPx = (value: number) => plot.y + plot.height - ((value - yRange.min) / (yRange.max - yRange.min)) * plot.height;
+
+  const drawLine = (x1: number, y1: number, x2: number, y2: number, dash: number[] = [], width = 1): void => {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.setLineDash(dash);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawClippedFitLine = (slope: number, intercept: number, dash: number[] = [], width = 1): void => {
+    if (!Number.isFinite(slope) || !Number.isFinite(intercept)) {
+      return;
+    }
+
+    let x1 = xRange.min;
+    let x2 = xRange.max;
+
+    if (Math.abs(slope) > 1e-15) {
+      const xa = (yRange.min - intercept) / slope;
+      const xb = (yRange.max - intercept) / slope;
+      const xLow = Math.min(xa, xb);
+      const xHigh = Math.max(xa, xb);
+      x1 = Math.max(x1, xLow);
+      x2 = Math.min(x2, xHigh);
+    } else {
+      const y = slope * x1 + intercept;
+      if (y < yRange.min || y > yRange.max) {
+        return;
+      }
+    }
+
+    if (x2 <= x1) {
+      return;
+    }
+
+    drawLine(
+      xToPx(x1),
+      yToPx(slope * x1 + intercept),
+      xToPx(x2),
+      yToPx(slope * x2 + intercept),
+      dash,
+      width,
+    );
+  };
+
+  const drawOpenCircle = (x: number, y: number, r: number): void => {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = '#ffffff';
+    ctx.lineWidth = 1.8 * ptToPx;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawFilledSquare = (x: number, y: number, size: number): void => {
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.2 * ptToPx;
+    ctx.fillRect(x - size / 2, y - size / 2, size, size);
+    ctx.strokeRect(x - size / 2, y - size / 2, size, size);
+    ctx.restore();
+  };
+
+  const drawOpenSquare = (x: number, y: number, size: number): void => {
+    ctx.save();
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.8 * ptToPx;
+    ctx.fillRect(x - size / 2, y - size / 2, size, size);
+    ctx.strokeRect(x - size / 2, y - size / 2, size, size);
+    ctx.restore();
+  };
+
+  ctx.save();
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.0 * ptToPx;
+  ctx.strokeRect(plot.x, plot.y, plot.width, plot.height);
+
+  if (yRange.min <= 0 && yRange.max >= 0) {
+    drawLine(plot.x, yToPx(0), plot.x + plot.width, yToPx(0), [], 0.6 * ptToPx);
+  }
+
+  const xTicks = [-20, 0, 20, 40].filter((tick) => tick >= xRange.min && tick <= xRange.max);
+  const xMinorTicks = [-40, -30, -10, 10, 30, 50, 60].filter((tick) => tick >= xRange.min && tick <= xRange.max);
+  const yTicks = [-0.2, 0, 0.2, 0.4, 0.6].filter((tick) => tick >= yRange.min && tick <= yRange.max);
+  const yMinorTicks = [-0.3, -0.1, 0.1, 0.3, 0.5, 0.7].filter((tick) => tick >= yRange.min && tick <= yRange.max);
+
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 1.0 * ptToPx;
+  xTicks.forEach((tick) => {
+    const x = xToPx(tick);
+    ctx.beginPath();
+    ctx.moveTo(x, plot.y);
+    ctx.lineTo(x, plot.y + 9 * ptToPx);
+    ctx.moveTo(x, plot.y + plot.height);
+    ctx.lineTo(x, plot.y + plot.height - 9 * ptToPx);
+    ctx.stroke();
+  });
+  xMinorTicks.forEach((tick) => {
+    const x = xToPx(tick);
+    ctx.beginPath();
+    ctx.moveTo(x, plot.y);
+    ctx.lineTo(x, plot.y + 5 * ptToPx);
+    ctx.moveTo(x, plot.y + plot.height);
+    ctx.lineTo(x, plot.y + plot.height - 5 * ptToPx);
+    ctx.stroke();
+  });
+  yTicks.forEach((tick) => {
+    const y = yToPx(tick);
+    ctx.beginPath();
+    ctx.moveTo(plot.x, y);
+    ctx.lineTo(plot.x + 9 * ptToPx, y);
+    ctx.moveTo(plot.x + plot.width, y);
+    ctx.lineTo(plot.x + plot.width - 9 * ptToPx, y);
+    ctx.stroke();
+  });
+  yMinorTicks.forEach((tick) => {
+    const y = yToPx(tick);
+    ctx.beginPath();
+    ctx.moveTo(plot.x, y);
+    ctx.lineTo(plot.x + 5 * ptToPx, y);
+    ctx.moveTo(plot.x + plot.width, y);
+    ctx.lineTo(plot.x + plot.width - 5 * ptToPx, y);
+    ctx.stroke();
+  });
+
+  ctx.font = `${tickFontPx}px ${fontFamily}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  xTicks.forEach((tick) => {
+    ctx.fillText(String(tick), xToPx(tick), plot.y + plot.height + 7 * ptToPx);
+  });
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  yTicks.forEach((tick) => {
+    ctx.fillText(tick.toFixed(2), plot.x - 8 * ptToPx, yToPx(tick));
+  });
+
+  if (calibrationFit && Number.isFinite(calibrationFit.slope) && Number.isFinite(calibrationFit.intercept)) {
+    drawClippedFitLine(calibrationFit.slope, calibrationFit.intercept, [7 * ptToPx, 4 * ptToPx], 1.3 * ptToPx);
+  }
+
+  standardGroups.forEach((group) => {
+    const fit = group.fit;
+    if (Number.isFinite(fit.slope) && Number.isFinite(fit.intercept)) {
+      drawClippedFitLine(fit.slope, fit.intercept, [], 1.4 * ptToPx);
+    }
+  });
+
+  calibrationPoints.forEach((point) => {
+    const x = xToPx(point.x);
+    const y = yToPx(point.y);
+    drawOpenCircle(x, y, markerPx / 2);
+    if (Number.isFinite(point.yerr ?? Number.NaN) && (point.yerr ?? 0) > 0) {
+      drawVerticalErrorBar(ctx, x, yToPx(point.y - (point.yerr ?? 0)), yToPx(point.y + (point.yerr ?? 0)), 3 * ptToPx, color);
+    }
+  });
+
+  standardGroups.forEach((group) => {
+    group.points.forEach((point) => {
+      const x = xToPx(point.x);
+      const y = yToPx(point.y);
+      if (stdMarker(group.fit) === 's') {
+        drawFilledSquare(x, y, markerPx);
+      } else {
+        drawFilledSquare(x, y, markerPx);
+      }
+      if (Number.isFinite(point.yerr ?? Number.NaN) && (point.yerr ?? 0) > 0) {
+        drawVerticalErrorBar(ctx, x, yToPx(point.y - (point.yerr ?? 0)), yToPx(point.y + (point.yerr ?? 0)), 3 * ptToPx, color);
+      }
+    });
+  });
+
+  standardGroups.forEach(({ fit }) => {
+    expectedRefs.forEach((ref) => {
+      if (!referenceMatchesSample(ref, fit.sampleId)) {
+        return;
+      }
+      const df = Number.isFinite(fit.dilutionFactor) && fit.dilutionFactor > 0 ? fit.dilutionFactor : 1;
+      const rv = -ref.value / df;
+      const rsd = ref.sd !== null && Number.isFinite(ref.sd) && ref.sd > 0 ? ref.sd / df : Number.NaN;
+      const x = xToPx(rv);
+      const y = yToPx(0);
+      drawOpenSquare(x, y, refMarkerPx);
+      if (Number.isFinite(rsd) && rsd > 0) {
+        drawHorizontalErrorBar(ctx, xToPx(rv - rsd), xToPx(rv + rsd), y, 3 * ptToPx, color);
+      }
+    });
+  });
+
+  ctx.fillStyle = color;
+  ctx.font = `700 ${axisFontPx}px ${fontFamily}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText(`Added concentration (${unitLabel})`, plot.x + plot.width / 2, plot.y + plot.height + 34 * ptToPx);
+
+  ctx.save();
+  ctx.translate(plot.x - 42 * ptToPx, plot.y + plot.height / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(channelDisplayName(channel), 0, 0);
+  ctx.restore();
+
+  ctx.font = `${titleFontPx}px ${fontFamily}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(`Best channel: ${channelDisplayName(channel)}`, plot.x + plot.width / 2, plot.y - 8 * ptToPx);
+
+  const legendX = plot.x + 14 * ptToPx;
+  let legendY = plot.y + 16 * ptToPx;
+  const legendStep = 16 * ptToPx;
+  const markerX = legendX;
+  const textX = legendX + 24 * ptToPx;
+  ctx.font = `${legendFontPx}px ${fontFamily}`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+
+  drawLine(markerX - 10 * ptToPx, legendY, markerX + 10 * ptToPx, legendY, [7 * ptToPx, 4 * ptToPx], 1.3 * ptToPx);
+  drawOpenCircle(markerX, legendY, markerPx / 2);
+  ctx.fillText('calibration', textX, legendY);
+
+  const firstGroup = standardGroups[0];
+  if (firstGroup) {
+    legendY += legendStep;
+    drawLine(markerX - 10 * ptToPx, legendY, markerX + 10 * ptToPx, legendY, [], 1.4 * ptToPx);
+    drawFilledSquare(markerX, legendY, markerPx);
+    ctx.fillText(`std add ID=${firstGroup.fit.sampleId}, DF=${firstGroup.fit.dilutionFactor.toFixed(1)}`, textX, legendY);
+
+    const firstRef = expectedRefs.find((ref) => referenceMatchesSample(ref, firstGroup.fit.sampleId)) ?? expectedRefs[0];
+    if (firstRef) {
+      legendY += legendStep;
+      drawOpenSquare(markerX, legendY, refMarkerPx);
+      const refLabel = firstRef.label.trim() || firstRef.refId.trim() || 'Reference';
+      ctx.fillText(`${refLabel} (ref ID=${firstGroup.fit.sampleId}, DF=${firstGroup.fit.dilutionFactor.toFixed(1)})`, textX, legendY);
+    }
+  }
+
+  ctx.restore();
+}
+
+
 function buildPythonStyleBestChannelCanvas({
   bestChannel,
   displayMeasurements,
@@ -6890,17 +7231,16 @@ function buildPythonStyleBestChannelCanvas({
 
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
-  drawPythonStyleChannelPanel(
+  void rankingRows;
+  drawPythonBestChannelPlot(
     ctx,
-    { x: 28, y: 24, width: width - 56, height: height - 48 },
+    { x: 0, y: 0, width, height },
     bestChannel,
     calibrationFits.find((fit) => fit.channel === bestChannel),
     collectStandardAdditionGroupsForChannel(bestChannel, standardAdditionFits, displayMeasurements, plateMap),
     collectCalibrationPointsForChannel(bestChannel, displayMeasurements, plateMap),
-    rankingRows.find((row) => row.channel === bestChannel),
     unitLabel,
     expectedRefs,
-    true,
   );
 
   return canvas;
