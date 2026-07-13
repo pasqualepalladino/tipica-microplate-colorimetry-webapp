@@ -4214,12 +4214,6 @@ function groupedMedianCielabFitRows(points: CielabDiagnosticPoint[], getValue: (
 }
 
 function pythonReportCielabChannelLabel(channel: string): string {
-  if (channel === 'DeltaE_ab') {
-    return 'DeltaE';
-  }
-  if (channel === 'DeltaE_ab_chroma') {
-    return 'DeltaE_chroma';
-  }
   return channel;
 }
 
