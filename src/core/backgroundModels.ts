@@ -505,6 +505,60 @@ function applyHomography(homography: number[], x: number, y: number): { u: numbe
   };
 }
 
+function isInsideProjectedWellExclusion(
+  px: number,
+  py: number,
+  wells: WellCenter[],
+  wellIndex: number,
+  exclusionRadii: number[],
+  floorCircles?: FloorCircle[],
+): boolean {
+  const mouth = wells[wellIndex];
+  const mouthRadius = exclusionRadii[wellIndex];
+
+  if (!mouth || !Number.isFinite(mouthRadius) || mouthRadius <= 0) {
+    return false;
+  }
+
+  const mdx = px - mouth.x;
+  const mdy = py - mouth.y;
+
+  if (mdx * mdx + mdy * mdy <= mouthRadius * mouthRadius) {
+    return true;
+  }
+
+  const floor = floorCircles && floorCircles.length === wells.length ? floorCircles[wellIndex] : undefined;
+
+  if (!floor || !Number.isFinite(floor.x) || !Number.isFinite(floor.y) || !Number.isFinite(floor.r) || floor.r <= 0) {
+    return false;
+  }
+
+  const floorRadius = Math.max(1, floor.r * PHYSICAL_FLOOR_EXCLUSION_FACTOR);
+  const fdx = px - floor.x;
+  const fdy = py - floor.y;
+
+  if (fdx * fdx + fdy * fdy <= floorRadius * floorRadius) {
+    return true;
+  }
+
+  const vx = floor.x - mouth.x;
+  const vy = floor.y - mouth.y;
+  const len2 = vx * vx + vy * vy;
+
+  if (len2 <= 1e-6) {
+    return false;
+  }
+
+  const t = clamp(((px - mouth.x) * vx + (py - mouth.y) * vy) / len2, 0, 1);
+  const cx = mouth.x + t * vx;
+  const cy = mouth.y + t * vy;
+  const opticalMargin = 0.035 * estimateLocalPitch(wells, mouth.row, mouth.col);
+  const radius = Math.max(mouthRadius, floorRadius) + opticalMargin;
+  const dx = px - cx;
+  const dy = py - cy;
+
+  return dx * dx + dy * dy <= radius * radius;
+}
 function canonicalModelAllowsBackground(
   u: number,
   v: number,
@@ -1238,8 +1292,8 @@ function createPhysicalInterwellCandidates(
       const pxPerMmX = sxPx / PHYSICAL_PITCH_MM;
       const pxPerMmY = syPx / PHYSICAL_PITCH_MM;
       const forbiddenRadiusMm = 0.5 * PHYSICAL_OUTER_DIAM_MM + PHYSICAL_EXTRA_OPTICAL_MARGIN_MM;
-      const rForbiddenX = clamp((forbiddenRadiusMm * pxPerMmX) / sxPx, 0.18, 0.42);
-      const rForbiddenY = clamp((forbiddenRadiusMm * pxPerMmY) / syPx, 0.18, 0.42);
+      const rForbiddenX = clamp((forbiddenRadiusMm * pxPerMmX) / sxPx, 0.18, 0.49);
+      const rForbiddenY = clamp((forbiddenRadiusMm * pxPerMmY) / syPx, 0.18, 0.49);
       const bridgeHalfW = clamp((0.5 * PHYSICAL_BRIDGE_WIDTH_MM * pxPerMmX) / sxPx, 0.01, 0.06);
       const bridgeHalfH = clamp((0.5 * PHYSICAL_BRIDGE_WIDTH_MM * pxPerMmY) / syPx, 0.01, 0.06);
       const modelPixels: CandidatePixel[] = [];
@@ -1247,15 +1301,6 @@ function createPhysicalInterwellCandidates(
       const canonicalSize = 220;
       const averageCellScale = Math.max(1, 0.5 * (sxPx + syPx));
       const canonicalStep = Math.max(2, Math.round((sampleStride * canonicalSize) / averageCellScale));
-      const cornerWells = [topLeft, topRight, bottomRight, bottomLeft];
-      const cornerExclusions = cornerWells.map((well) => {
-        const index = wells.indexOf(well);
-
-        return {
-          well,
-          radius: index >= 0 ? exclusionRadii[index] : PHYSICAL_EXCLUSION_RADIUS_FACTOR * PHYSICAL_MOUTH_RADIUS_FACTOR_OF_PITCH * medianPitch,
-        };
-      });
 
       for (let canonicalY = 0; canonicalY < canonicalSize; canonicalY += canonicalStep) {
         for (let canonicalX = 0; canonicalX < canonicalSize; canonicalX += canonicalStep) {
@@ -1308,12 +1353,7 @@ function createPhysicalInterwellCandidates(
           let tooCloseToWell = false;
 
           for (let w = 0; w < wells.length; w += 1) {
-            const well = wells[w];
-            const dx = px - well.x;
-            const dy = py - well.y;
-            const radius = exclusionRadii[w];
-
-            if (dx * dx + dy * dy <= radius * radius) {
+            if (isInsideProjectedWellExclusion(px, py, wells, w, exclusionRadii, floorCircles)) {
               tooCloseToWell = true;
               break;
             }
@@ -1378,11 +1418,8 @@ function createPhysicalInterwellCandidates(
 
           let tooCloseToWell = false;
 
-          for (const exclusion of cornerExclusions) {
-            const dx = px - exclusion.well.x;
-            const dy = py - exclusion.well.y;
-
-            if (dx * dx + dy * dy <= exclusion.radius * exclusion.radius) {
+          for (let w = 0; w < wells.length; w += 1) {
+            if (isInsideProjectedWellExclusion(px, py, wells, w, exclusionRadii, floorCircles)) {
               tooCloseToWell = true;
               break;
             }
