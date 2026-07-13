@@ -6975,7 +6975,7 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
 
         <section className="about-dialog-section">
           <h3>Citation / version</h3>
-          <p>Version v0.1.5-beta. Author: Pasquale Palladino. License: AGPL-3.0-only. Webapp DOI: https://doi.org/10.5281/zenodo.21218968.</p>
+          <p>Version v0.1.22-beta. Author: Pasquale Palladino. License: AGPL-3.0-only. Webapp DOI: https://doi.org/10.5281/zenodo.21218968.</p>
         </section>
       </section>
     </div>
