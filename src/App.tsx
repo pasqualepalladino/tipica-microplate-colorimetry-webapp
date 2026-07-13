@@ -5301,10 +5301,50 @@ function buildPythonStyleMethodComparisonCanvas(
   expectedRefs: ExpectedRef[],
   unitLabel: string,
 ): HTMLCanvasElement {
+  void imageBase;
+
+  const canonicalMethodOrder = [
+    'PAbs_Red',
+    'PAbs_Green',
+    'PAbs_Blue',
+    'L',
+    'a',
+    'b',
+    'DeltaL',
+    'Deltaa',
+    'Deltab',
+    'DeltaE_ab',
+    'DeltaE_ab_chroma',
+  ];
+  const methodOrderIndex = (method: string): number => {
+    const normalized = method.replace('Signal_', 'PAbs_').replace(/^DeltaE$/, 'DeltaE_ab');
+    const index = canonicalMethodOrder.indexOf(normalized);
+    return index >= 0 ? index : canonicalMethodOrder.length + 1;
+  };
+  const rows = comparisonRows
+    .filter((row) => Number.isFinite(xlsxNumber(row, 'Estimate_value')) || Number.isFinite(xlsxNumber(row, 'C0_median')))
+    .sort((a, b) => {
+      const ma = String(a.Method ?? '').replace('Signal_', 'PAbs_').replace(/^DeltaE$/, 'DeltaE_ab');
+      const mb = String(b.Method ?? '').replace('Signal_', 'PAbs_').replace(/^DeltaE$/, 'DeltaE_ab');
+      const ia = methodOrderIndex(ma);
+      const ib = methodOrderIndex(mb);
+      if (ia !== ib) {
+        return ia - ib;
+      }
+      return ma.localeCompare(mb);
+    });
   const canvas = document.createElement('canvas');
-  const width = 2160;
-  const height = 1420;
+  const dpi = 300;
+  const width = Math.round(11.5 * dpi);
+  const panelSpecs = [
+    { name: 'agreement_bias', weight: 1.0 },
+    { name: 'reference_values', weight: expectedRefs.length > 0 ? 1.05 : 0 },
+    { name: 'r2', weight: 1.0 },
+  ].filter((spec) => spec.weight > 0);
+  const figHeightIn = 2.15 * panelSpecs.reduce((acc, spec) => acc + spec.weight, 0) + 0.55;
+  const height = Math.round(figHeightIn * dpi);
   const ctx = canvas.getContext('2d');
+
   canvas.width = width;
   canvas.height = height;
 
@@ -5312,280 +5352,639 @@ function buildPythonStyleMethodComparisonCanvas(
     throw new Error('Could not create method-comparison diagnostic canvas.');
   }
 
-  const rows = comparisonRows.filter((row) => Number.isFinite(xlsxNumber(row, 'Estimate_value')) || Number.isFinite(xlsxNumber(row, 'C0_median')));
-  const methods = rows.map((row) => String(row.Method ?? ''));
-  const xPositions = rows.map((_, index) => index);
-  const panelLeft = 165;
-  const panelWidth = 1840;
-  const panelHeight = 315;
-  const panelGap = 95;
-  const top = 150;
+  if (rows.length === 0) {
+    return canvas;
+  }
+
+  const ptToPx = dpi / 72;
+  const fontFamily = '"DejaVu Sans", Arial, sans-serif';
+  const tickFontPx = 10.8 * ptToPx;
+  const labelFontPx = 12.2 * ptToPx;
+  const legendFontPx = 10.8 * ptToPx;
+  const smallFontPx = 9.8 * ptToPx;
+  const lineWidth = 1.2 * ptToPx;
+  const markerRadius = 3.9 * ptToPx;
+  const markerSize = 7.8 * ptToPx;
+
+  const methods = rows.map((row) => String(row.Method ?? '').replace('Signal_', 'PAbs_'));
   const xRange = { min: -0.5, max: Math.max(rows.length - 0.5, 0.5) };
+  const plotLeft = Math.round(0.105 * width);
+  const plotRight = Math.round(0.975 * width);
+  const plotTop = Math.round(0.065 * height);
+  const bottomReserved = Math.round(0.185 * height);
+  const plotWidth = plotRight - plotLeft;
+  const panelTotalHeight = height - plotTop - bottomReserved;
+  const totalWeight = panelSpecs.reduce((acc, spec) => acc + spec.weight, 0);
+  const panels: Record<string, { x: number; y: number; width: number; height: number }> = {};
+  let yCursor = plotTop;
+  panelSpecs.forEach((spec, index) => {
+    const h = index === panelSpecs.length - 1
+      ? plotTop + panelTotalHeight - yCursor
+      : Math.round(panelTotalHeight * spec.weight / totalWeight);
+    panels[spec.name] = { x: plotLeft, y: yCursor, width: plotWidth, height: h };
+    yCursor += h;
+  });
 
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = '#172026';
-  ctx.font = '700 38px Inter, Arial, sans-serif';
-  ctx.fillText(`${imageBase} method comparison`, 100, 72);
-  ctx.font = '20px Inter, Arial, sans-serif';
-  ctx.fillStyle = '#344044';
-  ctx.fillText('Score uses common fit factors only; external references are checks and do not affect ranking.', 100, 108);
 
-  const drawMethodLabels = (plot: { x: number; y: number; width: number; height: number }, xToPx: (value: number) => number) => {
+
+  const fmtG = (value: number, precision = 3): string => {
+    if (!Number.isFinite(value)) {
+      return '';
+    }
+    if (value === 0) {
+      return '0';
+    }
+    const abs = Math.abs(value);
+    if (abs >= 1e4 || abs < 1e-2) {
+      return value.toExponential(precision - 1).replace(/\.?0+e/, 'e');
+    }
+    return Number(value.toPrecision(precision)).toString();
+  };
+
+  const fmtSignedG = (value: number, precision = 2): string => {
+    if (!Number.isFinite(value)) {
+      return '';
+    }
+    const txt = fmtG(value, precision);
+    return value >= 0 ? `+${txt}` : txt;
+  };
+
+  const niceTicks = (min: number, max: number, desired = 5): number[] => {
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+      return [0, 0.5, 1];
+    }
+    const span = max - min;
+    const rawStep = span / Math.max(1, desired - 1);
+    const pow10 = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const frac = rawStep / pow10;
+    const niceFrac = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
+    const step = niceFrac * pow10;
+    const first = Math.ceil(min / step) * step;
+    const out: number[] = [];
+    for (let v = first; v <= max + step * 0.5; v += step) {
+      out.push(Math.abs(v) < step * 1e-10 ? 0 : v);
+      if (out.length > 12) {
+        break;
+      }
+    }
+    return out;
+  };
+
+  const niceReferenceTicksFromZero = (maxValue: number): { max: number; ticks: number[] } => {
+    if (!Number.isFinite(maxValue) || maxValue <= 0) {
+      return { max: 100, ticks: [0, 20, 40, 60, 80, 100] };
+    }
+    const rawStep = maxValue / 4;
+    const pow10 = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const frac = rawStep / pow10;
+    const niceFrac = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
+    const step = niceFrac * pow10;
+    const maxTick = Math.ceil(maxValue / step) * step;
+    const ticks: number[] = [];
+    for (let v = 0; v <= maxTick + step * 0.5; v += step) {
+      ticks.push(Number(v.toFixed(10)));
+      if (ticks.length > 12) {
+        break;
+      }
+    }
+    return { max: maxTick, ticks };
+  };
+
+  const rangeFromValues = (values: number[], fallbackMin: number, fallbackMax: number, padFrac: number): { min: number; max: number } => {
+    const vals = values.filter(Number.isFinite);
+    if (vals.length === 0) {
+      return { min: fallbackMin, max: fallbackMax };
+    }
+    let lo = Math.min(...vals);
+    let hi = Math.max(...vals);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) {
+      lo = fallbackMin;
+      hi = fallbackMax;
+    }
+    const span = Math.max(hi - lo, 1e-6);
+    return { min: lo - span * padFrac, max: hi + span * padFrac };
+  };
+
+  const xToPx = (plot: { x: number; width: number }, value: number): number =>
+    plot.x + ((value - xRange.min) / (xRange.max - xRange.min)) * plot.width;
+
+  const yToPx = (plot: { y: number; height: number }, range: { min: number; max: number }, value: number): number =>
+    plot.y + plot.height - ((value - range.min) / (range.max - range.min)) * plot.height;
+
+  const drawPanelFrame = (plot: { x: number; y: number; width: number; height: number }, isBottom: boolean): void => {
     ctx.save();
-    ctx.fillStyle = '#344044';
-    ctx.font = '18px Inter, Arial, sans-serif';
-    methods.forEach((method, index) => {
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = lineWidth;
+    ctx.strokeRect(plot.x, plot.y, plot.width, plot.height);
+    ctx.restore();
+
+    const xTicks = rows.map((_, index) => index);
+    ctx.save();
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = lineWidth;
+    xTicks.forEach((tick) => {
+      const x = xToPx(plot, tick);
+      ctx.beginPath();
+      ctx.moveTo(x, plot.y);
+      ctx.lineTo(x, plot.y + 10 * ptToPx);
+      ctx.moveTo(x, plot.y + plot.height);
+      ctx.lineTo(x, plot.y + plot.height - 10 * ptToPx);
+      ctx.stroke();
+    });
+    ctx.restore();
+
+    if (isBottom) {
       ctx.save();
-      ctx.translate(xToPx(index) - 8, plot.y + plot.height + 28);
-      ctx.rotate(-Math.PI / 5);
-      ctx.fillText(method, 0, 0);
+      ctx.fillStyle = '#000000';
+      ctx.font = `${tickFontPx}px ${fontFamily}`;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      methods.forEach((method, index) => {
+        const x = xToPx(plot, index);
+        ctx.save();
+        ctx.translate(x - 5 * ptToPx, plot.y + plot.height + 21 * ptToPx);
+        ctx.rotate(-40 * Math.PI / 180);
+        ctx.fillText(method, 0, 0);
+        ctx.restore();
+      });
+      ctx.font = `bold ${labelFontPx}px ${fontFamily}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('Method', plot.x + plot.width / 2, height - 8 * ptToPx);
       ctx.restore();
+    }
+  };
+
+  const drawYTicksAndGrid = (
+    plot: { x: number; y: number; width: number; height: number },
+    range: { min: number; max: number },
+    desiredTicks: number,
+    forcedTicks?: number[],
+    omitTopTickLabel = false,
+  ): void => {
+    const ticks = forcedTicks && forcedTicks.length > 0 ? forcedTicks : niceTicks(range.min, range.max, desiredTicks);
+    ctx.save();
+    ctx.font = `${tickFontPx}px ${fontFamily}`;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ticks.forEach((tick) => {
+      const y = yToPx(plot, range, tick);
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+      ctx.lineWidth = 0.8 * ptToPx;
+      ctx.beginPath();
+      ctx.moveTo(plot.x, y);
+      ctx.lineTo(plot.x + plot.width, y);
+      ctx.stroke();
+
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = lineWidth;
+      ctx.beginPath();
+      ctx.moveTo(plot.x, y);
+      ctx.lineTo(plot.x + 10 * ptToPx, y);
+      ctx.moveTo(plot.x + plot.width, y);
+      ctx.lineTo(plot.x + plot.width - 10 * ptToPx, y);
+      ctx.stroke();
+
+      if (!(omitTopTickLabel && Math.abs(tick - range.max) <= Math.max(1e-9, Math.abs(range.max) * 1e-9))) {
+        ctx.fillStyle = '#000000';
+        ctx.fillText(fmtG(tick, 3), plot.x - 8 * ptToPx, y);
+      }
     });
     ctx.restore();
   };
 
-  const agreementValues = rows.flatMap((row) => [xlsxNumber(row, 'SlopeAgreement'), xlsxNumber(row, 'bias_index_mean')]).filter(Number.isFinite);
-  const agreementPlot = { x: panelLeft, y: top, width: panelWidth, height: panelHeight };
-  const agreementAxis = drawSimpleAxis(ctx, agreementPlot, xRange, rangeWithPadding([...agreementValues, 0, 1], 0, 1, 0.10), 'Method', 'agreement / bias');
-  ctx.save();
-  ctx.setLineDash([8, 6]);
-  ctx.strokeStyle = '#2563c7';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(agreementPlot.x, agreementAxis.yToPx(1));
-  ctx.lineTo(agreementPlot.x + agreementPlot.width, agreementAxis.yToPx(1));
-  ctx.stroke();
-  ctx.strokeStyle = '#cf2e2e';
-  ctx.beginPath();
-  ctx.moveTo(agreementPlot.x, agreementAxis.yToPx(0));
-  ctx.lineTo(agreementPlot.x + agreementPlot.width, agreementAxis.yToPx(0));
-  ctx.stroke();
-  ctx.restore();
+  const drawYLabel = (plot: { x: number; y: number; height: number }, text: string): void => {
+    ctx.save();
+    ctx.fillStyle = '#000000';
+    ctx.font = `bold ${labelFontPx}px ${fontFamily}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.translate(plot.x - 62 * ptToPx, plot.y + plot.height / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText(text, 0, 0);
+    ctx.restore();
+  };
 
-  ctx.strokeStyle = '#2563c7';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  let firstSlopePoint = true;
-  rows.forEach((row, index) => {
-    const value = xlsxNumber(row, 'SlopeAgreement');
-    if (!Number.isFinite(value)) {
+  const drawLegend = (
+    plot: { x: number; y: number; width: number; height: number },
+    items: { label: string; color: string; marker: 'circle' | 'square' | 'line' | 'dash' | 'band' }[],
+    anchor: 'upper-left' | 'lower-left' | 'upper-right' | 'lower-right' = 'upper-left',
+  ): void => {
+    const unique = items.filter((item, index, arr) => arr.findIndex((other) => other.label === item.label) === index);
+    if (unique.length === 0) {
       return;
     }
-    const x = agreementAxis.xToPx(index);
-    const y = agreementAxis.yToPx(value);
-    if (firstSlopePoint) {
-      ctx.moveTo(x, y);
-      firstSlopePoint = false;
-    } else {
-      ctx.lineTo(x, y);
-    }
-  });
-  ctx.stroke();
+    const rowH = 15 * ptToPx;
+    const textW = Math.max(...unique.map((item) => ctx.measureText(item.label).width), 0);
+    const boxW = Math.min(plot.width * 0.44, Math.max(150 * ptToPx, textW + 42 * ptToPx));
+    const boxH = unique.length * rowH + 8 * ptToPx;
+    const x0 = anchor.endsWith('right') ? plot.x + plot.width - boxW - 8 * ptToPx : plot.x + 12 * ptToPx;
+    const y0 = anchor.startsWith('lower') ? plot.y + plot.height - boxH - 8 * ptToPx : plot.y + 10 * ptToPx;
 
-  ctx.save();
-  ctx.setLineDash([10, 6]);
-  ctx.strokeStyle = '#cf2e2e';
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  let firstBiasPoint = true;
-  rows.forEach((row, index) => {
-    const value = xlsxNumber(row, 'bias_index_mean');
-    if (!Number.isFinite(value)) {
-      return;
-    }
-    const x = agreementAxis.xToPx(index);
-    const y = agreementAxis.yToPx(value);
-    if (firstBiasPoint) {
-      ctx.moveTo(x, y);
-      firstBiasPoint = false;
-    } else {
-      ctx.lineTo(x, y);
-    }
-  });
-  ctx.stroke();
-  ctx.restore();
-
-  rows.forEach((row, index) => {
-    const slope = xlsxNumber(row, 'SlopeAgreement');
-    const bias = xlsxNumber(row, 'bias_index_mean');
-    if (Number.isFinite(slope)) {
-      ctx.fillStyle = '#2563c7';
-      ctx.beginPath();
-      ctx.arc(agreementAxis.xToPx(index), agreementAxis.yToPx(slope), 8, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    if (Number.isFinite(bias)) {
-      ctx.fillStyle = '#cf2e2e';
-      ctx.fillRect(agreementAxis.xToPx(index) - 7, agreementAxis.yToPx(bias) - 7, 14, 14);
-    }
-  });
-
-  const estimateValues = rows.map((row) => xlsxNumber(row, 'Estimate_value')).filter(Number.isFinite);
-  const refValues = expectedRefs.map((ref) => ref.value).filter(Number.isFinite);
-  const referencePlot = { x: panelLeft, y: top + panelHeight + panelGap, width: panelWidth, height: panelHeight };
-  let yLo = 0;
-  let yHi = 1;
-  const refPayloads = expectedRefs
-    .map((ref, index) => methodComparisonRefPayload(ref, index))
-    .filter((payload) => Number.isFinite(payload.value));
-  if (refPayloads.length > 0) {
-    const refCenter = medianFinite(refPayloads.map((payload) => payload.value));
-    const refRange = Math.max(...refPayloads.map((payload) => payload.value)) - Math.min(...refPayloads.map((payload) => payload.value));
-    const maxSd = Math.max(...refPayloads.map((payload) => Number.isFinite(payload.sd) ? payload.sd : Number.NaN).filter(Number.isFinite), Math.max(1, 0.03 * Math.max(Math.abs(refCenter), 1)));
-    const robustWindow = Math.max(20, 0.75 * Math.max(Math.abs(refCenter), 1), 6 * maxSd, 2 * refRange);
-    const axisValues: number[] = [];
-    refPayloads.forEach((payload) => {
-      const sd = Number.isFinite(payload.sd) && payload.sd > 0 ? payload.sd : maxSd;
-      axisValues.push(payload.value - sd, payload.value, payload.value + sd);
+    ctx.save();
+    ctx.font = `${legendFontPx}px ${fontFamily}`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    unique.forEach((item, index) => {
+      const y = y0 + 7 * ptToPx + index * rowH;
+      const x = x0 + 5 * ptToPx;
+      ctx.strokeStyle = item.color;
+      ctx.fillStyle = item.color;
+      ctx.lineWidth = 1.2 * ptToPx;
+      ctx.setLineDash(item.marker === 'dash' ? [6 * ptToPx, 4 * ptToPx] : []);
+      if (item.marker === 'circle') {
+        ctx.beginPath();
+        ctx.arc(x + 8 * ptToPx, y, 3.2 * ptToPx, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (item.marker === 'square') {
+        ctx.fillRect(x + 4 * ptToPx, y - 3.2 * ptToPx, 6.4 * ptToPx, 6.4 * ptToPx);
+      } else if (item.marker === 'band') {
+        ctx.globalAlpha = 0.25;
+        ctx.fillRect(x + 2 * ptToPx, y - 4 * ptToPx, 13 * ptToPx, 8 * ptToPx);
+        ctx.globalAlpha = 1;
+        ctx.setLineDash([6 * ptToPx, 4 * ptToPx]);
+        ctx.beginPath();
+        ctx.moveTo(x + 2 * ptToPx, y);
+        ctx.lineTo(x + 15 * ptToPx, y);
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(x + 2 * ptToPx, y);
+        ctx.lineTo(x + 16 * ptToPx, y);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#000000';
+      ctx.fillText(item.label, x + 23 * ptToPx, y);
     });
-    rows.forEach((row) => {
-      const estimate = xlsxNumber(row, 'Estimate_value');
-      const estimateSd = xlsxNumber(row, 'Estimate_sd');
-      if (!Number.isFinite(estimate) || isLowReliabilityMethodComparisonRow(row, expectedRefs)) {
+    ctx.restore();
+  };
+
+  const chooseLegendAnchor = (
+    plot: { x: number; y: number; width: number; height: number },
+    items: { label: string; color: string; marker: 'circle' | 'square' | 'line' | 'dash' | 'band' }[],
+    occupied: { x: number; y: number }[],
+  ): 'upper-left' | 'lower-left' | 'upper-right' | 'lower-right' => {
+    const unique = items.filter((item, index, arr) => arr.findIndex((other) => other.label === item.label) === index);
+    if (unique.length === 0) {
+      return 'lower-left';
+    }
+
+    ctx.save();
+    ctx.font = `${legendFontPx}px ${fontFamily}`;
+    const textW = Math.max(...unique.map((item) => ctx.measureText(item.label).width), 0);
+    ctx.restore();
+
+    const rowH = 15 * ptToPx;
+    const boxW = Math.min(plot.width * 0.44, Math.max(150 * ptToPx, textW + 42 * ptToPx));
+    const boxH = unique.length * rowH + 8 * ptToPx;
+    const margin = 8 * ptToPx;
+    const pad = 7 * ptToPx;
+
+    const candidates: ('lower-left' | 'upper-left' | 'upper-right' | 'lower-right')[] = [
+      'lower-left',
+      'upper-left',
+      'upper-right',
+      'lower-right',
+    ];
+
+    const legendBox = (anchor: 'upper-left' | 'lower-left' | 'upper-right' | 'lower-right') => {
+      const x0 = anchor.endsWith('right') ? plot.x + plot.width - boxW - margin : plot.x + 12 * ptToPx;
+      const y0 = anchor.startsWith('lower') ? plot.y + plot.height - boxH - margin : plot.y + 10 * ptToPx;
+      return { x0, y0, x1: x0 + boxW, y1: y0 + boxH };
+    };
+
+    const overlaps = (anchor: 'upper-left' | 'lower-left' | 'upper-right' | 'lower-right'): boolean => {
+      const box = legendBox(anchor);
+      return occupied.some((point) =>
+        point.x >= box.x0 - pad
+        && point.x <= box.x1 + pad
+        && point.y >= box.y0 - pad
+        && point.y <= box.y1 + pad
+      );
+    };
+
+    for (const anchor of candidates) {
+      if (!overlaps(anchor)) {
+        return anchor;
+      }
+    }
+
+    return 'lower-left';
+  };
+
+  const drawPolyline = (
+    plot: { x: number; y: number; width: number; height: number },
+    range: { min: number; max: number },
+    values: number[],
+    color: string,
+    dashed: boolean,
+    marker: 'circle' | 'square',
+  ): void => {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.35 * ptToPx;
+    ctx.setLineDash(dashed ? [6 * ptToPx, 4 * ptToPx] : []);
+    ctx.beginPath();
+    let started = false;
+    values.forEach((value, index) => {
+      if (!Number.isFinite(value)) {
         return;
       }
-      if (Math.abs(estimate - refCenter) <= robustWindow) {
-        axisValues.push(estimate - (Number.isFinite(estimateSd) ? estimateSd : 0), estimate, estimate + (Number.isFinite(estimateSd) ? estimateSd : 0));
+      const x = xToPx(plot, index);
+      const y = yToPx(plot, range, value);
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
       }
     });
-    const axisRange = rangeWithPadding(axisValues.length >= 2 ? axisValues : [refCenter - robustWindow, refCenter + robustWindow], 0, 1, 0.16);
-    yLo = axisRange.min;
-    yHi = axisRange.max;
-  } else if (estimateValues.length > 0) {
-    const estimateRange = rangeWithPadding(estimateValues, 0, 1, 0.25);
-    yLo = estimateRange.min;
-    yHi = estimateRange.max;
-  }
-  const referenceAxis = drawSimpleAxis(ctx, referencePlot, xRange, { min: yLo, max: yHi }, 'Method', `Reference value(s) (${unitLabel})`);
-  refPayloads.forEach((payload, index) => {
-    const color = index === 0 ? '#8a3ffc' : '#0f766e';
-    const y = referenceAxis.yToPx(payload.value);
+    if (started) {
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    values.forEach((value, index) => {
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      const x = xToPx(plot, index);
+      const y = yToPx(plot, range, value);
+      ctx.fillStyle = color;
+      if (marker === 'circle') {
+        ctx.beginPath();
+        ctx.arc(x, y, markerRadius, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillRect(x - markerSize / 2, y - markerSize / 2, markerSize, markerSize);
+      }
+    });
+    ctx.restore();
+  };
+
+  const agreementValues = rows.map((row) => xlsxNumber(row, 'SlopeAgreement'));
+  const biasValues = rows.map((row) => xlsxNumber(row, 'bias_index_mean'));
+  const r2CalValues = rows.map((row) => xlsxNumber(row, 'R2_cal'));
+  const r2StdValues = rows.map((row) => xlsxNumber(row, 'R2_std_mean'));
+  const estimateValues = rows.map((row) => {
+    const estimate = xlsxNumber(row, 'Estimate_value');
+    return Number.isFinite(estimate) ? estimate : xlsxNumber(row, 'C0_median');
+  });
+  const estimateSdValues = rows.map((row) => {
+    const sd = xlsxNumber(row, 'Estimate_sd');
+    return Number.isFinite(sd) ? sd : xlsxNumber(row, 'C0_sd_median');
+  });
+
+  if (panels.agreement_bias) {
+    const plot = panels.agreement_bias;
+    const range = { min: 0, max: 1.1 };
+    const agreementTicks = [0, 0.2, 0.4, 0.6, 0.8, 1.0];
+    drawPanelFrame(plot, panelSpecs[panelSpecs.length - 1].name === 'agreement_bias');
+    drawYTicksAndGrid(plot, range, 5, agreementTicks);
+    drawYLabel(plot, 'agreement / bias');
+
     ctx.save();
-    ctx.setLineDash([8, 6]);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.setLineDash([6 * ptToPx, 4 * ptToPx]);
+    ctx.strokeStyle = '#1f77b4';
+    ctx.lineWidth = 1.0 * ptToPx;
     ctx.beginPath();
-    ctx.moveTo(referencePlot.x, y);
-    ctx.lineTo(referencePlot.x + referencePlot.width, y);
+    ctx.moveTo(plot.x, yToPx(plot, range, 1));
+    ctx.lineTo(plot.x + plot.width, yToPx(plot, range, 1));
+    ctx.stroke();
+
+    ctx.strokeStyle = '#ff7f0e';
+    ctx.beginPath();
+    ctx.moveTo(plot.x, yToPx(plot, range, 0));
+    ctx.lineTo(plot.x + plot.width, yToPx(plot, range, 0));
     ctx.stroke();
     ctx.restore();
-    if (Number.isFinite(payload.sd) && payload.sd > 0) {
-      const yTop = referenceAxis.yToPx(payload.value + payload.sd);
-      const yBottom = referenceAxis.yToPx(payload.value - payload.sd);
-      ctx.fillStyle = index === 0 ? 'rgba(138, 63, 252, 0.10)' : 'rgba(15, 118, 110, 0.10)';
-      ctx.fillRect(referencePlot.x, Math.min(yTop, yBottom), referencePlot.width, Math.abs(yBottom - yTop));
-    }
-  });
 
-  const referenceLegendDrawn = new Set<string>();
-  const referenceYRange = Math.max(yHi - yLo, 1);
-  rows.forEach((row, index) => {
-    const estimate = xlsxNumber(row, 'Estimate_value');
-    if (!Number.isFinite(estimate)) {
-      return;
-    }
-    const estimateSd = xlsxNumber(row, 'Estimate_sd');
-    const isReliable = !isLowReliabilityMethodComparisonRow(row, expectedRefs);
-    const color = isReliable ? '#2563c7' : '#cf2e2e';
-    const x = referenceAxis.xToPx(index);
-    const clipped = estimate > yHi || estimate < yLo;
-    const plotY = referenceAxis.yToPx(Math.min(Math.max(estimate, yLo), yHi));
-    if (Number.isFinite(estimateSd) && estimateSd > 0 && !clipped) {
-      drawVerticalErrorBar(
-        ctx,
-        x,
-        referenceAxis.yToPx(Math.max(yLo, estimate - estimateSd)),
-        referenceAxis.yToPx(Math.min(yHi, estimate + estimateSd)),
-        10,
-        color,
-      );
-    }
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(x, plotY, 8, 0, Math.PI * 2);
-    ctx.fill();
+    drawPolyline(plot, range, agreementValues, '#1f77b4', false, 'circle');
+    drawPolyline(plot, range, biasValues, '#ff7f0e', true, 'square');
+    drawLegend(plot, [
+      { label: 'slope agreement', color: '#1f77b4', marker: 'circle' },
+      { label: 'bias index', color: '#ff7f0e', marker: 'square' },
+    ], 'lower-left');
+  }
 
-    const nearestRef = methodComparisonNearestReference(estimate, expectedRefs);
-    if (nearestRef && !clipped) {
-      ctx.fillStyle = color;
-      ctx.font = '16px Inter, Arial, sans-serif';
-      ctx.fillText(
-        `${nearestRef.delta >= 0 ? '+' : ''}${nearestRef.delta.toFixed(Math.abs(nearestRef.delta) >= 10 ? 1 : 2)}`,
-        x - 18,
-        Math.max(referencePlot.y + 18, plotY - 14),
-      );
+  if (panels.reference_values) {
+    const plot = panels.reference_values;
+    const refPayloads = expectedRefs
+      .map((ref, index) => methodComparisonRefPayload(ref, index))
+      .filter((payload) => Number.isFinite(payload.value));
+    let yLo = 0;
+    let yHi = 1;
+
+    if (refPayloads.length > 0) {
+      const refCenter = medianFinite(refPayloads.map((payload) => payload.value));
+      const refRange = Math.max(...refPayloads.map((payload) => payload.value)) - Math.min(...refPayloads.map((payload) => payload.value));
+      const finiteSds = refPayloads.map((payload) => Number.isFinite(payload.sd) ? payload.sd : Number.NaN).filter(Number.isFinite);
+      const maxSd = Math.max(...finiteSds, Math.max(1, 0.03 * Math.max(Math.abs(refCenter), 1)));
+      const robustWindow = Math.max(20, 0.75 * Math.max(Math.abs(refCenter), 1), 6 * maxSd, 2 * refRange);
+      const axisValues: number[] = [];
+
+      refPayloads.forEach((payload) => {
+        const sd = Number.isFinite(payload.sd) && payload.sd > 0 ? payload.sd : maxSd;
+        axisValues.push(payload.value - sd, payload.value, payload.value + sd);
+      });
+
+      rows.forEach((row, index) => {
+        const estimate = estimateValues[index];
+        const estimateSd = estimateSdValues[index];
+        if (!Number.isFinite(estimate) || isLowReliabilityMethodComparisonRow(row, expectedRefs)) {
+          return;
+        }
+        if (Math.abs(estimate - refCenter) <= robustWindow) {
+          const sd = Number.isFinite(estimateSd) ? estimateSd : 0;
+          axisValues.push(estimate - sd, estimate, estimate + sd);
+        }
+      });
+
+      const range = rangeFromValues(axisValues.length >= 2 ? axisValues : [refCenter - robustWindow, refCenter + robustWindow], 0, 1, 0.16);
+      yLo = 0;
+      yHi = Math.max(range.max, 1);
+    } else {
+      const range = rangeFromValues(estimateValues, 0, 1, 0.25);
+      yLo = 0;
+      yHi = Math.max(range.max, 1);
     }
 
-    if (clipped) {
-      ctx.fillStyle = color;
-      ctx.font = '14px Inter, Arial, sans-serif';
-      const edgeY = estimate > yHi ? referenceAxis.yToPx(yHi) + 14 : referenceAxis.yToPx(yLo) - 8;
-      const markerY = estimate > yHi ? referenceAxis.yToPx(yHi) + 2 : referenceAxis.yToPx(yLo) - 2;
-      ctx.beginPath();
-      if (estimate > yHi) {
-        ctx.moveTo(x, markerY - 10);
-        ctx.lineTo(x + 8, markerY + 2);
-        ctx.lineTo(x - 8, markerY + 2);
-      } else {
-        ctx.moveTo(x, markerY + 10);
-        ctx.lineTo(x + 8, markerY - 2);
-        ctx.lineTo(x - 8, markerY - 2);
+    const referenceMax = Math.max(100, Math.ceil(yHi / 100) * 100);
+    const range = { min: 0, max: referenceMax };
+    const referenceTicks = Array.from({ length: Math.floor(referenceMax / 100) + 1 }, (_, i) => i * 100);
+    drawPanelFrame(plot, panelSpecs[panelSpecs.length - 1].name === 'reference_values');
+    drawYTicksAndGrid(plot, range, 5, referenceTicks, true);
+    drawYLabel(plot, `Reference value(s) (${unitLabel})`);
+
+    const legendItems: { label: string; color: string; marker: 'circle' | 'square' | 'line' | 'dash' | 'band' }[] = [];
+    const referenceOccupiedPoints: { x: number; y: number }[] = [];
+
+    refPayloads.forEach((payload, index) => {
+      const color = index === 0 ? '#9467bd' : '#17becf';
+      const y = yToPx(plot, range, payload.value);
+      ctx.save();
+      if (Number.isFinite(payload.sd) && payload.sd > 0) {
+        const yTop = yToPx(plot, range, payload.value + payload.sd);
+        const yBottom = yToPx(plot, range, payload.value - payload.sd);
+        ctx.fillStyle = index === 0 ? 'rgba(148,103,189,0.10)' : 'rgba(23,190,207,0.10)';
+        ctx.fillRect(plot.x, Math.min(yTop, yBottom), plot.width, Math.abs(yBottom - yTop));
       }
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillText('out of scale', x - 28, estimate > yHi ? edgeY + 12 : edgeY - 8);
-    }
-
-    const source = xlsxString(row, 'Estimate_source');
-    const sourceLabel = source === 'unknown_from_calibration'
-      ? 'unknown'
-      : source === 'standard_addition'
-        ? 'std add'
-        : 'estimated value';
-    const legendKey = `${sourceLabel}|${isReliable ? 'reliable scale' : 'low reliability'}`;
-    if (!referenceLegendDrawn.has(legendKey)) {
-      referenceLegendDrawn.add(legendKey);
-    }
-  });
-
-  const r2Values = rows.flatMap((row) => [xlsxNumber(row, 'R2_cal'), xlsxNumber(row, 'R2_std_mean')]).filter(Number.isFinite);
-  const r2Plot = { x: panelLeft, y: top + 2 * (panelHeight + panelGap), width: panelWidth, height: panelHeight };
-  const r2Axis = drawSimpleAxis(ctx, r2Plot, xRange, rangeWithPadding([...r2Values, 0, 1], 0, 1, 0.05), 'Method', 'R2');
-  ctx.save();
-  ctx.setLineDash([8, 6]);
-  ctx.strokeStyle = '#000000';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(r2Plot.x, r2Axis.yToPx(1));
-  ctx.lineTo(r2Plot.x + r2Plot.width, r2Axis.yToPx(1));
-  ctx.stroke();
-  ctx.restore();
-  rows.forEach((row, index) => {
-    const r2Cal = xlsxNumber(row, 'R2_cal');
-    const r2Std = xlsxNumber(row, 'R2_std_mean');
-    if (Number.isFinite(r2Cal)) {
-      ctx.fillStyle = '#2563c7';
+      ctx.setLineDash([6 * ptToPx, 4 * ptToPx]);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.0 * ptToPx;
       ctx.beginPath();
-      ctx.arc(r2Axis.xToPx(index) - 7, r2Axis.yToPx(r2Cal), 8, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    if (Number.isFinite(r2Std)) {
-      ctx.fillStyle = '#1f8a4c';
-      ctx.fillRect(r2Axis.xToPx(index) + 1, r2Axis.yToPx(r2Std) - 7, 14, 14);
-    }
-  });
-  drawMethodLabels(r2Plot, r2Axis.xToPx);
+      ctx.moveTo(plot.x, y);
+      ctx.lineTo(plot.x + plot.width, y);
+      ctx.stroke();
+      ctx.restore();
+      legendItems.push({ label: `${payload.label} = ${fmtG(payload.value, 3)}`, color, marker: 'band' });
+    });
 
-  ctx.font = '20px Inter, Arial, sans-serif';
-  ctx.fillStyle = '#2563c7';
-  ctx.fillText('o slope agreement / reliable estimate / R2 calibration', 170, height - 72);
-  ctx.fillStyle = '#cf2e2e';
-  ctx.fillText('s bias index / low reliability / out of scale', 780, height - 72);
-  ctx.fillStyle = '#1f8a4c';
-  ctx.fillText('s R2 standard addition', 1360, height - 72);
-  ctx.fillStyle = '#8a3ffc';
-  ctx.fillText('dashed line and band: external reference +/- SD when available', 1630, height - 72);
+    let shownReliable = false;
+    let shownUnreliable = false;
+    let shownClip = false;
+    const yrange = Math.max(yHi - yLo, 1);
+    const textDy = 0.025 * yrange;
+
+    rows.forEach((row, index) => {
+      const estimate = estimateValues[index];
+      if (!Number.isFinite(estimate)) {
+        return;
+      }
+      const estimateSd = Number.isFinite(estimateSdValues[index]) ? estimateSdValues[index] : 0;
+      const isReliable = !isLowReliabilityMethodComparisonRow(row, expectedRefs);
+      const color = isReliable ? '#1f77b4' : '#d62728';
+      const x = xToPx(plot, index);
+      const clipped = estimate > yHi || estimate < yLo;
+      const yPlotValue = Math.min(Math.max(estimate, yLo), yHi);
+      const y = yToPx(plot, range, yPlotValue);
+      referenceOccupiedPoints.push({ x, y });
+      const lower = Math.max(yLo, estimate - estimateSd);
+      const upper = Math.min(yHi, estimate + estimateSd);
+
+      if (Number.isFinite(estimateSd) && estimateSd > 0 && !clipped) {
+        drawVerticalErrorBar(ctx, x, yToPx(plot, range, lower), yToPx(plot, range, upper), 3 * ptToPx, color);
+      }
+
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(x, y, markerRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      const source = xlsxString(row, 'Estimate_source');
+      const sourceTxt = source === 'unknown_from_calibration'
+        ? 'unknown'
+        : source === 'standard_addition'
+          ? 'std add'
+          : 'estimated value';
+
+      if (isReliable && !shownReliable) {
+        legendItems.push({ label: `${sourceTxt} (reliable scale)`, color, marker: 'circle' });
+        shownReliable = true;
+      } else if (!isReliable && !shownUnreliable) {
+        legendItems.push({ label: `${sourceTxt} (low reliability)`, color, marker: 'circle' });
+        shownUnreliable = true;
+      }
+
+      const nearestRef = methodComparisonNearestReference(estimate, expectedRefs);
+      if (nearestRef && !clipped) {
+        const yTopErr = Number.isFinite(upper) ? upper : yPlotValue;
+        const yTxt = Math.min(yHi - 0.01 * yrange, yTopErr + textDy);
+        const yTxtPx = Math.max(plot.y + 6 * ptToPx, Math.min(plot.y + plot.height - 13 * ptToPx, yToPx(plot, range, yTxt) - 10 * ptToPx));
+        referenceOccupiedPoints.push({ x, y: yTxtPx });
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.font = `${smallFontPx}px ${fontFamily}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText(fmtSignedG(nearestRef.delta, 2), x, yTxtPx);
+        ctx.restore();
+      }
+
+      if (clipped) {
+        if (!shownClip) {
+          legendItems.push({ label: 'out of scale', color, marker: 'circle' });
+          shownClip = true;
+        }
+        const edgeValue = estimate > yHi ? yHi : yLo;
+        const edgeY = yToPx(plot, range, edgeValue);
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        if (estimate > yHi) {
+          ctx.moveTo(x, edgeY + 3 * ptToPx);
+          ctx.lineTo(x + 4 * ptToPx, edgeY + 11 * ptToPx);
+          ctx.lineTo(x - 4 * ptToPx, edgeY + 11 * ptToPx);
+        } else {
+          ctx.moveTo(x, edgeY - 3 * ptToPx);
+          ctx.lineTo(x + 4 * ptToPx, edgeY - 11 * ptToPx);
+          ctx.lineTo(x - 4 * ptToPx, edgeY - 11 * ptToPx);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.font = `${smallFontPx}px ${fontFamily}`;
+        ctx.textAlign = 'center';
+        if (estimate > yHi) {
+          ctx.textBaseline = 'top';
+          const labelY = Math.min(plot.y + plot.height - 13 * ptToPx, edgeY + 13 * ptToPx);
+          referenceOccupiedPoints.push({ x, y: labelY });
+          ctx.fillText('out of scale', x, labelY);
+        } else {
+          ctx.textBaseline = 'bottom';
+          const labelY = Math.max(plot.y + 13 * ptToPx, edgeY - 13 * ptToPx);
+          referenceOccupiedPoints.push({ x, y: labelY });
+          ctx.fillText('out of scale', x, labelY);
+        }
+        ctx.restore();
+      }
+    });
+
+    drawLegend(plot, legendItems, chooseLegendAnchor(plot, legendItems, referenceOccupiedPoints));
+  }
+
+  if (panels.r2) {
+    const plot = panels.r2;
+    const range = { min: 0, max: 1.1 };
+    const r2Ticks = [0, 0.2, 0.4, 0.6, 0.8, 1.0];
+    drawPanelFrame(plot, panelSpecs[panelSpecs.length - 1].name === 'r2');
+    drawYTicksAndGrid(plot, range, 5, r2Ticks);
+    drawYLabel(plot, 'R²');
+
+    ctx.save();
+    ctx.setLineDash([6 * ptToPx, 4 * ptToPx]);
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 1.0 * ptToPx;
+    ctx.beginPath();
+    ctx.moveTo(plot.x, yToPx(plot, range, 1));
+    ctx.lineTo(plot.x + plot.width, yToPx(plot, range, 1));
+    ctx.stroke();
+    ctx.restore();
+
+    rows.forEach((_, index) => {
+      const x = xToPx(plot, index);
+      const r2Cal = r2CalValues[index];
+      const r2Std = r2StdValues[index];
+      if (Number.isFinite(r2Cal)) {
+        ctx.fillStyle = '#1f77b4';
+        ctx.beginPath();
+        ctx.arc(x - 3.2 * ptToPx, yToPx(plot, range, r2Cal), markerRadius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (Number.isFinite(r2Std)) {
+        ctx.fillStyle = '#2ca02c';
+        ctx.fillRect(x + 1.0 * ptToPx - markerSize / 2, yToPx(plot, range, r2Std) - markerSize / 2, markerSize, markerSize);
+      }
+    });
+
+    drawLegend(plot, [
+      { label: 'R² calibration', color: '#1f77b4', marker: 'circle' },
+      { label: 'R² std add', color: '#2ca02c', marker: 'square' },
+    ], 'lower-left');
+  }
 
   return canvas;
 }
