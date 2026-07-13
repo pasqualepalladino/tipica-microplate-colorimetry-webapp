@@ -4901,9 +4901,35 @@ function drawPythonStyleCielabCompositePanel(
   methodRow: XlsxRow | undefined,
   unitLabel: string,
   expectedRefs: ExpectedRef[],
+  pythonFigureStyle = false,
+  showXAxis = true,
+  xRangeOverride?: { min: number; max: number },
 ): void {
   const color = cielabCompositeColor(channel);
-  const margin = { left: 84, right: 24, top: 62, bottom: 78 };
+  const ptToPx = 300 / 72;
+  const fontFamily = '"DejaVu Sans", Arial, sans-serif';
+  const tickFontPx = pythonFigureStyle ? 7.8 * ptToPx : 13;
+  const legendFontPx = pythonFigureStyle ? 7.1 * ptToPx : 14;
+  const axisFontPx = pythonFigureStyle ? 9.4 * ptToPx : 16;
+  const markerPx = pythonFigureStyle ? 4.8 * ptToPx : 6;
+  const refMarkerPx = pythonFigureStyle ? 5.4 * ptToPx : 6;
+  const lineDashedPx = pythonFigureStyle ? 1.2 * ptToPx : 2.6;
+  const lineSolidPx = pythonFigureStyle ? 1.35 * ptToPx : 2.8;
+  const markerEdgePx = pythonFigureStyle ? 1.1 * ptToPx : 2.4;
+  const tickMajorPx = pythonFigureStyle ? 4.0 * ptToPx : 8;
+  const formatAxisTick = (value: number): string => {
+    if (!Number.isFinite(value)) {
+      return '';
+    }
+    const rounded = Math.round(value);
+    if (Math.abs(value - rounded) < 0.05) {
+      return String(rounded);
+    }
+    return value.toFixed(1).replace(/\.0$/, '');
+  };
+  const margin = pythonFigureStyle
+    ? { left: 118, right: 26, top: 0, bottom: showXAxis ? 34 * ptToPx : 0 }
+    : { left: 84, right: 24, top: 62, bottom: 78 };
   const plot = {
     x: bounds.x + margin.left,
     y: bounds.y + margin.top,
@@ -4929,7 +4955,7 @@ function drawPythonStyleCielabCompositePanel(
 
   const calibrationSlope = numericRowValue(calibrationFit, 'm');
   const calibrationIntercept = numericRowValue(calibrationFit, 'q');
-  const xRange = rangeWithPadding([
+  const xRange = xRangeOverride ?? rangeWithPadding([
     ...calibrationPoints.map((point) => point.x),
     ...stdPoints.map((point) => point.x),
     ...refXValues,
@@ -4968,70 +4994,115 @@ function drawPythonStyleCielabCompositePanel(
   ], 0, 1, 0.10);
   const xToPx = (value: number) => plot.x + ((value - xRange.min) / (xRange.max - xRange.min)) * plot.width;
   const yToPx = (value: number) => plot.y + plot.height - ((value - yRange.min) / (yRange.max - yRange.min)) * plot.height;
-  const xTicks = niceTicks(xRange.min, xRange.max, 5);
+  const xTicks = pythonFigureStyle && xRange.min <= -50 && xRange.max >= 50
+    ? [-50, -25, 0, 25, 50]
+    : niceTicks(xRange.min, xRange.max, 5);
   const yTicks = niceTicks(yRange.min, yRange.max, 5);
 
   ctx.save();
-  ctx.fillStyle = '#1d2628';
-  ctx.font = '700 24px "Courier New", Consolas, monospace';
-  ctx.fillText(cielabCompositeDisplayName(channel), bounds.x + 12, bounds.y + 34);
-  if (methodRow) {
-    const rankText = [
-      `Score ${formatFitCell(numericRowValue(methodRow, 'Score'))}`,
-      `R2cal ${formatFitCell(numericRowValue(methodRow, 'R2_cal'))}`,
-      `R2std ${formatFitCell(numericRowValue(methodRow, 'R2_std_mean'))}`,
-      `LOQ ${formatFitCell(numericRowValue(methodRow, 'LOQ'))}`,
-    ].join('  ');
-    ctx.font = '600 13px "Courier New", Consolas, monospace';
-    ctx.fillStyle = '#465255';
-    ctx.fillText(rankText, plot.x + Math.max(0, plot.width - ctx.measureText(rankText).width - 4), bounds.y + 34);
+
+  if (!pythonFigureStyle) {
+    ctx.fillStyle = '#1d2628';
+    ctx.font = '700 24px "Courier New", Consolas, monospace';
+    ctx.fillText(cielabCompositeDisplayName(channel), bounds.x + 12, bounds.y + 34);
+    if (methodRow) {
+      const rankText = [
+        `Score ${formatFitCell(numericRowValue(methodRow, 'Score'))}`,
+        `R2cal ${formatFitCell(numericRowValue(methodRow, 'R2_cal'))}`,
+        `R2std ${formatFitCell(numericRowValue(methodRow, 'R2_std_mean'))}`,
+        `LOQ ${formatFitCell(numericRowValue(methodRow, 'LOQ'))}`,
+      ].join('  ');
+      ctx.font = '600 13px "Courier New", Consolas, monospace';
+      ctx.fillStyle = '#465255';
+      ctx.fillText(rankText, plot.x + Math.max(0, plot.width - ctx.measureText(rankText).width - 4), bounds.y + 34);
+    }
   }
 
   ctx.strokeStyle = '#000000';
-  ctx.lineWidth = 2;
+  ctx.lineWidth = pythonFigureStyle ? 1.0 * ptToPx : 2;
   ctx.beginPath();
-  ctx.moveTo(plot.x, plot.y);
-  ctx.lineTo(plot.x, plot.y + plot.height);
-  ctx.lineTo(plot.x + plot.width, plot.y + plot.height);
+  if (pythonFigureStyle) {
+    ctx.rect(plot.x, plot.y, plot.width, plot.height);
+  } else {
+    ctx.moveTo(plot.x, plot.y);
+    ctx.lineTo(plot.x, plot.y + plot.height);
+    ctx.lineTo(plot.x + plot.width, plot.y + plot.height);
+  }
   ctx.stroke();
 
   ctx.fillStyle = '#000000';
-  ctx.font = '600 13px "Courier New", Consolas, monospace';
+  ctx.font = `${tickFontPx}px ${fontFamily}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
   xTicks.forEach((tick) => {
     const px = xToPx(tick);
     ctx.beginPath();
     ctx.moveTo(px, plot.y + plot.height);
-    ctx.lineTo(px, plot.y + plot.height + 8);
+    ctx.lineTo(px, plot.y + plot.height - tickMajorPx);
+    if (pythonFigureStyle) {
+      ctx.moveTo(px, plot.y);
+      ctx.lineTo(px, plot.y + tickMajorPx);
+    }
     ctx.strokeStyle = '#000000';
-    ctx.lineWidth = 1.4;
+    ctx.lineWidth = pythonFigureStyle ? 0.8 * ptToPx : 1.4;
     ctx.stroke();
-    ctx.fillText(formatFitCell(tick), px - 14, plot.y + plot.height + 24);
+    if (!pythonFigureStyle || showXAxis) {
+      const showTickLabel = !pythonFigureStyle || Math.abs(tick + 25) > 1e-8 && Math.abs(tick - 25) > 1e-8;
+      if (showTickLabel) {
+        ctx.fillText(formatAxisTick(tick), px, plot.y + plot.height + 6 * ptToPx);
+      }
+    }
   });
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
   yTicks.forEach((tick) => {
     const py = yToPx(tick);
     ctx.beginPath();
-    ctx.moveTo(plot.x - 8, py);
-    ctx.lineTo(plot.x, py);
+    ctx.moveTo(plot.x, py);
+    ctx.lineTo(plot.x + tickMajorPx, py);
+    if (pythonFigureStyle) {
+      ctx.moveTo(plot.x + plot.width, py);
+      ctx.lineTo(plot.x + plot.width - tickMajorPx, py);
+    }
     ctx.strokeStyle = '#000000';
-    ctx.lineWidth = 1.4;
+    ctx.lineWidth = pythonFigureStyle ? 0.8 * ptToPx : 1.4;
     ctx.stroke();
-    ctx.fillText(formatPAbsCell(tick), bounds.x + 10, py + 5);
+    ctx.fillText(formatAxisTick(tick), plot.x - 8 * ptToPx, py);
   });
 
+  if (yRange.min < 0 && yRange.max > 0) {
+    const yZero = yToPx(0);
+    ctx.beginPath();
+    ctx.moveTo(plot.x, yZero);
+    ctx.lineTo(plot.x + plot.width, yZero);
+    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+    ctx.lineWidth = pythonFigureStyle ? 0.45 * ptToPx : 1;
+    ctx.stroke();
+  }
+
   ctx.fillStyle = '#000000';
-  ctx.font = '700 16px "Courier New", Consolas, monospace';
-  ctx.fillText(`Added concentration (${unitLabel})`, plot.x + plot.width / 2 - 150, bounds.y + bounds.height - 14);
+  ctx.font = `700 ${axisFontPx}px ${fontFamily}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  if (!pythonFigureStyle || showXAxis) {
+    ctx.fillText(`Added concentration (${unitLabel})`, plot.x + plot.width / 2, plot.y + plot.height + 26 * ptToPx);
+  }
   ctx.save();
-  ctx.translate(bounds.x + 20, plot.y + plot.height / 2 + 62);
+  ctx.translate(bounds.x + 36, plot.y + plot.height / 2);
   ctx.rotate(-Math.PI / 2);
-  ctx.fillText(cielabCompositeDisplayName(channel), 0, 0);
+  ctx.fillText(cielabCompositeDisplayName(channel)
+    .replace('DeltaE_ab_chroma', 'ΔE_ab,chrom')
+    .replace('DeltaE_ab', 'ΔE_ab')
+    .replace('DeltaL', 'ΔL')
+    .replace('Deltaa', 'Δa')
+    .replace('Deltab', 'Δb'), 0, 0);
   ctx.restore();
 
   if (Number.isFinite(calibrationSlope) && Number.isFinite(calibrationIntercept)) {
     ctx.save();
-    ctx.setLineDash([8, 6]);
+    ctx.setLineDash(pythonFigureStyle ? [14 * ptToPx, 7 * ptToPx] : [8, 6]);
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2.6;
+    ctx.lineWidth = lineDashedPx;
     ctx.beginPath();
     ctx.moveTo(xToPx(xRange.min), yToPx(calibrationSlope * xRange.min + calibrationIntercept));
     ctx.lineTo(xToPx(xRange.max), yToPx(calibrationSlope * xRange.max + calibrationIntercept));
@@ -5042,16 +5113,16 @@ function drawPythonStyleCielabCompositePanel(
   calibrationPoints.forEach((point) => {
     const px = xToPx(point.x);
     const py = yToPx(point.y);
-    if (Number.isFinite(point.yerr) && point.yerr > 0) {
-      drawVerticalErrorBar(ctx, px, yToPx(point.y - point.yerr), yToPx(point.y + point.yerr), 10, color);
-    }
     ctx.beginPath();
-    ctx.arc(px, py, 6, 0, Math.PI * 2);
+    ctx.arc(px, py, markerPx, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';
     ctx.fill();
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2.4;
+    ctx.lineWidth = markerEdgePx;
     ctx.stroke();
+    if (Number.isFinite(point.yerr) && point.yerr > 0) {
+      drawVerticalErrorBar(ctx, px, yToPx(point.y - point.yerr), yToPx(point.y + point.yerr), markerPx * 0.65, '#000000');
+    }
   });
 
   standardGroups.forEach((group) => {
@@ -5059,7 +5130,7 @@ function drawPythonStyleCielabCompositePanel(
     const intercept = numericRowValue(group.fit, 'q');
     if (Number.isFinite(slope) && Number.isFinite(intercept)) {
       ctx.strokeStyle = color;
-      ctx.lineWidth = 2.8;
+      ctx.lineWidth = lineSolidPx;
       ctx.beginPath();
       ctx.moveTo(xToPx(xRange.min), yToPx(slope * xRange.min + intercept));
       ctx.lineTo(xToPx(xRange.max), yToPx(slope * xRange.max + intercept));
@@ -5073,12 +5144,12 @@ function drawPythonStyleCielabCompositePanel(
 
       const px = xToPx(point.x);
       const py = yToPx(point.y);
-      if (Number.isFinite(point.yerr) && point.yerr > 0) {
-        drawVerticalErrorBar(ctx, px, yToPx(point.y - point.yerr), yToPx(point.y + point.yerr), 10, color);
-      }
 
       ctx.fillStyle = color;
-      ctx.fillRect(px - 5, py - 5, 10, 10);
+      ctx.fillRect(px - markerPx, py - markerPx, markerPx * 2, markerPx * 2);
+      if (Number.isFinite(point.yerr) && point.yerr > 0) {
+        drawVerticalErrorBar(ctx, px, yToPx(point.y - point.yerr), yToPx(point.y + point.yerr), markerPx * 0.65, '#000000');
+      }
     });
 
     expectedRefs.forEach((ref) => {
@@ -5097,34 +5168,35 @@ function drawPythonStyleCielabCompositePanel(
         ? Math.abs(ref.sd / Math.max(group.dilutionFactor, 1e-12))
         : Number.NaN;
       ctx.save();
-      ctx.strokeStyle = '#8a3ffc';
-      ctx.lineWidth = 1.9;
-      if (Number.isFinite(xSd) && xSd > 0) {
-        drawHorizontalErrorBar(ctx, xToPx(x - xSd), xToPx(x + xSd), py, 10, '#8a3ffc');
-      }
+      ctx.strokeStyle = color;
+      ctx.lineWidth = markerEdgePx;
       ctx.beginPath();
-      ctx.moveTo(px, py - 6);
-      ctx.lineTo(px + 6, py);
-      ctx.lineTo(px, py + 6);
-      ctx.lineTo(px - 6, py);
-      ctx.closePath();
+      ctx.rect(px - refMarkerPx, py - refMarkerPx, refMarkerPx * 2, refMarkerPx * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
       ctx.stroke();
+      if (Number.isFinite(xSd) && xSd > 0) {
+        drawHorizontalErrorBar(ctx, xToPx(x - xSd), xToPx(x + xSd), py, refMarkerPx * 0.65, '#000000');
+      }
       ctx.restore();
     });
   });
 
-  const legendX = plot.x + 10;
-  let legendY = plot.y + 18;
-  ctx.fillStyle = '#000000';
-  ctx.font = '600 14px "Courier New", Consolas, monospace';
-  ctx.fillText('o calibration (dashed)', legendX, legendY);
-  legendY += 18;
-  ctx.fillText('s standard addition (solid)', legendX, legendY);
-  if (expectedRefs.length > 0) {
-    legendY += 18;
-    ctx.fillStyle = '#6d36c9';
-    ctx.fillText('d reference +/- SD', legendX, legendY);
-  }
+  const legendItems = [
+    'o calibration',
+    's std add ID=1, DF=10.0',
+    ...(expectedRefs.length > 0 ? ['□ ICP-MS (ref ID=1, DF=10.0)'] : []),
+  ];
+  ctx.font = `${legendFontPx}px ${fontFamily}`;
+  const legendRow = 12 * ptToPx;
+  const legendX = plot.x + 8 * ptToPx;
+  const legendY = plot.y + 8 * ptToPx;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  legendItems.forEach((item, idx) => {
+    ctx.fillStyle = color;
+    ctx.fillText(item, legendX, legendY + idx * legendRow + legendRow / 2);
+  });
 
   ctx.restore();
 }
@@ -5164,44 +5236,91 @@ function buildPythonStyleCielabDeltaECanvas(
     fitRows,
     comparisonRows,
     selectedDescriptor,
-  });
+  }).map((line) => ({
+    ...line,
+    text: line.text
+      .replace(/DeltaE_ab_chroma/g, 'ΔE_ab,chrom')
+      .replace(/DeltaE_ab/g, 'ΔE_ab')
+      .replace(/DeltaL/g, 'ΔL')
+      .replace(/Deltaa/g, 'Δa')
+      .replace(/Deltab/g, 'Δb'),
+  }));
 
+  void imageBase;
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
-  drawImageCover(ctx, overlayCanvas, overlayCanvas.width, overlayCanvas.height, 110, 70, 940, 650);
-  ctx.fillStyle = '#172026';
-  ctx.font = '700 34px Inter, Arial, sans-serif';
-  ctx.fillText(`${imageBase} CIELAB / DeltaE report`, 110, 760);
+  drawImageCover(ctx, overlayCanvas, overlayCanvas.width, overlayCanvas.height, 110, 70, 940, 626);
 
   ctx.fillStyle = '#253033';
   drawPreformattedLines(
     ctx,
     scientificLines,
     110,
-    812,
-    24,
+    760,
+    38,
     height - 95,
-    '18px Consolas, "Courier New", monospace',
-    '700 18px Consolas, "Courier New", monospace',
+    '32px Consolas, "Courier New", monospace',
+    '700 32px Consolas, "Courier New", monospace',
   );
 
   const comparisonByMethod = new Map(comparisonRows.map((row) => [String(row.Method ?? ''), row]));
   const panelX = 1190;
   const panelWidth = 1160;
-  const panelHeight = 520;
-  const panelGap = 40;
+  const panelTop = 70;
+  const panelHeight = (height - 140) / CIELAB_COMPOSITE_CHANNELS.length;
+  const panelData = CIELAB_COMPOSITE_CHANNELS.map((channel) => {
+    const calibrationFit = fitRows.find((row) => row.FitType === 'Calibration' && String(row.Channel) === channel);
+    const standardGroups = collectCielabCompositeStdGroups(channel, points, fitRows);
+    const calibrationPoints = collectCielabCompositeCalibrationPoints(channel, points);
+    return { channel, calibrationFit, standardGroups, calibrationPoints, methodRow: comparisonByMethod.get(channel) };
+  });
+  const commonXValues = panelData.flatMap(({ calibrationPoints, standardGroups }) => {
+    const stdPoints = standardGroups.flatMap((group) => group.points);
+    const refXValues = standardGroups.flatMap((group) => expectedRefs.flatMap((ref) => {
+      if (!referenceMatchesSample(ref, group.sampleId)) {
+        return [];
+      }
+      const x = -ref.value / Math.max(group.dilutionFactor, 1e-12);
+      const xSd = ref.sd !== null && Number.isFinite(ref.sd)
+        ? Math.abs(ref.sd / Math.max(group.dilutionFactor, 1e-12))
+        : Number.NaN;
+      return Number.isFinite(x)
+        ? [x, Number.isFinite(xSd) ? x - xSd : Number.NaN, Number.isFinite(xSd) ? x + xSd : Number.NaN]
+        : [];
+    }));
+    const fitIntercepts = standardGroups.flatMap((group) => {
+      const slope = numericRowValue(group.fit, 'm');
+      const intercept = numericRowValue(group.fit, 'q');
+      return Number.isFinite(slope) && Math.abs(slope) > 1e-15 && Number.isFinite(intercept)
+        ? [-intercept / slope]
+        : [];
+    });
+    return [
+      ...calibrationPoints.map((point) => point.x),
+      ...stdPoints.map((point) => point.x),
+      ...refXValues,
+      ...fitIntercepts,
+      -50,
+      0,
+      50,
+    ];
+  }).filter(Number.isFinite);
+  const commonXRange = rangeWithPadding(commonXValues, 0, 1);
 
-  CIELAB_COMPOSITE_CHANNELS.forEach((channel, index) => {
+  panelData.forEach(({ channel, calibrationFit, standardGroups, calibrationPoints, methodRow }, index) => {
     drawPythonStyleCielabCompositePanel(
       ctx,
-      { x: panelX, y: 70 + index * (panelHeight + panelGap), width: panelWidth, height: panelHeight },
+      { x: panelX, y: panelTop + index * panelHeight, width: panelWidth, height: panelHeight },
       channel,
-      fitRows.find((row) => row.FitType === 'Calibration' && String(row.Channel) === channel),
-      collectCielabCompositeStdGroups(channel, points, fitRows),
-      collectCielabCompositeCalibrationPoints(channel, points),
-      comparisonByMethod.get(channel),
+      calibrationFit,
+      standardGroups,
+      calibrationPoints,
+      methodRow,
       unitLabel,
       expectedRefs,
+      true,
+      index === CIELAB_COMPOSITE_CHANNELS.length - 1,
+      commonXRange,
     );
   });
 
