@@ -4886,8 +4886,8 @@ function buildCielabCompositeScientificLines({
   const total = measurements.length;
   const plateStatus = critical === 0 && flagged <= Math.max(1, Math.floor(total * 0.2)) ? 'Passed' : 'Warning';
 
-  pushText('DeltaE_ab = sqrt((L-Lref)^2 + (a-aref)^2 + (b-bref)^2)');
-  pushText('DeltaE_ab,chroma = sqrt((a-aref)^2 + (b-bref)^2)');
+  pushText('ΔE_ab = √[(L − L_ref)² + (a − a_ref)² + (b − b_ref)²]');
+  pushText('ΔE_ab,chroma = √[(a − a_ref)² + (b − b_ref)²]');
   pushText('');
   pushText(`Mode: ${modeLabel}`);
   pushText('Fit: robust IRLS for exported fit rows');
@@ -4918,7 +4918,7 @@ function buildCielabCompositeScientificLines({
     const [sampleId, dilutionFactorRaw] = groupKey.split('|');
     const dilutionFactor = Number(dilutionFactorRaw);
     pushText('');
-    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureScientificNumber(dilutionFactor)}`, true);
+    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureDilutionFactor(dilutionFactor)}`, true);
 
     const resultRows = CIELAB_COMPOSITE_CHANNELS.map((channel) => {
       const fitRow = rows.find((row) => String(row.Channel) === channel);
@@ -4936,11 +4936,11 @@ function buildCielabCompositeScientificLines({
         formatFigureScientificNumber(c0),
         formatFigureScientificNumber(score),
         formatFigureScientificNumber(delta),
-        Number.isFinite(recovery) ? recovery.toFixed(1) : 'NA',
+        Number.isFinite(recovery) ? recovery.toFixed(0) : 'NA',
       ];
     });
     pushTable(formatFigureRgbTable(
-      ['Channel', `C0 (${unitLabel})`, 'Score', `Delta (${unitLabel})`, 'Recovery (%)'],
+      ['Channel', `C0 (${unitLabel})`, 'Score', `Δ (${unitLabel})`, 'Recovery (%)'],
       resultRows,
     ));
 
@@ -4964,7 +4964,7 @@ function buildCielabCompositeScientificLines({
     ));
 
     pushText('');
-    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureScientificNumber(dilutionFactor)}`, true);
+    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureDilutionFactor(dilutionFactor)}`, true);
     const stdFitRows = CIELAB_COMPOSITE_CHANNELS.map((channel) => {
       const fitRow = rows.find((row) => String(row.Channel) === channel);
       return [
@@ -5273,8 +5273,8 @@ function drawPythonStyleCielabCompositePanel(
 
   const legendItems = [
     'o calibration',
-    's std add ID=1, DF=10.0',
-    ...(expectedRefs.length > 0 ? ['□ ICP-MS (ref ID=1, DF=10.0)'] : []),
+    's std add ID=1, DF=10',
+    ...(expectedRefs.length > 0 ? ['□ ICP-MS (ref ID=1, DF=10)'] : []),
   ];
   ctx.font = `${legendFontPx}px ${fontFamily}`;
   const legendRow = 12 * ptToPx;
@@ -6815,6 +6815,12 @@ function formatFigureScientificNumber(value: number, fallback = 'NA'): string {
   }
   return value.toPrecision(3);
 }
+function formatFigureDilutionFactor(value: number, fallback = 'NA'): string {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.abs(value - Math.round(value)) < 1e-9 ? String(Math.round(value)) : formatFigureScientificNumber(value, fallback);
+}
 
 function buildFigureRgbScientificLines({
   unitLabel,
@@ -6869,7 +6875,7 @@ function buildFigureRgbScientificLines({
         ? 'standard addition only'
         : 'no valid analytical fit available';
 
-  pushText('Pseudo-absorbance = log10(I_BG/I_well)');
+  pushText('PAbs = log₁₀(I_BG / I_well)');
   pushText('');
   pushText(`Mode: ${modeLabel}`);
   pushText('Fit: robust IRLS');
@@ -6901,7 +6907,7 @@ function buildFigureRgbScientificLines({
     const [sampleId, dilutionFactorRaw] = groupKey.split('|');
     const dilutionFactor = Number(dilutionFactorRaw);
     pushText('');
-    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureScientificNumber(dilutionFactor)}`, true);
+    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureDilutionFactor(dilutionFactor)}`, true);
 
     const resultRows: string[][] = [];
     for (const channel of PYTHON_RESULTS_CHANNELS) {
@@ -6928,11 +6934,11 @@ function buildFigureRgbScientificLines({
         formatFigureScientificNumber(c0),
         formatFigureScientificNumber(ranking?.score ?? Number.NaN),
         formatFigureScientificNumber(delta),
-        Number.isFinite(recovery) ? recovery.toFixed(1) : 'NA',
+        Number.isFinite(recovery) ? recovery.toFixed(0) : 'NA',
       ]);
     }
     pushTable(formatFigureRgbTable(
-      ['Channel', `C0 (${unitLabel})`, 'Score', `Delta (${unitLabel})`, 'Recovery (%)'],
+      ['Channel', `C0 (${unitLabel})`, 'Score', `Δ (${unitLabel})`, 'Recovery (%)'],
       resultRows,
     ));
 
@@ -6956,7 +6962,7 @@ function buildFigureRgbScientificLines({
     ));
 
     pushText('');
-    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureScientificNumber(dilutionFactor)}`, true);
+    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureDilutionFactor(dilutionFactor)}`, true);
     const stdFitRows = PYTHON_RESULTS_CHANNELS.map((channel) => {
       const fit = fits.find((item) => item.channel === channel);
       return [
@@ -7322,7 +7328,7 @@ function drawPythonStyleChannelPanel(
     drawLine(handleX0, legendY - legendFontPx * 0.25, handleX1, legendY - legendFontPx * 0.25, color, lineSolidPx);
     drawFilledSquare(markerX, legendY - legendFontPx * 0.25, markerPx, color);
     ctx.fillStyle = '#000000';
-    ctx.fillText(`std add ID=${firstGroup.fit.sampleId}, DF=${firstGroup.fit.dilutionFactor.toFixed(1)}`, textX, legendY);
+    ctx.fillText(`std add ID=${firstGroup.fit.sampleId}, DF=${formatFigureDilutionFactor(firstGroup.fit.dilutionFactor)}`, textX, legendY);
 
     const firstRef = expectedRefs.find((ref) => referenceMatchesSample(ref, firstGroup.fit.sampleId)) ?? expectedRefs[0];
     if (firstRef) {
@@ -7330,7 +7336,7 @@ function drawPythonStyleChannelPanel(
       drawOpenSquare(markerX, legendY - legendFontPx * 0.25, refMarkerPx, color);
       ctx.fillStyle = '#000000';
       const refLabel = firstRef.label.trim() || firstRef.refId.trim() || 'Reference';
-      ctx.fillText(`${refLabel} (ref ID=${firstGroup.fit.sampleId}, DF=${firstGroup.fit.dilutionFactor.toFixed(1)})`, textX, legendY);
+      ctx.fillText(`${refLabel} (ref ID=${firstGroup.fit.sampleId}, DF=${formatFigureDilutionFactor(firstGroup.fit.dilutionFactor)})`, textX, legendY);
     }
   }
 
@@ -7780,14 +7786,14 @@ function drawPythonBestChannelPlot(
     legendY += legendStep;
     drawLine(markerX - 10 * ptToPx, legendY, markerX + 10 * ptToPx, legendY, [], 1.4 * ptToPx);
     drawFilledSquare(markerX, legendY, markerPx);
-    ctx.fillText(`std add ID=${firstGroup.fit.sampleId}, DF=${firstGroup.fit.dilutionFactor.toFixed(1)}`, textX, legendY);
+    ctx.fillText(`std add ID=${firstGroup.fit.sampleId}, DF=${formatFigureDilutionFactor(firstGroup.fit.dilutionFactor)}`, textX, legendY);
 
     const firstRef = expectedRefs.find((ref) => referenceMatchesSample(ref, firstGroup.fit.sampleId)) ?? expectedRefs[0];
     if (firstRef) {
       legendY += legendStep;
       drawOpenSquare(markerX, legendY, refMarkerPx);
       const refLabel = firstRef.label.trim() || firstRef.refId.trim() || 'Reference';
-      ctx.fillText(`${refLabel} (ref ID=${firstGroup.fit.sampleId}, DF=${firstGroup.fit.dilutionFactor.toFixed(1)})`, textX, legendY);
+      ctx.fillText(`${refLabel} (ref ID=${firstGroup.fit.sampleId}, DF=${formatFigureDilutionFactor(firstGroup.fit.dilutionFactor)})`, textX, legendY);
     }
   }
 
