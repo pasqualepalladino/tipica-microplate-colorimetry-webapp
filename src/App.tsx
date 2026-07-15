@@ -4847,6 +4847,7 @@ function buildCielabCompositeScientificLines({
   fitRows,
   comparisonRows,
   selectedDescriptor,
+  floorDQualitySummary,
 }: {
   unitLabel: string;
   measurements: WellMeasurement[];
@@ -4855,6 +4856,7 @@ function buildCielabCompositeScientificLines({
   fitRows: XlsxRow[];
   comparisonRows: XlsxRow[];
   selectedDescriptor: string;
+  floorDQualitySummary?: string;
 }): Array<{ text: string; emphasize?: boolean }> {
   const lines: Array<{ text: string; emphasize?: boolean }> = [];
   const comparisonByMethod = new Map(comparisonRows.map((row) => [String(row.Method ?? ''), row]));
@@ -4893,6 +4895,9 @@ function buildCielabCompositeScientificLines({
   pushText('Fit: robust IRLS for exported fit rows');
   pushText(`Plate: ${plateMap.length}-well | QC: ${plateStatus}`);
   pushText(`Plate QC: wells flagged ${flagged}/${total} | wells critical ${critical}/${total}`);
+  if (floorDQualitySummary) {
+    pushText(floorDQualitySummary);
+  }
   pushText('');
   pushText('REFERENCE VALUES', true);
   if (expectedRefs.length === 0) {
@@ -4900,8 +4905,8 @@ function buildCielabCompositeScientificLines({
   } else {
     expectedRefs.forEach((ref, index) => {
       const label = ref.label.trim() || ref.refId.trim() || `Reference ${index + 1}`;
-      const valueText = formatFigureScientificNumber(ref.value);
-      const sdText = ref.sd !== null && Number.isFinite(ref.sd) ? ` +/- ${formatFigureScientificNumber(ref.sd)}` : '';
+      const valueText = formatFigureReferenceNumber(ref.value);
+      const sdText = ref.sd !== null && Number.isFinite(ref.sd) ? ` +/- ${formatFigureReferenceNumber(ref.sd)}` : '';
       pushText(`${label}: ${valueText}${sdText} ${unitLabel}`);
     });
   }
@@ -4933,9 +4938,9 @@ function buildCielabCompositeScientificLines({
         : Number.NaN;
       return [
         cielabCompositeDisplayName(channel),
-        formatFigureScientificNumber(c0),
+        formatFigureConcentrationNumber(c0, refValue),
         formatFigureScientificNumber(score),
-        formatFigureScientificNumber(delta),
+        formatFigureDeltaNumber(delta, refValue),
         Number.isFinite(recovery) ? recovery.toFixed(0) : 'NA',
       ];
     });
@@ -4951,11 +4956,11 @@ function buildCielabCompositeScientificLines({
       const methodRow = comparisonByMethod.get(channel);
       return [
         cielabCompositeDisplayName(channel),
-        formatFigureScientificNumber(numericRowValue(calRow, 'm')),
-        formatFigureScientificNumber(numericRowValue(calRow, 'q')),
-        formatFigureScientificNumber(numericRowValue(calRow, 'R2')),
-        formatFigureScientificNumber(numericRowValue(methodRow, 'LOD')),
-        formatFigureScientificNumber(numericRowValue(methodRow, 'LOQ')),
+        formatFigureFitCoefficient(numericRowValue(calRow, 'm')),
+        formatFigureFitCoefficient(numericRowValue(calRow, 'q')),
+        formatFigureR2(numericRowValue(calRow, 'R2')),
+        formatFigureLimitNumber(numericRowValue(methodRow, 'LOD')),
+        formatFigureLimitNumber(numericRowValue(methodRow, 'LOQ')),
       ];
     });
     pushTable(formatFigureRgbTable(
@@ -4969,9 +4974,9 @@ function buildCielabCompositeScientificLines({
       const fitRow = rows.find((row) => String(row.Channel) === channel);
       return [
         cielabCompositeDisplayName(channel),
-        formatFigureScientificNumber(numericRowValue(fitRow, 'm')),
-        formatFigureScientificNumber(numericRowValue(fitRow, 'q')),
-        formatFigureScientificNumber(numericRowValue(fitRow, 'R2')),
+        formatFigureFitCoefficient(numericRowValue(fitRow, 'm')),
+        formatFigureFitCoefficient(numericRowValue(fitRow, 'q')),
+        formatFigureR2(numericRowValue(fitRow, 'R2')),
       ];
     });
     pushTable(formatFigureRgbTable(['Channel', 'Slope', 'Intercept', 'R2'], stdFitRows));
@@ -5298,6 +5303,7 @@ function buildPythonStyleCielabDeltaECanvas(
   unitLabel: string,
   expectedRefs: ExpectedRef[],
   storedCielabReference?: StoredCielabReference,
+  floorDQualitySummary?: string,
 ): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   const width = 2481;
@@ -5325,6 +5331,7 @@ function buildPythonStyleCielabDeltaECanvas(
     fitRows,
     comparisonRows,
     selectedDescriptor,
+    floorDQualitySummary,
   }).map((line) => ({
     ...line,
     text: line.text
@@ -6821,6 +6828,94 @@ function formatFigureDilutionFactor(value: number, fallback = 'NA'): string {
   }
   return Math.abs(value - Math.round(value)) < 1e-9 ? String(Math.round(value)) : formatFigureScientificNumber(value, fallback);
 }
+function formatFigureReferenceNumber(value: number, fallback = 'NA'): string {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.abs(value - Math.round(value)) < 1e-9 ? String(Math.round(value)) : formatFigureScientificNumber(value, fallback);
+}
+
+function formatFigureReferenceDecimals(referenceValue: number): number {
+  if (!Number.isFinite(referenceValue) || Math.abs(referenceValue - Math.round(referenceValue)) < 1e-9) {
+    return 0;
+  }
+  return Math.abs(referenceValue) >= 10 ? 1 : 2;
+}
+
+function formatFigureConcentrationNumber(value: number, referenceValue: number, fallback = 'NA'): string {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  if (!Number.isFinite(referenceValue)) {
+    return formatFigureScientificNumber(value, fallback);
+  }
+  return value.toFixed(formatFigureReferenceDecimals(referenceValue));
+}
+
+function formatFigureDeltaNumber(value: number, referenceValue: number, fallback = 'NA'): string {
+  return formatFigureConcentrationNumber(value, referenceValue, fallback);
+}
+
+function formatFigureLimitNumber(value: number, fallback = 'NA'): string {
+  return Number.isFinite(value) ? value.toFixed(1) : fallback;
+}
+
+function formatFigureFitCoefficient(value: number, fallback = 'NA'): string {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  const absValue = Math.abs(value);
+  if (absValue >= 10) return value.toFixed(2);
+  if (absValue >= 1) return value.toFixed(3);
+  if (absValue >= 0.1) return value.toFixed(3);
+  if (absValue >= 0.01) return value.toFixed(4);
+  return value.toFixed(5);
+}
+
+function formatFigureR2(value: number, fallback = 'NA'): string {
+  return Number.isFinite(value) ? value.toFixed(3) : fallback;
+}
+function buildFigureFloorDQualitySummary(options: {
+  measurements: WellMeasurement[];
+  wells: WellCenter[];
+  floorCircles: FloorCircle[] | null;
+  radiusFactor: number;
+  floorGeometryAvailable: boolean;
+}): string {
+  const total = options.measurements.length;
+  if (!options.floorGeometryAvailable || !options.floorCircles || options.floorCircles.length !== options.wells.length || total === 0) {
+    return 'Floor D QC: missing';
+  }
+
+  let warningCount = 0;
+  let criticalCount = 0;
+
+  options.measurements.forEach((measurement) => {
+    const row = measurement.row;
+    const col = measurement.col;
+    const floor = Number.isFinite(row) && Number.isFinite(col) ? options.floorCircles?.[row * 12 + col] : undefined;
+    const well = Number.isFinite(row) && Number.isFinite(col) ? options.wells[row * 12 + col] : undefined;
+    const mouthRadius = Number.isFinite(measurement.mouthRadiusUsed ?? Number.NaN)
+      ? measurement.mouthRadiusUsed as number
+      : Number.isFinite(row) && Number.isFinite(col) && options.wells.length === 96
+        ? estimateRoiRadius(options.wells, row, col, options.radiusFactor)
+        : Number.NaN;
+    const floorRadius = Number.isFinite(measurement.floorRadiusUsed ?? Number.NaN)
+      ? measurement.floorRadiusUsed as number
+      : Number.isFinite(floor?.r ?? Number.NaN)
+        ? floor?.r as number
+        : Number.NaN;
+    const shiftPx = floor && well ? Math.hypot(floor.x - well.x, floor.y - well.y) : Number.NaN;
+    const shiftFrac = Number.isFinite(shiftPx) && Number.isFinite(mouthRadius) && mouthRadius > 1e-9 ? shiftPx / mouthRadius : Number.NaN;
+    const ratio = Number.isFinite(floorRadius) && Number.isFinite(mouthRadius) && mouthRadius > 1e-9 ? floorRadius / mouthRadius : Number.NaN;
+
+    if ((Number.isFinite(shiftFrac) && shiftFrac > 0.38) || (Number.isFinite(ratio) && (ratio < 0.55 || ratio > 1.02))) warningCount += 1;
+    if ((Number.isFinite(shiftFrac) && shiftFrac > 0.50) || (Number.isFinite(ratio) && (ratio < 0.45 || ratio > 1.08))) criticalCount += 1;
+  });
+
+  const status = criticalCount > 0 || warningCount > 0 ? 'WARNING' : 'passed';
+  return `Floor D QC: ${status} | D warning ${warningCount}/${total} | D critical ${criticalCount}/${total}`;
+}
 
 function buildFigureRgbScientificLines({
   unitLabel,
@@ -6833,6 +6928,7 @@ function buildFigureRgbScientificLines({
   roiMode,
   backgroundModel,
   floorGeometryAvailable,
+  floorDQualitySummary,
   bestChannel,
 }: {
   unitLabel: string;
@@ -6845,6 +6941,7 @@ function buildFigureRgbScientificLines({
   roiMode: RoiMode;
   backgroundModel: BackgroundModel;
   floorGeometryAvailable: boolean;
+  floorDQualitySummary?: string;
   bestChannel: FitChannel;
 }): Array<{ text: string; emphasize?: boolean }> {
   const lines: Array<{ text: string; emphasize?: boolean }> = [];
@@ -6881,7 +6978,7 @@ function buildFigureRgbScientificLines({
   pushText('Fit: robust IRLS');
   pushText(`Plate: ${plateMap.length}-well | QC: ${plateStatus}`);
   pushText(`Plate QC: wells flagged ${flagged}/${total} | wells critical ${critical}/${total}`);
-  pushText(`Floor D QC: ${floorGeometryAvailable ? 'available' : 'missing'}`);
+  pushText(floorDQualitySummary ?? `Floor D QC: ${floorGeometryAvailable ? 'available' : 'missing'}`);
   pushText('');
   pushText('REFERENCE VALUES', true);
   if (expectedRefs.length === 0) {
@@ -6889,8 +6986,8 @@ function buildFigureRgbScientificLines({
   } else {
     expectedRefs.forEach((ref, index) => {
       const label = ref.label.trim() || ref.refId.trim() || `Reference ${index + 1}`;
-      const valueText = formatFigureScientificNumber(ref.value);
-      const sdText = ref.sd !== null && Number.isFinite(ref.sd) ? ` +/- ${formatFigureScientificNumber(ref.sd)}` : '';
+      const valueText = formatFigureReferenceNumber(ref.value);
+      const sdText = ref.sd !== null && Number.isFinite(ref.sd) ? ` +/- ${formatFigureReferenceNumber(ref.sd)}` : '';
       pushText(`${label}: ${valueText}${sdText} ${unitLabel}`);
     });
   }
@@ -6931,9 +7028,9 @@ function buildFigureRgbScientificLines({
         : Number.NaN;
       resultRows.push([
         figureRgbChannelShort(channel),
-        formatFigureScientificNumber(c0),
+        formatFigureConcentrationNumber(c0, refValue),
         formatFigureScientificNumber(ranking?.score ?? Number.NaN),
-        formatFigureScientificNumber(delta),
+        formatFigureDeltaNumber(delta, refValue),
         Number.isFinite(recovery) ? recovery.toFixed(0) : 'NA',
       ]);
     }
@@ -6949,11 +7046,11 @@ function buildFigureRgbScientificLines({
       const ranking = rankingByChannel.get(channel);
       return [
         figureRgbChannelShort(channel),
-        formatFigureScientificNumber(fit?.slope ?? Number.NaN),
-        formatFigureScientificNumber(fit?.intercept ?? Number.NaN),
-        formatFigureScientificNumber(fit?.r2 ?? Number.NaN),
-        formatFigureScientificNumber(ranking?.lod ?? Number.NaN),
-        formatFigureScientificNumber(ranking?.loq ?? Number.NaN),
+        formatFigureFitCoefficient(fit?.slope ?? Number.NaN),
+        formatFigureFitCoefficient(fit?.intercept ?? Number.NaN),
+        formatFigureR2(fit?.r2 ?? Number.NaN),
+        formatFigureLimitNumber(ranking?.lod ?? Number.NaN),
+        formatFigureLimitNumber(ranking?.loq ?? Number.NaN),
       ];
     });
     pushTable(formatFigureRgbTable(
@@ -6967,9 +7064,9 @@ function buildFigureRgbScientificLines({
       const fit = fits.find((item) => item.channel === channel);
       return [
         figureRgbChannelShort(channel),
-        formatFigureScientificNumber(fit?.slope ?? Number.NaN),
-        formatFigureScientificNumber(fit?.intercept ?? Number.NaN),
-        formatFigureScientificNumber(fit?.r2 ?? Number.NaN),
+        formatFigureFitCoefficient(fit?.slope ?? Number.NaN),
+        formatFigureFitCoefficient(fit?.intercept ?? Number.NaN),
+        formatFigureR2(fit?.r2 ?? Number.NaN),
       ];
     });
     pushTable(formatFigureRgbTable(
@@ -7356,6 +7453,7 @@ function buildPythonStyleFigureRgbCanvas({
   roiMode,
   backgroundModel,
   floorGeometryAvailable,
+  floorDQualitySummary,
   bestChannel,
 }: {
   imageBase: string;
@@ -7370,6 +7468,7 @@ function buildPythonStyleFigureRgbCanvas({
   roiMode: RoiMode;
   backgroundModel: BackgroundModel;
   floorGeometryAvailable: boolean;
+  floorDQualitySummary?: string;
   bestChannel: FitChannel;
 }): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
@@ -7420,6 +7519,7 @@ function buildPythonStyleFigureRgbCanvas({
     roiMode,
     backgroundModel,
     floorGeometryAvailable,
+    floorDQualitySummary,
     bestChannel,
   });
 
@@ -9762,6 +9862,8 @@ function App() {
       let pythonPlateOverlayCanvas: HTMLCanvasElement | null = null;
       let imageQcInfo: PythonImageQcInfo | undefined;
 
+      let floorDQualitySummary: string | undefined;
+
       if (image && measurements.length > 0 && wells.length === 96) {
         const exportWells = sharedGeometryOverride ? effectiveWells : wells;
         const exportFloorCircles = sharedGeometryOverride ? effectiveFloorCircles : floorCircles;
@@ -9782,6 +9884,14 @@ function App() {
           floorRoiRadiusFactor,
           exportFloorGeometryAvailable ? exportFloorCircles : null,
         );
+        floorDQualitySummary = buildFigureFloorDQualitySummary({
+          measurements,
+          wells: exportWells,
+          floorCircles: exportFloorGeometryAvailable ? exportFloorCircles : null,
+          radiusFactor,
+          floorGeometryAvailable: exportFloorGeometryAvailable,
+        });
+
         const pythonFigureRgbCanvas = buildPythonStyleFigureRgbCanvas({
           imageBase: pythonResultsBase,
           overlayCanvas: pythonPlateOverlayCanvas,
@@ -9795,6 +9905,7 @@ function App() {
           roiMode: currentMethodMetadata.roiMode,
           backgroundModel,
           floorGeometryAvailable: exportFloorGeometryAvailable,
+          floorDQualitySummary,
           bestChannel,
         });
         const pythonBestChannelCanvas = buildPythonStyleBestChannelCanvas({
@@ -9921,6 +10032,7 @@ function App() {
             plateMapUnit,
             expectedRefs,
             storedCalibration?.cielabReference,
+            floorDQualitySummary,
           ), { targetWidthPx: PNG_TWO_COLUMN_WIDTH_PX }),
         );
       }
