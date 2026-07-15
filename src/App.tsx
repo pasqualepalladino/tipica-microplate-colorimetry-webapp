@@ -3118,6 +3118,8 @@ function buildReportOverviewRows(
   addRow('Selected family', selectedQuantitativeCmp.Family ?? methodFamilyFromReportMethod(selectedName));
   addRow('Quantitative ranking mode', selectedQuantitativeCmp.RankMode ?? selectedQuantitativeCmp.Mode ?? '');
   addRow('Selected quantitative method score', selectedQuantitativeCmp.Score ?? '');
+  addRow('Best diagnostic comparison method', bestComparisonName);
+  addRow('Best diagnostic comparison score', bestCmp.Score ?? '');
 
   [
     ['R2 calibration', 'R2_cal'],
