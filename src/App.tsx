@@ -8825,7 +8825,33 @@ function App() {
     : projectLoadedInfo.savedLowSignalCorrectionEnabled
       ? 'Low-signal correction enabled'
       : 'Low-signal correction disabled';
-  const analysisStatusLabel = isRunningCompleteAnalysis || isExtracting || isFitting
+  const analysisBusy = isRunningCompleteAnalysis ||
+    isExtracting ||
+    isFitting ||
+    pendingCompleteAnalysisFitting ||
+    pendingCompleteAnalysisPackageExport;
+
+  const analysisBusyTitle = pendingCompleteAnalysisPackageExport
+    ? 'Preparing analysis package'
+    : pendingCompleteAnalysisFitting || isFitting
+      ? 'Fitting calibration and samples'
+      : isExtracting
+        ? 'Extracting plate signals'
+        : isRunningCompleteAnalysis
+          ? 'Running TIPICA analysis'
+          : 'Working';
+
+  const analysisBusyDetail = pendingCompleteAnalysisPackageExport
+    ? 'Creating the ZIP package with reports, diagnostics and figures.'
+    : pendingCompleteAnalysisFitting || isFitting
+      ? 'Estimating calibration, standard-addition and comparison metrics.'
+      : isExtracting
+        ? 'Reading well ROIs, background model and corrected RGB/PAbs signals.'
+        : isRunningCompleteAnalysis
+          ? 'Please keep this tab open while TIPICA completes the workflow.'
+          : 'Please keep this tab open.';
+
+  const analysisStatusLabel = analysisBusy
     ? 'Analysis running'
     : calibrationFits.length > 0 || standardAdditionFits.length > 0 || unknownResults.length > 0
       ? 'Results available'
@@ -10531,7 +10557,7 @@ function App() {
             disabled={!overlayReady || configuredWellCount === 0 || isExtracting || isFitting || isRunningCompleteAnalysis || projectImageMismatchBlocksExtraction}
             onClick={handleRunCompleteValidatedAnalysis}
           >
-            {isRunningCompleteAnalysis ? 'Running TIPICA analysis...' : 'Run TIPICA analysis'}
+            {analysisBusy ? 'TIPICA is working...' : 'Run TIPICA analysis'}
           </button>
         </section>
 
@@ -10701,6 +10727,15 @@ function App() {
           />
         </ResultSection>
       </section>
+      {analysisBusy ? (
+        <div className="analysis-rgb-floating-loader" role="status" aria-live="polite" aria-label={analysisBusyTitle}>
+          <span className="analysis-rgb-orb analysis-rgb-orb-red" />
+          <span className="analysis-rgb-orb analysis-rgb-orb-green" />
+          <span className="analysis-rgb-orb analysis-rgb-orb-blue" />
+          <span className="analysis-rgb-eclipse" />
+        </div>
+      ) : null}
+
       {isHelpAboutOpen ? <HelpAboutDialog onClose={() => setIsHelpAboutOpen(false)} /> : null}
     </main>
   );
