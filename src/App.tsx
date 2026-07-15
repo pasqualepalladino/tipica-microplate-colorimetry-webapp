@@ -4757,7 +4757,14 @@ interface CielabCompositeStdGroup {
 }
 
 function cielabCompositeDisplayName(channel: CielabCompositeChannel): string {
-  return channel;
+  const labels: Record<CielabCompositeChannel, string> = {
+    DeltaE_ab: 'ΔE_ab',
+    DeltaE_ab_chroma: 'ΔE_ab,chrom',
+    DeltaL: 'ΔL',
+    Deltaa: 'Δa',
+    Deltab: 'Δb',
+  };
+  return labels[channel];
 }
 
 function cielabCompositeColor(channel: CielabCompositeChannel): string {
@@ -4860,7 +4867,9 @@ function buildCielabCompositeScientificLines({
 }): Array<{ text: string; emphasize?: boolean }> {
   const lines: Array<{ text: string; emphasize?: boolean }> = [];
   const comparisonByMethod = new Map(comparisonRows.map((row) => [String(row.Method ?? ''), row]));
-  const selectedLabel = selectedDescriptor.trim();
+  const selectedLabel = CIELAB_COMPOSITE_CHANNELS.includes(selectedDescriptor.trim() as CielabCompositeChannel)
+    ? cielabCompositeDisplayName(selectedDescriptor.trim() as CielabCompositeChannel)
+    : selectedDescriptor.trim();
   const pushText = (text: string, emphasize = false) => lines.push({ text, emphasize });
   const pushTable = (tableLines: string[]) => {
     tableLines.forEach((line, index) => {
@@ -5184,12 +5193,7 @@ function drawPythonStyleCielabCompositePanel(
   ctx.save();
   ctx.translate(bounds.x + 36, plot.y + plot.height / 2);
   ctx.rotate(-Math.PI / 2);
-  ctx.fillText(cielabCompositeDisplayName(channel)
-    .replace('DeltaE_ab_chroma', 'ΔE_ab,chrom')
-    .replace('DeltaE_ab', 'ΔE_ab')
-    .replace('DeltaL', 'ΔL')
-    .replace('Deltaa', 'Δa')
-    .replace('Deltab', 'Δb'), 0, 0);
+  ctx.fillText(cielabCompositeDisplayName(channel), 0, 0);
   ctx.restore();
 
   if (Number.isFinite(calibrationSlope) && Number.isFinite(calibrationIntercept)) {
@@ -5332,15 +5336,7 @@ function buildPythonStyleCielabDeltaECanvas(
     comparisonRows,
     selectedDescriptor,
     floorDQualitySummary,
-  }).map((line) => ({
-    ...line,
-    text: line.text
-      .replace(/DeltaE_ab_chroma/g, 'ΔE_ab,chrom')
-      .replace(/DeltaE_ab/g, 'ΔE_ab')
-      .replace(/DeltaL/g, 'ΔL')
-      .replace(/Deltaa/g, 'Δa')
-      .replace(/Deltab/g, 'Δb'),
-  }));
+  });
 
   void imageBase;
   ctx.fillStyle = '#ffffff';
@@ -5355,8 +5351,8 @@ function buildPythonStyleCielabDeltaECanvas(
     760,
     38,
     height - 95,
-    '32px Consolas, "Courier New", monospace',
-    '700 32px Consolas, "Courier New", monospace',
+    '32px "Cascadia Mono", Consolas, "Courier New", monospace',
+    '700 32px "Cascadia Mono", Consolas, "Courier New", monospace',
   );
 
   const comparisonByMethod = new Map(comparisonRows.map((row) => [String(row.Method ?? ''), row]));
@@ -6774,19 +6770,23 @@ function formatFigureRgbTable(headers: string[], rows: string[][]): string[] {
     });
   });
 
-  const formatRow = (row: string[]) => row.map((cell, index) => {
-    if (index === 0) {
-      return cell.padEnd(widths[index], ' ');
-    }
-    return cell.padStart(widths[index], ' ');
-  }).join('  ');
+  const isNumericLike = (cell: string) => {
+    const trimmed = cell.trim();
+    return trimmed === 'NA' || /^[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[-+]?\d+)?$/i.test(trimmed);
+  };
 
-  const divider = widths.map((width) => '-'.repeat(width));
-  return [
-    formatRow(headers),
-    formatRow(divider),
-    ...rows.map((row) => formatRow(row)),
-  ];
+  const rightAligned = headers.map((_, index) => (
+    index > 0 && rows.length > 0 && rows.every((row) => isNumericLike(row[index] ?? ''))
+  ));
+
+  const formatRow = (row: string[]) => row.map((cell, index) => (
+    rightAligned[index]
+      ? cell.padStart(widths[index] ?? cell.length)
+      : cell.padEnd(widths[index] ?? cell.length)
+  )).join('  ').trimEnd();
+
+  const separator = widths.map((width) => '-'.repeat(width)).join('  ');
+  return [formatRow(headers), separator, ...rows.map(formatRow)];
 }
 
 function figureRgbChannelShort(channel: FitChannel): string {
@@ -6861,15 +6861,7 @@ function formatFigureLimitNumber(value: number, fallback = 'NA'): string {
 }
 
 function formatFigureFitCoefficient(value: number, fallback = 'NA'): string {
-  if (!Number.isFinite(value)) {
-    return fallback;
-  }
-  const absValue = Math.abs(value);
-  if (absValue >= 10) return value.toFixed(2);
-  if (absValue >= 1) return value.toFixed(3);
-  if (absValue >= 0.1) return value.toFixed(3);
-  if (absValue >= 0.01) return value.toFixed(4);
-  return value.toFixed(5);
+  return Number.isFinite(value) ? value.toFixed(4) : fallback;
 }
 
 function formatFigureR2(value: number, fallback = 'NA'): string {
@@ -7531,8 +7523,8 @@ function buildPythonStyleFigureRgbCanvas({
     760,
     38,
     height - 95,
-    '32px Consolas, "Courier New", monospace',
-    '700 32px Consolas, "Courier New", monospace',
+    '32px "Cascadia Mono", Consolas, "Courier New", monospace',
+    '700 32px "Cascadia Mono", Consolas, "Courier New", monospace',
   );
 
   const panelX = 1190;
