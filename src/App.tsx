@@ -1685,7 +1685,7 @@ Quality control
 Image, plate, geometry and floor-QC messages are alerts on data quality. No automatic image correction is applied.
 
 Geometry and epsilon/path-length quantification
-When epsilon-based unknown quantification is used, the Python desktop estimates optical path length from configured liquid volume and nominal flat-bottom well area. This web milestone does not implement epsilon/path-length quantification; when added, it must assume ANSI/SLAS-compatible flat-bottom microplate geometry and flag non-flat or non-certified geometries for separate validation.
+When epsilon-based unknown quantification is configured, optical path length is estimated from configured liquid volume and nominal flat-bottom well area. This path assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation.
 
 Units
 Reported concentrations are expressed in ${unitLabel}.
@@ -1714,7 +1714,7 @@ DIAGNOSTICS.xlsx
 Diagnostic workbook with available background, ROI, geometry, spatial, method-comparison and CIELAB fitting tables. The web export also includes two web-specific physical-background audit sheets: 13_BG_MODEL_INPUTS, which records the final background samples actually used by the polynomial BG fit, and 14_BG_MODEL_COEFFICIENTS, which records polynomial coefficients and robust residual summaries. These sheets support reproducibility and troubleshooting of the web physical BG model and do not change concentration calculations.
 
 Geometry and epsilon/path-length quantification
-When epsilon-based unknown quantification is used, the Python desktop estimates optical path length from configured liquid volume and nominal flat-bottom well area. This web milestone does not implement epsilon/path-length quantification; non-flat or non-certified geometries require separate validation.
+When epsilon-based unknown quantification is configured, optical path length is estimated from configured liquid volume and nominal flat-bottom well area. This path assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation.
 
 Units
 Reported concentrations are expressed in ${unitLabel}.
