@@ -198,6 +198,8 @@ export function PlateMapEditor({
     })));
   }, [expectedRefs]);
 
+  const [extendedView, setExtendedView] = useState(true);
+
   const collectedExpectedRefs: ExpectedRef[] = useMemo(
     () => collectExpectedRefs(expectedRows),
     [expectedRows],
@@ -209,7 +211,7 @@ export function PlateMapEditor({
       unitExp,
       expectedRefs: collectedExpectedRefs,
       idDfPriority,
-      extendedView: true,
+      extendedView,
     });
 
     const nextPlateMap = plateDataToWellConfigs(state.data, nrow, ncol);
@@ -265,7 +267,7 @@ export function PlateMapEditor({
       unitExp,
       expectedRefs: collectedExpectedRefs,
       idDfPriority,
-      extendedView: true,
+      extendedView,
     });
     return state.data.length;
   }, [
@@ -278,6 +280,18 @@ export function PlateMapEditor({
     unitBase,
     unitExp,
   ]);
+
+  const plateCellWidthClass = useMemo(() => {
+    if (extendedView) {
+      if (ncol <= 12) return 'plate-config-cells-8';
+      if (ncol <= 24) return 'plate-config-cells-6';
+      return 'plate-config-cells-5';
+    }
+
+    if (ncol <= 12) return 'plate-config-cells-6';
+    if (ncol <= 24) return 'plate-config-cells-5';
+    return 'plate-config-cells-4';
+  }, [extendedView, ncol]);
 
   const setCell = (row: number, col: number, value: string) => {
     const key = `${row}_${col}`;
@@ -445,7 +459,7 @@ export function PlateMapEditor({
   };
 
   return (
-    <section className="results-panel" aria-labelledby="plate-map-heading">
+    <section className={`results-panel plate-config-panel ${plateCellWidthClass}`} aria-labelledby="plate-map-heading">
       <div className="section-title-row">
         <h2 id="plate-map-heading">Plate Configurator</h2>
         <div className="button-row">
@@ -458,6 +472,15 @@ export function PlateMapEditor({
       <section className="nested-control-section" aria-labelledby="experiment-setup-heading">
         <h3 id="experiment-setup-heading">Experiment setup</h3>
         <div className="plate-config-setup-row">
+          <label className="checkbox-control plate-config-extended-control">
+            <input
+              type="checkbox"
+              checked={extendedView}
+              onChange={(event) => setExtendedView(event.currentTarget.checked)}
+            />
+            <span>Extended view</span>
+          </label>
+
           <label className="select-control plate-config-format-control">
             <span>Plate format</span>
             <select
@@ -487,18 +510,21 @@ export function PlateMapEditor({
             </select>
           </label>
 
-          <label className="select-control plate-config-exp-control">
-            <span>x 10^</span>
-            <input
-              type="text"
-              value={unitExp}
-              onChange={(event) => setUnitExp(event.currentTarget.value)}
-            />
-          </label>
+          {extendedView ? (
+            <label className="select-control plate-config-exp-control">
+              <span>x 10^</span>
+              <input
+                type="text"
+                value={unitExp}
+                onChange={(event) => setUnitExp(event.currentTarget.value)}
+              />
+            </label>
+          ) : null}
           <p className="panel-note plate-config-unit-note">Unit: {buildUnitLabel(unitBase, unitExp)}</p>
         </div>
       </section>
 
+      {extendedView ? (
       <section className="nested-control-section" aria-labelledby="analysis-options-heading">
         <h3 id="analysis-options-heading">Analysis options</h3>
 
@@ -526,7 +552,9 @@ export function PlateMapEditor({
           </fieldset>
         </div>
       </section>
+      ) : null}
 
+      {extendedView ? (
       <section className="nested-control-section" aria-labelledby="reference-values-heading">
         <h3 id="reference-values-heading">Reference values</h3>
 
@@ -587,6 +615,7 @@ export function PlateMapEditor({
           </div>
         ))}
       </section>
+      ) : null}
 
       <section className="nested-control-section" aria-labelledby="plate-map-editor-heading">
         <h3 id="plate-map-editor-heading">Plate map editor</h3>
@@ -598,20 +627,24 @@ export function PlateMapEditor({
           <button type="button" className="secondary-button" onClick={handleCopyCol1}>
             Copy col 1
           </button>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={handleExportCsvTemplate}
-          >
-            Export CSV template
-          </button>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={handleImportCsvClick}
-          >
-            Import CSV
-          </button>
+          {extendedView ? (
+            <>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={handleExportCsvTemplate}
+              >
+                Export CSV template
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={handleImportCsvClick}
+              >
+                Import CSV
+              </button>
+            </>
+          ) : null}
           <input
             ref={fileInputRef}
             className="visually-hidden"
@@ -631,13 +664,13 @@ export function PlateMapEditor({
             <thead>
               <tr>
                 <th>Row</th>
-                {idDfPriority === 'row' ? (
+                {extendedView && idDfPriority === 'row' ? (
                   <>
                     <th>DF</th>
                     <th>ID</th>
                   </>
                 ) : null}
-                <th>Type</th>
+                {extendedView ? <th>Type</th> : null}
                 {Array.from({ length: ncol }, (_, col) => (
                   <th key={`header-col-${col}`}>{col + 1}</th>
                 ))}
@@ -647,7 +680,7 @@ export function PlateMapEditor({
               {Array.from({ length: nrow }, (_, row) => (
                 <tr key={`row-${row}`}>
                   <th>{rowLabelFromIndex(row)}</th>
-                  {idDfPriority === 'row' ? (
+                  {extendedView && idDfPriority === 'row' ? (
                     <>
                       <td>
                         <input
@@ -671,32 +704,34 @@ export function PlateMapEditor({
                       </td>
                     </>
                   ) : null}
-                  <td>
-                    <div className="button-row left-aligned-button-row plate-tag-buttons">
-                      <button
-                        type="button"
-                        className="secondary-button plate-tag-button"
-                        onClick={() => handleTagRow(row, 'U')}
-                      >
-                        U
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-button plate-tag-button"
-                        onClick={() => handleTagRow(row, 'C')}
-                        disabled={storedCalibrationLoaded}
-                      >
-                        C
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-button plate-tag-button"
-                        onClick={() => handleTagRow(row, 'A')}
-                      >
-                        A
-                      </button>
-                    </div>
-                  </td>
+                  {extendedView ? (
+                    <td>
+                      <div className="button-row left-aligned-button-row plate-tag-buttons">
+                        <button
+                          type="button"
+                          className="secondary-button plate-tag-button"
+                          onClick={() => handleTagRow(row, 'U')}
+                        >
+                          U
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-button plate-tag-button"
+                          onClick={() => handleTagRow(row, 'C')}
+                          disabled={storedCalibrationLoaded}
+                        >
+                          C
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-button plate-tag-button"
+                          onClick={() => handleTagRow(row, 'A')}
+                        >
+                          A
+                        </button>
+                      </div>
+                    </td>
+                  ) : null}
                   {Array.from({ length: ncol }, (_, col) => {
                     const key = `${row}_${col}`;
                     const value = grid[key] ?? '';
@@ -719,9 +754,9 @@ export function PlateMapEditor({
                 </tr>
               ))}
 
-              {idDfPriority === 'col' ? (
+              {extendedView && idDfPriority === 'col' ? (
                 <>
-                  <tr>
+                  <tr className="plate-col-default-row">
                     <th colSpan={2}>Col DF</th>
                     {Array.from({ length: ncol }, (_, col) => (
                       <td key={`col-df-${col}`}>
@@ -736,7 +771,7 @@ export function PlateMapEditor({
                       </td>
                     ))}
                   </tr>
-                  <tr>
+                  <tr className="plate-col-default-row">
                     <th colSpan={2}>Col ID</th>
                     {Array.from({ length: ncol }, (_, col) => (
                       <td key={`col-id-${col}`}>

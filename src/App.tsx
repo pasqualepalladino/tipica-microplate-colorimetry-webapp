@@ -10265,9 +10265,83 @@ function App() {
     pendingCompleteAnalysisPackageExport,
     standardAdditionFitsWithSlopeContext.length,
   ]);
+  const [plateConfiguratorDialogDismissed, setPlateConfiguratorDialogDismissed] = useState(false);
+
+  const configuratorOnly = !image;
+
+  const plateConfiguratorDialogOpen = configuratorOnly && !plateConfiguratorDialogDismissed;
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${configuratorOnly ? 'app-shell-configurator-only' : ''}`}>
+      {plateConfiguratorDialogOpen ? (
+        <section className="plate-config-dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="plate-map-heading">
+          <div className="plate-config-dialog">
+            <PlateMapEditor
+              plateMap={plateMap}
+              unitLabel={plateMapUnit}
+              expectedRefs={expectedRefs}
+              editorSnapshot={plateEditorSnapshot}
+              storedCalibrationLoaded={Boolean(storedCalibration)}
+              onChange={handlePlateMapChange}
+              onClear={handleClearPlateMap}
+              onExpectedRefsChange={setExpectedRefs}
+              onUnitLabelChange={setPlateMapUnit}
+              onEditorSnapshotChange={setPlateEditorSnapshot}
+            />
+            <ImageGeometryLoader
+              imageName={imageName}
+              geometryName={geometryName}
+              showCameraCapture
+              showGeometryUpload={SHOW_PUBLIC_GEOMETRY_JSON_UPLOAD}
+              onImageLoaded={(loadedImage, fileName) => {
+                setImage(loadedImage);
+                setImageName(fileName);
+                clearMeasurementsAndFits();
+                setError(null);
+              }}
+              onGeometryLoaded={(loadedGeometry, fileName) => {
+                const loadedHasFloorGeometry = hasFloorGeometry(loadedGeometry);
+                const hadFloorGeometry = Boolean(geometry && hasFloorGeometry(geometry));
+                const reconciledGeometry = reconcileLoadedGeometryFloor(
+                  loadedGeometry,
+                  loadedHasFloorGeometry ? 'json' : 'none',
+                  geometry,
+                  floorGeometrySource,
+                );
+
+                setGeometry(reconciledGeometry.geometry);
+                setGeometryName(fileName);
+                setGeometrySource('json');
+                // Once a project is loaded, its saved analysis ROI factor stays authoritative;
+                // otherwise loading geometry after a project could change extraction math.
+                if (!projectLoadedInfo && reconciledGeometry.geometry.roi_radius_factor) {
+                  setRadiusFactor(reconciledGeometry.geometry.roi_radius_factor);
+                }
+                if (reconciledGeometry.geometry.mouth_radius_px) {
+                  setManualMouthRadiusPx(clampManualMouthRadiusPx(reconciledGeometry.geometry.mouth_radius_px));
+                }
+                setFloorGeometrySource(reconciledGeometry.floorGeometrySource);
+                setFloorGeometryNotice(loadedHasFloorGeometry
+                  ? null
+                  : reconciledGeometry.preservedCurrentFloorGeometry
+                    ? 'Geometry JSON did not include floor circles; preserved compatible floor circles already loaded.'
+                    : hadFloorGeometry
+                      ? 'Loaded mouth/corner geometry does not include floor circles; existing floor circles were not preserved because the mouth/corner geometry differs.'
+                      : null);
+                setManualPickingActive(false);
+                setManualPoints([]);
+                setFloorCirclePickingActive(false);
+                setManualFloorCircles([]);
+                setManualFloorCirclePreviewCenter(null);
+                setManualFloorCircleRadiusDelta(0);
+                clearMeasurementsAndFits();
+                setError(null);
+              }}
+              onError={setError}
+            />
+          </div>
+        </section>
+      ) : null}
       <aside className="control-panel">
         <header className="app-header">
           <div className="header-title-row">
@@ -10379,6 +10453,7 @@ function App() {
         <ImageGeometryLoader
           imageName={imageName}
           geometryName={geometryName}
+              showCameraCapture
           showGeometryUpload={SHOW_PUBLIC_GEOMETRY_JSON_UPLOAD}
           onImageLoaded={(loadedImage, fileName) => {
             setImage(loadedImage);
@@ -10674,18 +10749,21 @@ function App() {
           showFloorCircles={showFloorCircles}
           floorCircles={floorCircles}
         />
-        <PlateMapEditor
-          plateMap={plateMap}
-          unitLabel={plateMapUnit}
-          expectedRefs={expectedRefs}
-          editorSnapshot={plateEditorSnapshot}
-          storedCalibrationLoaded={Boolean(storedCalibration)}
-          onChange={handlePlateMapChange}
-          onClear={handleClearPlateMap}
-          onExpectedRefsChange={setExpectedRefs}
-          onUnitLabelChange={setPlateMapUnit}
-          onEditorSnapshotChange={setPlateEditorSnapshot}
-        />
+        {plateConfiguratorDialogOpen ? null : (
+  <PlateMapEditor
+            plateMap={plateMap}
+            unitLabel={plateMapUnit}
+            expectedRefs={expectedRefs}
+            editorSnapshot={plateEditorSnapshot}
+            storedCalibrationLoaded={Boolean(storedCalibration)}
+            onChange={handlePlateMapChange}
+            onClear={handleClearPlateMap}
+            onExpectedRefsChange={setExpectedRefs}
+            onUnitLabelChange={setPlateMapUnit}
+            onEditorSnapshotChange={setPlateEditorSnapshot}
+          />
+
+        )}
         <ResultSection
           title="Stored Calibration"
           summary={storedCalibration ? `${storedCalibration.fits.length} channels loaded` : 'No stored calibration loaded'}

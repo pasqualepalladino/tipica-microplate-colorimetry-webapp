@@ -1040,3 +1040,361 @@ h2 {
     --rgb-y: 15.94px;
   }
 }
+/* Python PlateLayoutUI size policy translated to the web panel.
+   Tkinter fixes the window to the visible grid bbox, capped at 85% screen.
+   Here the browser window is not resized; the Plate Configurator panel is. */
+.plate-config-panel {
+  width: max-content;
+  max-width: min(100%, 85vw);
+  align-self: flex-start;
+  justify-self: flex-start;
+}
+
+.plate-config-panel .plate-map-wrap {
+  width: max-content;
+  max-width: min(100%, calc(85vw - 40px));
+  max-height: min(54vh, calc(85vh - 160px));
+}
+
+.plate-config-cells-8 {
+  --plate-config-cell-width: 8ch;
+}
+
+.plate-config-cells-6 {
+  --plate-config-cell-width: 6ch;
+}
+
+.plate-config-cells-5 {
+  --plate-config-cell-width: 5ch;
+}
+
+.plate-config-cells-4 {
+  --plate-config-cell-width: 4ch;
+}
+
+.plate-config-panel .plate-cell-input {
+  width: var(--plate-config-cell-width);
+}
+
+.plate-config-panel .plate-col-default-row .plate-default-input {
+  width: var(--plate-config-cell-width);
+}
+/* Python-like initial configurator phase: before an image is loaded, avoid reserving
+   the full image-analysis workspace around the plate configurator. */
+.app-shell-configurator-only {
+  grid-template-columns: minmax(240px, 300px) max-content;
+  align-items: start;
+  min-height: auto;
+}
+
+.app-shell-configurator-only .control-panel {
+  min-height: auto;
+  padding: 14px 16px;
+  gap: 14px;
+}
+
+.app-shell-configurator-only .canvas-panel {
+  align-items: flex-start;
+  min-height: auto;
+  padding: 14px 16px;
+  overflow: visible;
+}
+
+.app-shell-configurator-only .canvas-stage,
+.app-shell-configurator-only .empty-canvas,
+.app-shell-configurator-only .result-details {
+  display: none;
+}
+
+.app-shell-configurator-only .plate-config-panel {
+  align-self: flex-start;
+  justify-self: flex-start;
+}
+/* Python-like Plate Configurator dialog.
+   Mirrors the standalone Tkinter configurator window more closely than the full
+   image-analysis workspace. */
+.plate-config-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: grid;
+  place-items: start center;
+  padding: 24px;
+  overflow: auto;
+  background: rgba(238, 242, 241, 0.96);
+}
+
+.plate-config-dialog {
+  display: grid;
+  gap: 10px;
+  width: max-content;
+  max-width: min(85vw, 100%);
+  max-height: min(85vh, calc(100vh - 48px));
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid #cfd8d4;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 18px 48px rgba(32, 47, 45, 0.18);
+}
+
+.plate-config-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.plate-config-dialog .plate-config-panel {
+  max-width: min(100%, 85vw);
+}
+
+.plate-config-dialog .plate-map-wrap {
+  max-width: min(100%, calc(85vw - 52px));
+  max-height: min(54vh, calc(85vh - 190px));
+}
+
+@media (max-width: 760px) {
+  .plate-config-dialog-backdrop {
+    padding: 10px;
+  }
+
+  .plate-config-dialog {
+    max-width: 100%;
+    max-height: calc(100vh - 20px);
+    padding: 10px;
+  }
+
+  .plate-config-dialog-header {
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+.plate-config-dialog .control-section {
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #e1e7e4;
+}
+
+.plate-config-dialog .file-control {
+  grid-template-columns: max-content minmax(220px, 1fr);
+  align-items: center;
+  gap: 8px;
+  max-width: 560px;
+}
+
+.plate-config-dialog .file-name {
+  min-height: 1.2em;
+}
+/* Python-like compact override for the initial Plate Configurator dialog.
+   The dialog is the configurator window: maximize useful grid/function space,
+   avoid the full web workspace chrome, and keep image controls visible. */
+.plate-config-dialog-backdrop {
+  place-items: start center;
+  padding: 8px 10px;
+}
+
+.plate-config-dialog {
+  gap: 5px;
+  max-width: min(96vw, 100%);
+  max-height: calc(100vh - 16px);
+  padding: 8px 10px;
+  border-radius: 6px;
+  box-shadow: 0 10px 26px rgba(32, 47, 45, 0.16);
+}
+
+/* The PlateMapEditor already has the Python-equivalent title row.
+   Hide the web-app modal banner so the dialog behaves like the Python configurator,
+   not like a second application shell. */
+.plate-config-dialog-header {
+  display: none;
+}
+
+.plate-config-dialog .plate-config-panel {
+  gap: 4px;
+  max-width: min(100%, calc(96vw - 20px));
+}
+
+.plate-config-dialog .section-title-row {
+  min-height: 24px;
+  padding-bottom: 2px;
+}
+
+.plate-config-dialog h2 {
+  font-size: 0.9rem;
+  line-height: 1.1;
+}
+
+.plate-config-dialog h3 {
+  font-size: 0.82rem;
+  line-height: 1.1;
+}
+
+.plate-config-dialog .plate-config-setup-row,
+.plate-config-dialog .plate-config-options-row,
+.plate-config-dialog .plate-config-reference-row,
+.plate-config-dialog .plate-config-tools-row {
+  gap: 4px 8px;
+}
+
+.plate-config-dialog .plate-config-field label,
+.plate-config-dialog .radio-control,
+.plate-config-dialog .checkbox-control,
+.plate-config-dialog .plate-config-unit-note,
+.plate-config-dialog .plate-config-reference-count,
+.plate-config-dialog .panel-note,
+.plate-config-dialog .file-name {
+  font-size: 0.78rem;
+}
+
+.plate-config-dialog input,
+.plate-config-dialog select {
+  min-height: 22px;
+  height: 24px;
+  padding-top: 1px;
+  padding-bottom: 1px;
+}
+
+.plate-config-dialog .primary-button,
+.plate-config-dialog .secondary-button {
+  min-height: 26px;
+  padding: 0 8px;
+}
+
+.plate-config-dialog .plate-map-wrap {
+  width: max-content;
+  max-width: min(100%, calc(96vw - 24px));
+  max-height: none;
+}
+
+.plate-config-dialog .plate-map-grid {
+  font-size: 0.66rem;
+  line-height: 1.05;
+}
+
+.plate-config-dialog .plate-map-grid th,
+.plate-config-dialog .plate-map-grid td {
+  padding: 1px 2px;
+}
+
+.plate-config-dialog .plate-map-grid td > input {
+  height: 18px;
+  padding: 0 2px;
+  border-radius: 3px;
+}
+
+.plate-config-dialog .plate-tag-button {
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0 3px;
+  border-radius: 3px;
+  font-size: 0.64rem;
+}
+
+.plate-config-dialog .control-section {
+  gap: 3px;
+  padding-top: 6px;
+  border-top: 1px solid #e1e7e4;
+}
+
+.plate-config-dialog .file-control {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  align-items: center;
+  justify-content: start;
+  gap: 6px;
+  max-width: none;
+}
+
+.plate-config-dialog .file-control input[type="file"] {
+  max-width: 260px;
+}
+
+.plate-config-dialog .file-name {
+  min-height: 1em;
+  margin: 0;
+}
+
+@media (max-width: 760px) {
+  .plate-config-dialog {
+    max-width: calc(100vw - 12px);
+    max-height: calc(100vh - 12px);
+    padding: 6px;
+  }
+
+  .plate-config-dialog .plate-map-wrap {
+    max-width: calc(100vw - 24px);
+  }
+}
+/* Python-like workflow cleanup: the dialog is the configurator window itself. */
+.plate-config-dialog {
+  gap: 4px;
+}
+
+.plate-config-dialog .plate-config-dialog-header {
+  display: none;
+}
+
+.plate-config-dialog .control-section h2 {
+  font-size: 0.84rem;
+  margin: 0;
+}
+
+.plate-config-dialog .control-section {
+  margin-top: 3px;
+}
+
+.plate-config-dialog .file-control span {
+  font-weight: 700;
+}
+
+.plate-config-dialog .file-control input[type="file"] {
+  font-size: 0.78rem;
+}
+
+.plate-config-dialog .plate-config-panel > h2 {
+  display: none;
+}
+.camera-capture-control {
+  display: grid;
+  gap: 4px;
+}
+
+.camera-capture-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.camera-capture-label {
+  font-weight: 700;
+}
+
+.camera-device-control {
+  display: grid;
+  grid-template-columns: max-content minmax(180px, 320px);
+  align-items: center;
+  gap: 6px;
+}
+
+.camera-device-control select {
+  min-width: 0;
+}
+
+.camera-preview {
+  width: min(360px, 100%);
+  max-height: 220px;
+  border: 1px solid #c8d3cf;
+  border-radius: 4px;
+  background: #101414;
+}
+
+.camera-preview-hidden {
+  display: none;
+}
+
+.plate-config-dialog .camera-preview {
+  width: min(320px, 100%);
+  max-height: 180px;
+}
