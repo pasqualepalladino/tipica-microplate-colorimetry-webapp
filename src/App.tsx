@@ -1675,7 +1675,7 @@ Calibration and standard-addition fits in the primary RGB export path use the Py
 Ranking score
 For methods with both calibration and standard addition, the Python desktop global score is:
     GlobalScore = slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ)
-with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|). This web export computes LOQ for PNG channel selection from the median calibration replicate SD when that SD is available, following the current Python-style ranking helper. If LOQ is unavailable, the browser fallback uses the fit-only common factors. Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
+with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|), using the standard-addition fit with the highest R2 for RGB PNG channel selection. This web export computes LOQ for PNG channel selection from the median calibration replicate SD when that SD is available, following the current Python-style ranking helper. If calibration+standard-addition ranking is unavailable, fallback channel scores use R2_cal^2 x abs(m_cal) or R2_std^2 x abs(m_std). Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
 
 Reference values and recovery
 External reference values, when provided, are used only for external comparison (Delta and recovery). They are not used to choose the ranked RGB method.
@@ -6478,59 +6478,53 @@ function computePythonResultsChannelRankings(
   return PYTHON_RESULTS_CHANNELS.map((channel) => {
     const cal = calibrationFits.find((fit) => fit.channel === channel);
     const std = standardAdditionFits.filter((fit) => fit.channel === channel);
+    const bestStd = std
+      .filter((fit) => Number.isFinite(fit.r2))
+      .sort((a, b) => (b.r2 ?? Number.NEGATIVE_INFINITY) - (a.r2 ?? Number.NEGATIVE_INFINITY))[0];
     const calibrationPoints = collectCalibrationPointsForChannel(channel, measurements, plateMap);
     const estimatedSigma = estimateSigmaForPythonResultsLoq(calibrationPoints);
     const sigma = cal?.sigmaCal ?? estimatedSigma.sigma;
     const source = cal?.sigmaSource ?? estimatedSigma.source;
-    const r2Cal = cal && Number.isFinite(cal.r2) ? Math.max(0, cal.r2) : Number.NaN;
-    const r2StdValues = std
-      .map((fit) => fit.r2)
-      .filter((value) => Number.isFinite(value))
-      .map((value) => Math.max(0, value));
-    const r2Std = meanFinite(r2StdValues);
-    const slopeAgreementValues = std
-      .map((fit) => {
-        if (typeof fit.internalSlopeAgreement === 'number' && Number.isFinite(fit.internalSlopeAgreement)) {
-          return fit.internalSlopeAgreement;
-        }
-
-        if (cal && Number.isFinite(cal.slope) && Number.isFinite(fit.slope)) {
-          const denominator = Math.max(Math.abs(cal.slope), Math.abs(fit.slope), 1e-12);
-          return Math.min(Math.abs(cal.slope), Math.abs(fit.slope)) / denominator;
-        }
-
-        return Number.NaN;
-      })
-      .filter((value) => Number.isFinite(value))
-      .map((value) => Math.max(0, Math.min(1, value)));
-    const slopeAgreement = meanFinite(slopeAgreementValues);
+    const hasCal = Boolean(cal && Number.isFinite(cal.slope) && Number.isFinite(cal.r2));
+    const hasStd = Boolean(bestStd && Number.isFinite(bestStd.r2));
+    const r2Cal = hasCal && cal ? Math.max(0, cal.r2) : Number.NaN;
+    const r2Std = hasStd && bestStd ? Math.max(0, bestStd.r2) : Number.NaN;
+    const slopeAgreement = hasCal && hasStd && cal && bestStd && Number.isFinite(bestStd.slope)
+      ? (() => {
+        const denominator = Math.max(Math.abs(cal.slope), Math.abs(bestStd.slope), 1e-12);
+        return Math.min(Math.abs(cal.slope), Math.abs(bestStd.slope)) / denominator;
+      })()
+      : Number.NaN;
     const slope = cal?.slope ?? Number.NaN;
     const lod = cal && Number.isFinite(cal.lod ?? Number.NaN)
       ? cal.lod as number
       : cal && Number.isFinite(sigma) && sigma > 0 && Number.isFinite(slope) && Math.abs(slope) > 1e-15
-      ? (3 * sigma) / Math.abs(slope)
-      : Number.NaN;
+        ? (3 * sigma) / Math.abs(slope)
+        : Number.NaN;
     const loq = cal && Number.isFinite(cal.loq ?? Number.NaN)
       ? cal.loq as number
       : cal && Number.isFinite(sigma) && sigma > 0 && Number.isFinite(slope) && Math.abs(slope) > 1e-15
-      ? (10 * sigma) / Math.abs(slope)
-      : Number.NaN;
-    let score = computePythonFitBaseScore(r2Cal, r2Std, slopeAgreement, loq);
-    let scoreFormula = Number.isFinite(loq) && loq > 0
-      ? 'slope_agreement^2 * sqrt(R2_cal * R2_std) * (1/LOQ)'
-      : 'slope_agreement^2 * sqrt(R2_cal * R2_std)';
+        ? (10 * sigma) / Math.abs(slope)
+        : Number.NaN;
+    let score = Number.NaN;
+    let scoreFormula = 'unavailable';
 
-    if (!Number.isFinite(score) || score <= 0) {
-      if (Number.isFinite(r2Cal)) {
-        score = r2Cal;
-        scoreFormula = 'R2_cal fallback';
-      } else if (Number.isFinite(r2Std)) {
-        score = r2Std;
-        scoreFormula = 'R2_std fallback';
-      } else {
+    if (hasCal && hasStd) {
+      score = computePythonFitBaseScore(r2Cal, r2Std, slopeAgreement, loq);
+      scoreFormula = Number.isFinite(loq) && loq > 0
+        ? 'slope_agreement^2 * sqrt(R2_cal * R2_std) * (1/LOQ)'
+        : 'slope_agreement^2 * sqrt(R2_cal * R2_std)';
+      if (!Number.isFinite(score) || score <= 0) {
         score = 0;
-        scoreFormula = 'unavailable';
       }
+    } else if (hasCal && cal) {
+      score = (r2Cal ** 2) * Math.abs(cal.slope);
+      scoreFormula = 'R2_cal^2 * abs(m_cal)';
+    } else if (hasStd && bestStd) {
+      score = (r2Std ** 2) * Math.abs(bestStd.slope);
+      scoreFormula = 'R2_std^2 * abs(m_std)';
+    } else {
+      score = 0;
     }
 
     return {
@@ -6547,7 +6541,6 @@ function computePythonResultsChannelRankings(
     };
   }).sort((a, b) => b.score - a.score || PYTHON_RESULTS_CHANNELS.indexOf(a.channel) - PYTHON_RESULTS_CHANNELS.indexOf(b.channel));
 }
-
 function selectBestRgbChannel(
   calibrationFits: CalibrationFit[],
   standardAdditionFits: StandardAdditionFit[],
