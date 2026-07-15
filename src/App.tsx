@@ -1673,9 +1673,9 @@ Fitting and quantification
 Calibration and standard-addition fits in the primary RGB export path use robust residual-based IRLS linear regression with covariance propagation. For standard addition, the original-sample concentration is C0 = DF x q/m, where y = m x + q and x is the added concentration.
 
 Ranking score
-For RGB channel selection with both calibration and standard addition, the global score is:
-    GlobalScore = slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ)
-with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|), using the standard-addition fit with the highest R2 for RGB PNG channel selection. This web export computes LOQ for PNG channel selection from the median calibration replicate SD when that SD is available, following the current RGB ranking helper. If calibration+standard-addition ranking is unavailable, fallback channel scores use R2_cal^2 x abs(m_cal) or R2_std^2 x abs(m_std). Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
+For primary RGB figure/channel selection, the RGB ranking helper uses fit-quality criteria from calibration and standard addition. When both are available, the score uses slope agreement, calibration R2, standard-addition R2 and LOQ; the RGB PNG channel selection uses the best available standard-addition fit for that channel. If calibration+standard-addition ranking is unavailable, fallback RGB channel scores use calibration-only or standard-addition-only fit quality. Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
+
+The workbook-level 07_METHOD_COMPARISON sheet reports the cross-method diagnostic score separately, using common comparable factors across RGB/PAbs and CIELAB/DeltaE methods.
 
 Reference values and recovery
 External reference values, when provided, are used only for external comparison (Delta and recovery). They are not used to choose the ranked RGB method.
@@ -1685,7 +1685,7 @@ Quality control
 Image, plate, geometry and floor-QC messages are alerts on data quality. No automatic image correction is applied.
 
 Geometry and epsilon/path-length quantification
-When epsilon-based unknown quantification is configured, optical path length is estimated from configured liquid volume and nominal flat-bottom well area. This path assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation.
+When epsilon-based unknown quantification is configured, optical path length is estimated from configured liquid volume and nominal flat-bottom well area. This path assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation. This section is informational unless epsilon/path-length mode is configured.
 
 Units
 Reported concentrations are expressed in ${unitLabel}.
@@ -1714,7 +1714,7 @@ DIAGNOSTICS.xlsx
 Diagnostic workbook with available background, ROI, geometry, spatial, method-comparison and CIELAB fitting tables. The web export also includes two web-specific physical-background audit sheets: 13_BG_MODEL_INPUTS, which records the final background samples actually used by the polynomial BG fit, and 14_BG_MODEL_COEFFICIENTS, which records polynomial coefficients and robust residual summaries. These sheets support reproducibility and troubleshooting of the web physical BG model and do not change concentration calculations.
 
 Geometry and epsilon/path-length quantification
-When epsilon-based unknown quantification is configured, optical path length is estimated from configured liquid volume and nominal flat-bottom well area. This path assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation.
+When epsilon-based unknown quantification is configured, optical path length is estimated from configured liquid volume and nominal flat-bottom well area. This path assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation. This section is informational unless epsilon/path-length mode is configured.
 
 Units
 Reported concentrations are expressed in ${unitLabel}.
