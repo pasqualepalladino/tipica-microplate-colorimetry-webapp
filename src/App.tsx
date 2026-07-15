@@ -1670,12 +1670,12 @@ The primary RGB signal is pseudo-absorbance, reported as PAbs_Red, PAbs_Green an
 where I_well is the linearized median intensity from the well ROI and I_BG is the linearized local inter-well background predicted for that well. This is an image-derived pseudo-absorbance and is not assumed to be a spectrophotometric absorbance.
 
 Fitting and quantification
-Calibration and standard-addition fits in the primary RGB export path use the Python robust residual-based IRLS linear regression port with covariance propagation. Full fitting parity across every Python workflow path remains under validation. For standard addition, the original-sample concentration is C0 = DF x q/m, where y = m x + q and x is the added concentration.
+Calibration and standard-addition fits in the primary RGB export path use robust residual-based IRLS linear regression with covariance propagation. For standard addition, the original-sample concentration is C0 = DF x q/m, where y = m x + q and x is the added concentration.
 
 Ranking score
-For methods with both calibration and standard addition, the Python desktop global score is:
+For RGB channel selection with both calibration and standard addition, the global score is:
     GlobalScore = slope_agreement^2 x sqrt(R2_cal x R2_std) x (1/LOQ)
-with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|), using the standard-addition fit with the highest R2 for RGB PNG channel selection. This web export computes LOQ for PNG channel selection from the median calibration replicate SD when that SD is available, following the current Python-style ranking helper. If calibration+standard-addition ranking is unavailable, fallback channel scores use R2_cal^2 x abs(m_cal) or R2_std^2 x abs(m_std). Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
+with slope_agreement = min(|m_cal|, |m_std|) / max(|m_cal|, |m_std|), using the standard-addition fit with the highest R2 for RGB PNG channel selection. This web export computes LOQ for PNG channel selection from the median calibration replicate SD when that SD is available, following the current RGB ranking helper. If calibration+standard-addition ranking is unavailable, fallback channel scores use R2_cal^2 x abs(m_cal) or R2_std^2 x abs(m_std). Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
 
 Reference values and recovery
 External reference values, when provided, are used only for external comparison (Delta and recovery). They are not used to choose the ranked RGB method.
@@ -1705,7 +1705,7 @@ analysis_run_config.json
 Web-specific reproducibility and audit metadata for the exported run. It records the app-side configuration, selected analysis options and geometry/background settings needed to understand or reproduce how this ZIP was generated. It is not a Python-canonical result table and does not change concentration calculations; it is included to help users, reviewers or support personnel verify the analysis context after export.
 
 FIGURE_CIELAB_DELTAE.png
-Python-style CIELAB/DeltaE fitting/report figure with plate preview, descriptor fitting panels, reference values, C0/Score/Delta/Recovery tables, calibration and standard-addition summaries. The exported CIELAB/DeltaE fit rows use the robust IRLS helper, but full CIELAB parity also depends on descriptor-input parity.
+CIELAB/DeltaE fitting/report figure with plate preview, descriptor fitting panels, reference values, C0/Score/Delta/Recovery tables, calibration and standard-addition summaries. The exported CIELAB/DeltaE fit rows use the robust IRLS helper; CIELAB/DeltaE descriptors are diagnostic/comparative rather than the primary quantitative RGB/PAbs method.
 
 METHOD_COMPARISON.png
 Cross-method diagnostic comparison for currently available webapp methods. Score uses common fit-quality factors; external reference values and recovery checks are displayed as checks and do not affect ranking.
@@ -7948,7 +7948,7 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
           <h3>Analysis options block</h3>
           <ul>
             <li>All points are always used in fitting.</li>
-            <li>Primary RGB calibration and standard-addition fit rows use the Python robust residual-based IRLS port; full fitting parity across every Python path remains under validation.</li>
+            <li>Primary RGB calibration and standard-addition fit rows use robust residual-based IRLS with covariance propagation.</li>
             <li>RGB signal is fixed to full background normalization. The image is never modified.</li>
             <li>ID/DF priority: chooses whether row defaults or column defaults are applied first.</li>
           </ul>
