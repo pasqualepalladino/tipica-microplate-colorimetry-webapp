@@ -1042,14 +1042,12 @@ function refinePhysicalCellCandidates(modelPixels: CandidatePixel[]): CandidateP
   if (modelPixels.length < PHYSICAL_MIN_CELL_PIXELS) {
     return modelPixels;
   }
-
   const { gray, mask: modelMask, buckets } = buildPhysicalCanonicalRaster(modelPixels);
   const modelValues = maskedValues(gray, modelMask);
 
   if (modelValues.length < 32) {
     return modelPixels;
   }
-
   const grayBlur = gaussianBlur5x5(gray);
   const blurredValues = maskedValues(grayBlur, modelMask);
   const thresholdOtsu = otsuThreshold(blurredValues);
@@ -1084,7 +1082,6 @@ function refinePhysicalCellCandidates(modelPixels: CandidatePixel[]): CandidateP
   }
 
   candidateMask = erodeMask(candidateMask, PHYSICAL_CANONICAL_REFINE_ERODE_PX);
-
   const selected: CandidatePixel[] = [];
 
   buckets.forEach((bucket, key) => {
@@ -1096,7 +1093,6 @@ function refinePhysicalCellCandidates(modelPixels: CandidatePixel[]): CandidateP
       selected.push(...bucket);
     }
   });
-
   return selected.length >= 20 ? selected : modelPixels;
 }
 
@@ -1265,6 +1261,12 @@ function createPhysicalInterwellCandidates(
       }
 
       const quad = [topLeft, topRight, bottomRight, bottomLeft];
+      const localExclusionWellIndices = [
+        row * 12 + col,
+        row * 12 + col + 1,
+        (row + 1) * 12 + col,
+        (row + 1) * 12 + col + 1,
+      ];
       const projectedPolygonAreaPx = polygonArea(quad);
       const cellDiagnostic: BackgroundCellDiagnostic = {
         cellRow: row,
@@ -1301,7 +1303,6 @@ function createPhysicalInterwellCandidates(
       const canonicalSize = 220;
       const averageCellScale = Math.max(1, 0.5 * (sxPx + syPx));
       const canonicalStep = Math.max(2, Math.round((sampleStride * canonicalSize) / averageCellScale));
-
       for (let canonicalY = 0; canonicalY < canonicalSize; canonicalY += canonicalStep) {
         for (let canonicalX = 0; canonicalX < canonicalSize; canonicalX += canonicalStep) {
           const canonical = {
@@ -1352,7 +1353,7 @@ function createPhysicalInterwellCandidates(
 
           let tooCloseToWell = false;
 
-          for (let w = 0; w < wells.length; w += 1) {
+          for (const w of localExclusionWellIndices) {
             if (isInsideProjectedWellExclusion(px, py, wells, w, exclusionRadii, floorCircles)) {
               tooCloseToWell = true;
               break;
@@ -1383,13 +1384,11 @@ function createPhysicalInterwellCandidates(
           });
         }
       }
-
       const fullResolutionModelPixels: CandidatePixel[] = [];
       const fullX0 = Math.max(0, Math.floor(Math.min(...quad.map((point) => point.x))));
       const fullX1 = Math.min(width - 1, Math.ceil(Math.max(...quad.map((point) => point.x))));
       const fullY0 = Math.max(0, Math.floor(Math.min(...quad.map((point) => point.y))));
       const fullY1 = Math.min(height - 1, Math.ceil(Math.max(...quad.map((point) => point.y))));
-
       for (let y = fullY0; y <= fullY1; y += 1) {
         for (let x = fullX0; x <= fullX1; x += 1) {
           const px = x + 0.5;
@@ -1418,7 +1417,7 @@ function createPhysicalInterwellCandidates(
 
           let tooCloseToWell = false;
 
-          for (let w = 0; w < wells.length; w += 1) {
+          for (const w of localExclusionWellIndices) {
             if (isInsideProjectedWellExclusion(px, py, wells, w, exclusionRadii, floorCircles)) {
               tooCloseToWell = true;
               break;
@@ -1448,17 +1447,22 @@ function createPhysicalInterwellCandidates(
           });
         }
       }
-
       cellDiagnostic.pixelsAfterWellDiskExclusion = modelPixels.length;
       rawPixels.push(...modelPixels);
-      const refinedPixels = refinePhysicalCellCandidates(modelPixels);
       const fullResolutionRefinedPixels = refinePhysicalCellCandidates(fullResolutionModelPixels);
       const fullResolutionAcceptedPixels = robustFilterPhysicalCell(fullResolutionRefinedPixels);
-      const fullResolutionStatsPixels = fullResolutionAcceptedPixels.length >= PHYSICAL_MIN_CELL_PIXELS
-        ? fullResolutionAcceptedPixels
-        : refinedPixels;
+      let sampledFinalAcceptedPixels: number | undefined;
+      let fullResolutionStatsPixels = fullResolutionAcceptedPixels;
+
+      if (fullResolutionAcceptedPixels.length < PHYSICAL_MIN_CELL_PIXELS) {
+        const refinedPixels = refinePhysicalCellCandidates(modelPixels);
+        sampledFinalAcceptedPixels = refinedPixels.length;
+        fullResolutionStatsPixels = refinedPixels;
+      }
       pixels.push(...fullResolutionStatsPixels);
-      cellDiagnostic.sampledFinalAcceptedPixels = refinedPixels.length;
+      if (sampledFinalAcceptedPixels !== undefined) {
+        cellDiagnostic.sampledFinalAcceptedPixels = sampledFinalAcceptedPixels;
+      }
       cellDiagnostic.fullResolutionPixelsAfterWellDiskExclusion = fullResolutionModelPixels.length;
       cellDiagnostic.fullResolutionRefinedBeforeMadPixels = fullResolutionRefinedPixels.length;
       cellDiagnostic.fullResolutionFinalAcceptedPixels = fullResolutionStatsPixels.length;
@@ -1474,7 +1478,6 @@ function createPhysicalInterwellCandidates(
       cellDiagnostics.push(cellDiagnostic);
     }
   }
-
   return {
     collection: { pixels, rawPixels, stride: sampleStride },
     diagnostics: {
@@ -2402,7 +2405,6 @@ export function estimatePhysicalInterwellPolynomialBackgrounds(
       `Physical inter-well polynomial background found too few candidate pixels; ${summarizeCellDiagnosticsFailure(diagnostics.cellDiagnostics)}; falling back to robust inter-well background v1.`,
     );
   }
-
   const filteredResult = filterPhysicalCandidatePixels(collection.pixels);
   const filtered = filteredResult.pixels;
   const cellDiagnosticsAfterFiltering = updateCellDiagnosticsAfterFiltering(diagnostics.cellDiagnostics, filtered);
@@ -2418,7 +2420,6 @@ export function estimatePhysicalInterwellPolynomialBackgrounds(
       `Physical inter-well polynomial background found too few accepted pixels after robust filtering; ${summarizeCellDiagnosticsFailure(diagnosticsWithAccepted.cellDiagnostics)}; falling back to robust inter-well background v1.`,
     );
   }
-
   const samples = buildPhysicalCellSamples(filtered);
   const cellDiagnosticsWithSamples = updateCellDiagnosticsWithSamples(cellDiagnosticsAfterFiltering, samples);
   const diagnosticsWithSamples = {
@@ -2433,7 +2434,6 @@ export function estimatePhysicalInterwellPolynomialBackgrounds(
       `Physical inter-well polynomial background found too few inter-well samples for a quadratic fit; ${summarizeCellDiagnosticsFailure(diagnosticsWithSamples.cellDiagnostics)}; falling back to robust inter-well background v1.`,
     );
   }
-
   const modelR = fitPoly2Robust(samples, 'r');
   const modelG = fitPoly2Robust(samples, 'g');
   const modelB = fitPoly2Robust(samples, 'b');
