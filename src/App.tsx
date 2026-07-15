@@ -8094,7 +8094,7 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
 
         <section className="about-dialog-section">
           <h3>Citation / version</h3>
-          <p>Version v0.1.22-beta. Author: Pasquale Palladino. License: AGPL-3.0-only. Webapp DOI: https://doi.org/10.5281/zenodo.21218968.</p>
+          <p>Version v0.1.28-beta. Author: Pasquale Palladino. License: AGPL-3.0-only. Webapp DOI: https://doi.org/10.5281/zenodo.21218968.</p>
         </section>
       </section>
     </div>
@@ -8440,7 +8440,7 @@ function App() {
   const [floorGeometrySource, setFloorGeometrySource] = useState<FloorGeometrySource>('none');
   const [floorGeometryNotice, setFloorGeometryNotice] = useState<string | null>(null);
   const [sharedGeometryOverride, setSharedGeometryOverride] = useState<SharedGeometryOverrideState | null>(null);
-  const [sharedGeometryOverrideStatus, setSharedGeometryOverrideStatus] = useState('No Python canonical geometry override active.');
+  const [sharedGeometryOverrideStatus, setSharedGeometryOverrideStatus] = useState('No shared geometry override active.');
   const [radiusFactor, setRadiusFactor] = useState(DEFAULT_RADIUS_FACTOR);
   const [roiMode, setRoiMode] = useState<'simple' | 'floor-aware' | 'mouth-floor-intersection'>('mouth-floor-intersection');
   const [roiPixelStatisticsMode, setRoiPixelStatisticsMode] = useState<RoiPixelStatisticsMode>('robust-trimmed-v1');
@@ -8852,7 +8852,7 @@ function App() {
     clearFits();
   }, [clearFits]);
 
-  const clearSharedGeometryOverrideState = useCallback((status = 'No Python canonical geometry override active.') => {
+  const clearSharedGeometryOverrideState = useCallback((status = 'No shared geometry override active.') => {
     setSharedGeometryOverride(null);
     setSharedGeometryOverrideStatus(status);
   }, []);
@@ -8876,7 +8876,7 @@ function App() {
       const override = parseSharedGeometryOverrideJson(text, file.name, requiredWellIds);
       setSharedGeometryOverride(override);
       setSharedGeometryOverrideStatus(
-        `Python canonical geometry override active: ${override.wellCount} wells from ${file.name}. Ignored fields: ${override.ignoredFields.length > 0 ? override.ignoredFields.join(', ') : 'none'}.`,
+        `Shared geometry override active: ${override.wellCount} wells from ${file.name}. Ignored fields: ${override.ignoredFields.length > 0 ? override.ignoredFields.join(', ') : 'none'}.`,
       );
       clearMeasurementsAndFits();
       clearFits();
@@ -8890,7 +8890,7 @@ function App() {
         clearSharedGeometryOverrideState(`Shared geometry override load failed: ${detail}`);
       }
       clearMeasurementsAndFits();
-      setError(`Could not load Python canonical geometry: ${file.name}. ${detail}`);
+      setError(`Could not load shared geometry override: ${file.name}. ${detail}`);
     } finally {
       event.currentTarget.value = '';
     }
@@ -8938,7 +8938,7 @@ function App() {
     setGeometry(null);
     setGeometryName(null);
     setGeometrySource('manual');
-    clearSharedGeometryOverrideState('Python canonical geometry override cleared because mouth/corner geometry changed.');
+    clearSharedGeometryOverrideState('Shared geometry override cleared because mouth/corner geometry changed.');
     clearMeasurementsAndFits();
     setError(null);
   }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, floorGeometryAvailable, image, radiusFactor, wells]);
@@ -9004,7 +9004,7 @@ function App() {
       setManualFloorCirclePreviewCenter(null);
       setManualFloorCircleRadiusDelta(0);
       setFloorCirclePickingActive(false);
-      clearSharedGeometryOverrideState('Python canonical geometry override cleared because mouth/corner geometry changed.');
+      clearSharedGeometryOverrideState('Shared geometry override cleared because mouth/corner geometry changed.');
     }
   }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, geometrySource, manualPoints]);
 
@@ -9022,7 +9022,7 @@ function App() {
       setManualFloorCirclePreviewCenter(null);
       setManualFloorCircleRadiusDelta(0);
       setFloorCirclePickingActive(false);
-      clearSharedGeometryOverrideState('Python canonical geometry override cleared because mouth/corner geometry changed.');
+      clearSharedGeometryOverrideState('Shared geometry override cleared because mouth/corner geometry changed.');
     }
   }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, geometrySource]);
 
@@ -9065,7 +9065,7 @@ function App() {
     setFloorGeometryNotice(null);
     setShowFloorCircles(true);
     setGeometry(geometryWithoutFloorCircles(geometry));
-    clearSharedGeometryOverrideState('Python canonical geometry override cleared because floor geometry changed.');
+    clearSharedGeometryOverrideState('Shared geometry override cleared because floor geometry changed.');
     clearMeasurementsAndFits();
     setError(null);
   }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, geometry, image, wells.length]);
@@ -9121,7 +9121,7 @@ function App() {
       setManualFloorCircleRadiusDelta(0);
       setFloorGeometryNotice(null);
       setStatusMessage('Manual floor-circle geometry complete');
-      clearSharedGeometryOverrideState('Python canonical geometry override cleared because floor geometry changed.');
+      clearSharedGeometryOverrideState('Shared geometry override cleared because floor geometry changed.');
     }
 
     setError(null);
@@ -9145,7 +9145,7 @@ function App() {
 
     if (geometry) {
       setGeometry(geometryWithoutFloorCircles(geometry));
-      clearSharedGeometryOverrideState('Python canonical geometry override cleared because floor geometry changed.');
+      clearSharedGeometryOverrideState('Shared geometry override cleared because floor geometry changed.');
       clearMeasurementsAndFits();
     }
   }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, geometry]);
@@ -10488,7 +10488,7 @@ function App() {
               className="secondary-button"
               onClick={handleLoadSharedGeometryOverrideClick}
             >
-              Load Python canonical geometry JSON
+              Load shared geometry JSON
             </button>
             <button
               type="button"
@@ -10508,7 +10508,7 @@ function App() {
             <dl className="status-list compact-status-list">
               <div>
                 <dt>Override</dt>
-                <dd>{sharedGeometryOverride ? 'Python canonical geometry override active' : 'No override active'}</dd>
+                <dd>{sharedGeometryOverride ? 'Shared geometry override active' : 'No override active'}</dd>
               </div>
               <div>
                 <dt>Override wells</dt>
