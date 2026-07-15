@@ -7446,7 +7446,9 @@ function drawPythonBestChannelPlot(
   unitLabel: string,
   expectedRefs: ExpectedRef[],
 ): void {
-  const color = '#111111';
+  const axisColor = '#111111';
+  const errorBarColor = '#111111';
+  const channelColor = channel === 'R' ? '#ff0000' : channel === 'G' ? '#008000' : '#0000ff';
   const ptToPx = 220 / 72;
   const fontFamily = '"DejaVu Sans", Arial, sans-serif';
   const titleFontPx = 12 * ptToPx;
@@ -7523,9 +7525,9 @@ function drawPythonBestChannelPlot(
   const xToPx = (value: number) => plot.x + ((value - xRange.min) / (xRange.max - xRange.min)) * plot.width;
   const yToPx = (value: number) => plot.y + plot.height - ((value - yRange.min) / (yRange.max - yRange.min)) * plot.height;
 
-  const drawLine = (x1: number, y1: number, x2: number, y2: number, dash: number[] = [], width = 1): void => {
+  const drawLine = (x1: number, y1: number, x2: number, y2: number, dash: number[] = [], width = 1, stroke = channelColor): void => {
     ctx.save();
-    ctx.strokeStyle = color;
+    ctx.strokeStyle = stroke;
     ctx.lineWidth = width;
     ctx.setLineDash(dash);
     ctx.beginPath();
@@ -7573,7 +7575,7 @@ function drawPythonBestChannelPlot(
 
   const drawOpenCircle = (x: number, y: number, r: number): void => {
     ctx.save();
-    ctx.strokeStyle = color;
+    ctx.strokeStyle = channelColor;
     ctx.fillStyle = '#ffffff';
     ctx.lineWidth = 1.8 * ptToPx;
     ctx.beginPath();
@@ -7585,8 +7587,8 @@ function drawPythonBestChannelPlot(
 
   const drawFilledSquare = (x: number, y: number, size: number): void => {
     ctx.save();
-    ctx.fillStyle = color;
-    ctx.strokeStyle = color;
+    ctx.fillStyle = channelColor;
+    ctx.strokeStyle = channelColor;
     ctx.lineWidth = 1.2 * ptToPx;
     ctx.fillRect(x - size / 2, y - size / 2, size, size);
     ctx.strokeRect(x - size / 2, y - size / 2, size, size);
@@ -7596,7 +7598,7 @@ function drawPythonBestChannelPlot(
   const drawOpenSquare = (x: number, y: number, size: number): void => {
     ctx.save();
     ctx.fillStyle = '#ffffff';
-    ctx.strokeStyle = color;
+    ctx.strokeStyle = channelColor;
     ctx.lineWidth = 1.8 * ptToPx;
     ctx.fillRect(x - size / 2, y - size / 2, size, size);
     ctx.strokeRect(x - size / 2, y - size / 2, size, size);
@@ -7607,12 +7609,12 @@ function drawPythonBestChannelPlot(
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
 
-  ctx.strokeStyle = color;
+  ctx.strokeStyle = axisColor;
   ctx.lineWidth = 1.0 * ptToPx;
   ctx.strokeRect(plot.x, plot.y, plot.width, plot.height);
 
   if (yRange.min <= 0 && yRange.max >= 0) {
-    drawLine(plot.x, yToPx(0), plot.x + plot.width, yToPx(0), [], 0.6 * ptToPx);
+    drawLine(plot.x, yToPx(0), plot.x + plot.width, yToPx(0), [], 0.6 * ptToPx, axisColor);
   }
 
   const xTicks = [-20, 0, 20, 40].filter((tick) => tick >= xRange.min && tick <= xRange.max);
@@ -7620,8 +7622,8 @@ function drawPythonBestChannelPlot(
   const yTicks = [-0.2, 0, 0.2, 0.4, 0.6].filter((tick) => tick >= yRange.min && tick <= yRange.max);
   const yMinorTicks = [-0.3, -0.1, 0.1, 0.3, 0.5, 0.7].filter((tick) => tick >= yRange.min && tick <= yRange.max);
 
-  ctx.strokeStyle = color;
-  ctx.fillStyle = color;
+  ctx.strokeStyle = axisColor;
+  ctx.fillStyle = axisColor;
   ctx.lineWidth = 1.0 * ptToPx;
   xTicks.forEach((tick) => {
     const x = xToPx(tick);
@@ -7688,7 +7690,7 @@ function drawPythonBestChannelPlot(
     const y = yToPx(point.y);
     drawOpenCircle(x, y, markerPx / 2);
     if (Number.isFinite(point.yerr ?? Number.NaN) && (point.yerr ?? 0) > 0) {
-      drawVerticalErrorBar(ctx, x, yToPx(point.y - (point.yerr ?? 0)), yToPx(point.y + (point.yerr ?? 0)), 3 * ptToPx, color);
+      drawVerticalErrorBar(ctx, x, yToPx(point.y - (point.yerr ?? 0)), yToPx(point.y + (point.yerr ?? 0)), 3 * ptToPx, errorBarColor);
     }
   });
 
@@ -7702,7 +7704,7 @@ function drawPythonBestChannelPlot(
         drawFilledSquare(x, y, markerPx);
       }
       if (Number.isFinite(point.yerr ?? Number.NaN) && (point.yerr ?? 0) > 0) {
-        drawVerticalErrorBar(ctx, x, yToPx(point.y - (point.yerr ?? 0)), yToPx(point.y + (point.yerr ?? 0)), 3 * ptToPx, color);
+        drawVerticalErrorBar(ctx, x, yToPx(point.y - (point.yerr ?? 0)), yToPx(point.y + (point.yerr ?? 0)), 3 * ptToPx, errorBarColor);
       }
     });
   });
@@ -7719,12 +7721,12 @@ function drawPythonBestChannelPlot(
       const y = yToPx(0);
       drawOpenSquare(x, y, refMarkerPx);
       if (Number.isFinite(rsd) && rsd > 0) {
-        drawHorizontalErrorBar(ctx, xToPx(rv - rsd), xToPx(rv + rsd), y, 3 * ptToPx, color);
+        drawHorizontalErrorBar(ctx, xToPx(rv - rsd), xToPx(rv + rsd), y, 3 * ptToPx, errorBarColor);
       }
     });
   });
 
-  ctx.fillStyle = color;
+  ctx.fillStyle = axisColor;
   ctx.font = `700 ${axisFontPx}px ${fontFamily}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
