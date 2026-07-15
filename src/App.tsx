@@ -3129,6 +3129,8 @@ function buildReportOverviewRows(
     ['C0 SD median', 'C0_sd_median'],
     ['beta (mean)', 'beta_mean'],
     ['Bias index (mean)', 'bias_index_mean'],
+    ['LOD', 'LOD'],
+    ['LOQ', 'LOQ'],
   ].forEach(([label, key]) => addRow(label, selectedQuantitativeCmp[key]));
 
   fitRows
