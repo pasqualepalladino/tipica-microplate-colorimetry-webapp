@@ -9,3 +9,6 @@ vite-dev.out.log
 vite-dev.err.log
 
 test_data/manual_comparison/
+# Local audit artifacts
+audit/
+scripts/auditXlsxParity*.py
