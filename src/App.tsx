@@ -3244,10 +3244,22 @@ function appendOverviewReferenceRows(
     return;
   }
 
-  const selectedRows = fitRows.filter((row) => stringRowValue(row, 'Channel') === selectedName);
+  const selectedRows = fitRows.filter((row) => {
+    if (stringRowValue(row, 'Channel') !== selectedName) {
+      return false;
+    }
+    if (!['StdAdd', 'UnknownFromCal', 'UnknownFromEpsilon'].includes(stringRowValue(row, 'FitType'))) {
+      return false;
+    }
+    return Number.isFinite(finiteNumber(row.C0, Number.NaN));
+  });
 
   selectedRows.forEach((row) => {
     expectedRefs.forEach((ref, index) => {
+      if (!referenceMatchesSample(ref, stringRowValue(row, 'ID'))) {
+        return;
+      }
+
       const label = ref.label?.trim() || ref.refId?.trim() || `Reference ${index + 1}`;
       const value = typeof ref.value === 'number' ? ref.value : Number.NaN;
 
@@ -3270,7 +3282,7 @@ function appendOverviewReferenceRows(
       const fitTypeLabel = pythonOverviewFitTypeLabel(stringRowValue(row, 'FitType'), true);
       const rowTag = `${fitTypeLabel} ID=${stringRowValue(row, 'ID')} DF=${formatPythonOverviewDf(row.DF)}`;
       rows.push({ Field: `${rowTag} delta (${unitLabel})`, Value: c0 - value });
-      if (value !== 0) {
+      if (Math.abs(value) > 1e-15) {
         rows.push({ Field: `${rowTag} recovery (%)`, Value: 100 * c0 / value });
       }
     });
