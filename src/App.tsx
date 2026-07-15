@@ -553,11 +553,95 @@ function downloadCanvasPng(canvas: HTMLCanvasElement, fileName: string): void {
   link.remove();
 }
 
-function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+interface PngExportOptions {
+  targetWidthPx?: number;
+  dpi?: number;
+}
+
+const PNG_ONE_COLUMN_WIDTH_PX = 1063;
+const PNG_TWO_COLUMN_WIDTH_PX = 2126;
+const PNG_EXPORT_DPI = 300;
+
+function resizeCanvasToWidth(canvas: HTMLCanvasElement, targetWidthPx?: number): HTMLCanvasElement {
+  if (!targetWidthPx || targetWidthPx <= 0 || canvas.width === targetWidthPx) {
+    return canvas;
+  }
+
+  const scale = targetWidthPx / canvas.width;
+  const targetHeightPx = Math.max(1, Math.round(canvas.height * scale));
+  const out = document.createElement('canvas');
+  out.width = targetWidthPx;
+  out.height = targetHeightPx;
+  const ctx = out.getContext('2d');
+  if (!ctx) {
+    return canvas;
+  }
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(canvas, 0, 0, targetWidthPx, targetHeightPx);
+  return out;
+}
+
+function crc32Png(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i += 1) {
+    crc ^= bytes[i];
+    for (let j = 0; j < 8; j += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function writeUint32Be(bytes: Uint8Array, offset: number, value: number): void {
+  bytes[offset] = (value >>> 24) & 0xff;
+  bytes[offset + 1] = (value >>> 16) & 0xff;
+  bytes[offset + 2] = (value >>> 8) & 0xff;
+  bytes[offset + 3] = value & 0xff;
+}
+
+async function addPngDpiMetadata(blob: Blob, dpi: number): Promise<Blob> {
+  const source = new Uint8Array(await blob.arrayBuffer());
+  if (source.length < 33) {
+    return blob;
+  }
+
+  const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (!signature.every((value, index) => source[index] === value)) {
+    return blob;
+  }
+
+  const pixelsPerMeter = Math.round(dpi / 0.0254);
+  const chunkType = new TextEncoder().encode('pHYs');
+  const chunkData = new Uint8Array(9);
+  writeUint32Be(chunkData, 0, pixelsPerMeter);
+  writeUint32Be(chunkData, 4, pixelsPerMeter);
+  chunkData[8] = 1;
+
+  const chunk = new Uint8Array(4 + 4 + 9 + 4);
+  writeUint32Be(chunk, 0, 9);
+  chunk.set(chunkType, 4);
+  chunk.set(chunkData, 8);
+  const crcInput = new Uint8Array(4 + 9);
+  crcInput.set(chunkType, 0);
+  crcInput.set(chunkData, 4);
+  writeUint32Be(chunk, 17, crc32Png(crcInput));
+
+  const insertAt = 33;
+  const out = new Uint8Array(source.length + chunk.length);
+  out.set(source.slice(0, insertAt), 0);
+  out.set(chunk, insertAt);
+  out.set(source.slice(insertAt), insertAt + chunk.length);
+  return new Blob([out], { type: 'image/png' });
+}
+
+function canvasToPngBlob(canvas: HTMLCanvasElement, options: PngExportOptions = {}): Promise<Blob> {
+  const exportCanvas = resizeCanvasToWidth(canvas, options.targetWidthPx);
   return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
+    exportCanvas.toBlob((blob) => {
       if (blob) {
-        resolve(blob);
+        addPngDpiMetadata(blob, options.dpi ?? PNG_EXPORT_DPI).then(resolve).catch(reject);
       } else {
         reject(new Error('Could not encode diagnostic PNG.'));
       }
@@ -7664,7 +7748,6 @@ function drawPythonBestChannelPlot(
   ctx.font = `${titleFontPx}px ${fontFamily}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'bottom';
-  ctx.fillText(`Best channel: ${channelDisplayName(channel)}`, plot.x + plot.width / 2, plot.y - 8 * ptToPx);
 
   const legendX = plot.x + 14 * ptToPx;
   let legendY = plot.y + 16 * ptToPx;
@@ -9708,17 +9791,17 @@ function App() {
         addZipBlob(
           files,
           `${pythonResultsPrefix}_BEST_CHANNEL.png`,
-          await canvasToPngBlob(pythonBestChannelCanvas),
+          await canvasToPngBlob(pythonBestChannelCanvas, { targetWidthPx: PNG_ONE_COLUMN_WIDTH_PX }),
         );
         addZipBlob(
           files,
           `${pythonResultsPrefix}_FIGURE_RGB.png`,
-          await canvasToPngBlob(pythonFigureRgbCanvas),
+          await canvasToPngBlob(pythonFigureRgbCanvas, { targetWidthPx: PNG_TWO_COLUMN_WIDTH_PX }),
         );
         addZipBlob(
           files,
           `${pythonResultsPrefix}_PLATE_ROI_OVERLAY.png`,
-          await canvasToPngBlob(pythonPlateOverlayCanvas),
+          await canvasToPngBlob(pythonPlateOverlayCanvas, { targetWidthPx: PNG_ONE_COLUMN_WIDTH_PX }),
         );
 
         if (geometry) {
@@ -9737,7 +9820,7 @@ function App() {
           addZipBlob(
             files,
             `${pythonRawDataDetailsPrefix}_BG_STAT_MASK.png`,
-            await canvasToPngBlob(backgroundMaskCanvas),
+            await canvasToPngBlob(backgroundMaskCanvas, { targetWidthPx: PNG_ONE_COLUMN_WIDTH_PX }),
           );
         }
       }
@@ -9819,7 +9902,7 @@ function App() {
             plateMapUnit,
             expectedRefs,
             storedCalibration?.cielabReference,
-          )),
+          ), { targetWidthPx: PNG_TWO_COLUMN_WIDTH_PX }),
         );
       }
       if (methodComparisonRows.length > 0) {
@@ -9831,7 +9914,7 @@ function App() {
             methodComparisonRows,
             expectedRefs,
             plateMapUnit,
-          )),
+          ), { targetWidthPx: PNG_TWO_COLUMN_WIDTH_PX }),
         );
       }
 
