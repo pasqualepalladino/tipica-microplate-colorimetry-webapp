@@ -8044,12 +8044,6 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
         <section className="about-dialog-section">
           <h3>TIPICA</h3>
           <p>Tool for Image-based Plate-Integrated Colorimetric Analysis.</p>
-          <p>
-            Public webapp:{' '}
-            <a href="https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/" target="_blank" rel="noreferrer">
-              https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/
-            </a>
-          </p>
         </section>
 
         <section className="about-dialog-section">
