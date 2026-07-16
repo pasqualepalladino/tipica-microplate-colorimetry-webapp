@@ -525,7 +525,6 @@ export function PlateMapEditor({
               />
             </label>
           ) : null}
-          <p className="panel-note plate-config-unit-note">Unit: {buildUnitLabel(unitBase, unitExp)}</p>
           {onHelpRequest ? (
             <button
               type="button"
