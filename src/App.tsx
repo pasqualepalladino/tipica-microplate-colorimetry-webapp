@@ -10453,7 +10453,6 @@ function App() {
         <ImageGeometryLoader
           imageName={imageName}
           geometryName={geometryName}
-              showCameraCapture
           showGeometryUpload={SHOW_PUBLIC_GEOMETRY_JSON_UPLOAD}
           onImageLoaded={(loadedImage, fileName) => {
             setImage(loadedImage);
@@ -10750,7 +10749,7 @@ function App() {
           floorCircles={floorCircles}
         />
         {plateConfiguratorDialogOpen ? null : (
-  <PlateMapEditor
+          <PlateMapEditor
             plateMap={plateMap}
             unitLabel={plateMapUnit}
             expectedRefs={expectedRefs}
