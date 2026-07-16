@@ -8044,15 +8044,36 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
         <section className="about-dialog-section">
           <h3>TIPICA</h3>
           <p>Tool for Image-based Plate-Integrated Colorimetric Analysis.</p>
+          <p>
+            Public webapp:{' '}
+            <a href="https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/" target="_blank" rel="noreferrer">
+              https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/
+            </a>
+          </p>
         </section>
 
         <section className="about-dialog-section">
           <h3>How to use</h3>
-          <ul>
-            <li>Fill only wells that contain data. Empty cell = no data (0 is treated as a value).</li>
-            <li>Use COPY ROW A or COPY COL 1 to propagate a pattern quickly.</li>
-            <li>Type buttons U/C/A apply a tag to the whole row.</li>
-          </ul>
+          <ol>
+            <li>Load or acquire the plate image.</li>
+            <li>
+              Define the plate map using one of these alternatives:
+              <ol type="a">
+                <li>Import or restore a saved/project plate map.</li>
+                <li>Fill the plate map manually.</li>
+              </ol>
+            </li>
+            <li>
+              Complete geometry and analysis:
+              <ol type="a">
+                <li>Pick the 4 mouth/corner circles in the order A1 → A12 → H12 → H1.</li>
+                <li>Pick the 4 floor circles in the same order.</li>
+                <li>Run TIPICA analysis.</li>
+              </ol>
+            </li>
+            <li>Review the results.</li>
+            <li>Use the exported ZIP package for reporting/archive.</li>
+          </ol>
         </section>
 
         <section className="about-dialog-section">
@@ -8096,7 +8117,17 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
 
         <section className="about-dialog-section">
           <h3>Citation / version</h3>
-          <p>Version v0.1.28-beta. Author: Pasquale Palladino. License: AGPL-3.0-only. Webapp DOI: https://doi.org/10.5281/zenodo.21218968.</p>
+          <p>
+            Version v{packageJson.version}. Author: Pasquale Palladino. License: AGPL-3.0-only. Webapp DOI:{' '}
+            <a href="https://doi.org/10.5281/zenodo.21218968" target="_blank" rel="noreferrer">
+              https://doi.org/10.5281/zenodo.21218968
+            </a>
+            . Public webapp:{' '}
+            <a href="https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/" target="_blank" rel="noreferrer">
+              https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/
+            </a>
+            .
+          </p>
         </section>
       </section>
     </div>
@@ -10309,6 +10340,7 @@ function App() {
               onHelpRequest={() => setIsHelpAboutOpen(true)}
               configuratorMediaActive={configuratorMediaActive}
             />
+              <h2 className="configurator-step-heading">2. Image</h2>
             <ImageGeometryLoader
               imageName={imageName}
               geometryName={geometryName}
@@ -10389,25 +10421,33 @@ function App() {
             ) : null}
             {image ? (
               <div className="configurator-canvas-geometry-actions">
-                <p className="panel-note configurator-canvas-geometry-instruction">Pick order: A1 → A12 → H12 → H1.</p>
+                <p className="panel-note configurator-canvas-workflow">3. Mouth / Floor / Run</p>
+                <p className="panel-note configurator-canvas-geometry-instruction">
+                  Pick order: A1 → A12 → H12 → H1.{floorGeometryAvailable ? ' Geometry complete.' : ''}
+                </p>
                 <button
                   type="button"
-                  className="primary-button"
-                  disabled={!image || manualPickingActive || floorCirclePickingActive || floorGeometryAvailable}
+                  className={['primary-button', 'configurator-step-button', !geometry ? 'configurator-step-button-mouth' : !floorGeometryAvailable ? 'configurator-step-button-floor' : 'configurator-step-button-run'].join(' ')}
+                  disabled={!image || configuredWellCount === 0 || manualPickingActive || floorCirclePickingActive || (floorGeometryAvailable && (!overlayReady || isExtracting || isFitting || isRunningCompleteAnalysis || projectImageMismatchBlocksExtraction))}
                   onClick={() => {
                     if (!geometry) {
                       handleStartManualPicking();
                       return;
                     }
 
-                    handleStartFloorCirclePicking();
+                    if (!floorGeometryAvailable) {
+                      handleStartFloorCirclePicking();
+                      return;
+                    }
+
+                    void handleRunCompleteValidatedAnalysis();
                   }}
                 >
                   {!geometry
                     ? 'PICK 4 MOUTH/CORNER CIRCLES'
-                    : floorGeometryAvailable
-                      ? 'GEOMETRY COMPLETE'
-                      : 'PICK 4 FLOOR CIRCLES'}
+                    : !floorGeometryAvailable
+                      ? 'PICK 4 FLOOR CIRCLES'
+                      : 'RUN TIPICA ANALYSIS'}
                 </button>
                 <button
                   type="button"

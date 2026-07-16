@@ -1532,3 +1532,87 @@ h2 {
   flex-basis: 100%;
   margin: 0;
 }
+.configurator-run-analysis-button {
+  margin-left: auto;
+}
+/* Help/About must sit above the configurator dialog. */
+.modal-backdrop:has(.about-dialog) {
+  z-index: 3000;
+}
+
+.about-dialog {
+  z-index: 3001;
+}
+.configurator-canvas-workflow {
+  flex-basis: 100%;
+  margin: 0;
+  font-weight: 600;
+}
+
+.configurator-step-button {
+  color: #ffffff;
+  border-color: transparent;
+}
+
+.configurator-step-button-mouth {
+  background: #b91c1c;
+}
+
+.configurator-step-button-mouth:hover:not(:disabled) {
+  background: #991b1b;
+}
+
+.configurator-step-button-floor {
+  background: #15803d;
+}
+
+.configurator-step-button-floor:hover:not(:disabled) {
+  background: #166534;
+}
+
+.configurator-step-button-run {
+  background: #1d4ed8;
+}
+
+.configurator-step-button-run:hover:not(:disabled) {
+  background: #1e40af;
+}
+/* Configurator RGB workflow emphasis: always-visible text/border colors. */
+.plate-config-dialog .configurator-step-button {
+  background: #ffffff;
+  font-weight: 700;
+}
+
+.plate-config-dialog .configurator-step-button-mouth,
+.plate-config-dialog .configurator-step-button-mouth:disabled,
+.plate-config-dialog .configurator-step-button-mouth:hover:not(:disabled) {
+  color: #b91c1c;
+  border-color: #b91c1c;
+  background: #ffffff;
+}
+
+.plate-config-dialog .configurator-step-button-floor,
+.plate-config-dialog .configurator-step-button-floor:disabled,
+.plate-config-dialog .configurator-step-button-floor:hover:not(:disabled) {
+  color: #15803d;
+  border-color: #15803d;
+  background: #ffffff;
+}
+
+.plate-config-dialog .configurator-step-button-run,
+.plate-config-dialog .configurator-step-button-run:disabled,
+.plate-config-dialog .configurator-step-button-run:hover:not(:disabled) {
+  color: #1d4ed8;
+  border-color: #1d4ed8;
+  background: #ffffff;
+}
+
+.plate-config-dialog .configurator-step-button:disabled {
+  opacity: 0.55;
+}
+.configurator-step-heading {
+  margin: 0 0 2px;
+  font-size: 0.82rem;
+  line-height: 1.1;
+  font-weight: 700;
+}

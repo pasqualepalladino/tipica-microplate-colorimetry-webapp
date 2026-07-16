@@ -634,7 +634,7 @@ export function PlateMapEditor({
       ) : null}
 
       <section className="nested-control-section" aria-labelledby="plate-map-editor-heading">
-        <h3 id="plate-map-editor-heading">Plate map editor</h3>
+        <h3 id="plate-map-editor-heading">1. Plate map editor</h3>
 
         <div className="button-row left-aligned-button-row plate-map-editor-actions">
           <button type="button" className="secondary-button" onClick={handleCopyRowA}>
