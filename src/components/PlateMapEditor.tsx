@@ -33,6 +33,7 @@ interface PlateMapEditorProps {
   onExpectedRefsChange?: (expectedRefs: ExpectedRef[]) => void;
   onUnitLabelChange?: (unitLabel: string) => void;
   onEditorSnapshotChange?: (snapshot: PlateEditorSnapshot) => void;
+  onHelpRequest?: () => void;
 }
 
 interface ExpectedRefRow {
@@ -90,6 +91,7 @@ export function PlateMapEditor({
   onExpectedRefsChange,
   onUnitLabelChange,
   onEditorSnapshotChange,
+  onHelpRequest,
 }: PlateMapEditorProps) {
   const unitParts = useMemo(() => parseUnitLabel(unitLabel), [unitLabel]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -524,6 +526,16 @@ export function PlateMapEditor({
             </label>
           ) : null}
           <p className="panel-note plate-config-unit-note">Unit: {buildUnitLabel(unitBase, unitExp)}</p>
+          {onHelpRequest ? (
+            <button
+              type="button"
+              className="secondary-button plate-config-help-button"
+              onClick={onHelpRequest}
+              aria-label="Open plate configurator help"
+            >
+              ?
+            </button>
+          ) : null}
         </div>
       </section>
 

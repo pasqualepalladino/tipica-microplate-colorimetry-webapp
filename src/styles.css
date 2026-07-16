@@ -1442,3 +1442,11 @@ h2 {
 .plate-config-dialog .file-control input[type="file"] {
   color: #111111;
 }
+.plate-config-dialog .plate-config-help-button,
+.plate-config-help-button {
+  min-width: 24px;
+  width: 24px;
+  padding: 0;
+  font-weight: 700;
+  text-align: center;
+}

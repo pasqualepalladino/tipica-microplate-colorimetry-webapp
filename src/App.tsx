@@ -10288,6 +10288,7 @@ function App() {
               onExpectedRefsChange={setExpectedRefs}
               onUnitLabelChange={setPlateMapUnit}
               onEditorSnapshotChange={setPlateEditorSnapshot}
+              onHelpRequest={() => setIsHelpAboutOpen(true)}
             />
             <ImageGeometryLoader
               imageName={imageName}
@@ -10761,6 +10762,7 @@ function App() {
             onExpectedRefsChange={setExpectedRefs}
             onUnitLabelChange={setPlateMapUnit}
             onEditorSnapshotChange={setPlateEditorSnapshot}
+            onHelpRequest={() => setIsHelpAboutOpen(true)}
           />
 
         )}
