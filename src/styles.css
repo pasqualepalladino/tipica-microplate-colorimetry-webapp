@@ -1450,3 +1450,33 @@ h2 {
   font-weight: 700;
   text-align: center;
 }
+.hidden-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.compact-configurator-image-loader {
+  gap: 4px;
+}
+
+.compact-configurator-image-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+
+.compact-configurator-image-prompt {
+  font-weight: 700;
+}
+
+.compact-configurator-camera-control {
+  margin-top: 2px;
+}
+
+.compact-configurator-image-name {
+  margin: 0;
+}

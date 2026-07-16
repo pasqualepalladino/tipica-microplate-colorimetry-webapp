@@ -7,6 +7,7 @@ interface ImageGeometryLoaderProps {
   geometryName: string | null;
   showGeometryUpload?: boolean;
   showCameraCapture?: boolean;
+  compactConfiguratorMode?: boolean;
   onImageLoaded: (image: HTMLImageElement, fileName: string) => void;
   onGeometryLoaded: (geometry: PlateGeometry, fileName: string) => void;
   onError: (message: string) => void;
@@ -17,11 +18,13 @@ export function ImageGeometryLoader({
   geometryName,
   showGeometryUpload = false,
   showCameraCapture = false,
+  compactConfiguratorMode = false,
   onImageLoaded,
   onGeometryLoaded,
   onError,
 }: ImageGeometryLoaderProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState('');
@@ -194,6 +197,99 @@ export function ImageGeometryLoader({
       onError(`Could not load geometry file: ${file.name}. ${detail}`);
     }
   };
+
+  if (compactConfiguratorMode) {
+    return (
+      <section className="control-section compact-configurator-image-loader" aria-labelledby="loader-heading">
+        <h2 id="loader-heading">Image</h2>
+
+        <div className="compact-configurator-image-row">
+          <span className="compact-configurator-image-prompt">After completing the plate map:</span>
+          {showCameraCapture ? (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => {
+                void startCamera();
+              }}
+            >
+              ACQUIRE FROM CAMERA
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => imageInputRef.current?.click()}
+          >
+            LOAD IMAGE
+          </button>
+          <input
+            ref={imageInputRef}
+            className="hidden-file-input"
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={handleImageChange}
+          />
+        </div>
+
+        {cameraActive || cameraStatus ? (
+          <div className="camera-capture-control compact-configurator-camera-control">
+            <div className="camera-capture-row">
+              <button
+                type="button"
+                className="primary-button"
+                disabled={!cameraActive}
+                onClick={handleCaptureImage}
+              >
+                Capture
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={!cameraActive}
+                onClick={stopCamera}
+              >
+                Stop
+              </button>
+            </div>
+
+            {cameraDevices.length > 1 ? (
+              <label className="camera-device-control">
+                <span>Camera</span>
+                <select value={selectedCameraId} onChange={handleCameraSelectionChange}>
+                  {cameraDevices.map((device, index) => (
+                    <option key={device.deviceId || index} value={device.deviceId}>
+                      {device.label || `Camera ${index + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            {cameraActive ? (
+              <video
+                ref={videoRef}
+                className="camera-preview"
+                playsInline
+                muted
+              />
+            ) : (
+              <video
+                ref={videoRef}
+                className="camera-preview camera-preview-hidden"
+                playsInline
+                muted
+              />
+            )}
+
+            {cameraStatus ? <p className="file-name">{cameraStatus}</p> : null}
+          </div>
+        ) : null}
+
+        {imageName ? <p className="file-name compact-configurator-image-name">{imageName}</p> : null}
+      </section>
+    );
+  }
 
   return (
     <section className="control-section" aria-labelledby="loader-heading">

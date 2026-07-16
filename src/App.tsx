@@ -10294,6 +10294,7 @@ function App() {
               imageName={imageName}
               geometryName={geometryName}
               showCameraCapture
+              compactConfiguratorMode
               showGeometryUpload={SHOW_PUBLIC_GEOMETRY_JSON_UPLOAD}
               onImageLoaded={(loadedImage, fileName) => {
                 setImage(loadedImage);
