@@ -8112,9 +8112,9 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
         <section className="about-dialog-section">
           <h3>Citation / version</h3>
           <p>
-            Version v{packageJson.version}. Author: Pasquale Palladino. License: AGPL-3.0-only. Webapp DOI:{' '}
-            <a href="https://doi.org/10.5281/zenodo.21218968" target="_blank" rel="noreferrer">
-              https://doi.org/10.5281/zenodo.21218968
+            Version v{packageJson.version}. Author: Pasquale Palladino. License: AGPL-3.0-only. Webapp Zenodo concept DOI:{' '}
+            <a href="https://doi.org/10.5281/zenodo.21218967" target="_blank" rel="noreferrer">
+              https://doi.org/10.5281/zenodo.21218967
             </a>
             . Public webapp:{' '}
             <a href="https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/" target="_blank" rel="noreferrer">

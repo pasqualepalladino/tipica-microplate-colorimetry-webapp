@@ -6,7 +6,8 @@ TIPICA Webapp is a beta browser-based companion implementation of TIPICA, design
 
 - Public webapp: https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/
 - Source repository: https://github.com/pasqualepalladino/tipica-microplate-colorimetry-webapp
-- Webapp archive / Zenodo DOI: https://doi.org/10.5281/zenodo.21218968
+- Webapp archive / Zenodo concept DOI: https://doi.org/10.5281/zenodo.21218967
+- Archived webapp version v0.1.32-beta DOI: https://doi.org/10.5281/zenodo.21398838
 - Python reference archive / Zenodo DOI: https://doi.org/10.5281/zenodo.20553451
 
 The browser webapp is archived separately from the Python desktop reference implementation. The public webapp is the operational browser interface; the GitHub repository contains the source code; the Zenodo webapp DOI provides the citable archived software record.
@@ -125,7 +126,7 @@ These checks are regression guards for the beta browser implementation. Passing 
 
 This repository is the TIPICA Webapp beta browser companion. It is not the archived Python reference implementation and was not used to generate the submitted manuscript results.
 
-If citing this beta webapp, use the metadata in [CITATION.cff](CITATION.cff) and the webapp Zenodo DOI: https://doi.org/10.5281/zenodo.21218968.
+If citing this beta webapp in general, use the webapp Zenodo concept DOI: https://doi.org/10.5281/zenodo.21218967. The archived version DOI for v0.1.32-beta is https://doi.org/10.5281/zenodo.21398838.
 
 When using, validating, or comparing scientific results, also cite the archived Python reference package/manuscript as appropriate. The Python reference package DOI is https://doi.org/10.5281/zenodo.20553451.
 

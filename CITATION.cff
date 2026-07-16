@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use this beta browser companion, please cite this webapp release and also cite the archived Python reference package/manuscript when using or comparing scientific results."
+message: "If you use this beta browser companion, please cite this webapp release. For the webapp as a whole, use the Zenodo concept DOI 10.5281/zenodo.21218967. Also cite the archived Python reference package/manuscript when using or comparing scientific results."
 title: "TIPICA Webapp Beta: Browser companion for image-based plate colorimetry"
 type: software
 authors:
@@ -15,7 +15,7 @@ keywords:
   - beta software
 license: AGPL-3.0-only
 version: "0.1.32-beta"
-doi: "10.5281/zenodo.21218968"
+doi: "10.5281/zenodo.21398838"
 url: "https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/"
 repository-code: "https://github.com/pasqualepalladino/tipica-microplate-colorimetry-webapp"
 date-released: "2026-07-16"
