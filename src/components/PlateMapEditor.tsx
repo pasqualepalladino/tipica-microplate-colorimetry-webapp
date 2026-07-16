@@ -160,6 +160,7 @@ export function PlateMapEditor({
       setPlateFormat(inferPlateFormatLabel(editorSnapshot.nrow, editorSnapshot.ncol));
       setDefaults(editorSnapshot.defaults);
       setIdDfPriority(editorSnapshot.idDfPriority);
+      setExtendedView(editorSnapshot.extendedView ?? true);
       return;
     }
 
@@ -177,6 +178,7 @@ export function PlateMapEditor({
     setPlateFormat(nextFormat);
     setDefaults(parsed.defaults);
     setIdDfPriority('row');
+    setExtendedView(true);
   }, [editorSnapshot, plateMap]);
 
   useEffect(() => {
@@ -198,7 +200,7 @@ export function PlateMapEditor({
     })));
   }, [expectedRefs]);
 
-  const [extendedView, setExtendedView] = useState(true);
+  const [extendedView, setExtendedView] = useState(editorSnapshot?.extendedView ?? true);
 
   const collectedExpectedRefs: ExpectedRef[] = useMemo(
     () => collectExpectedRefs(expectedRows),
@@ -256,10 +258,11 @@ export function PlateMapEditor({
       nrow,
       ncol,
       idDfPriority,
+      extendedView,
     };
     lastEmittedEditorSnapshotSignatureRef.current = JSON.stringify(snapshot);
     onEditorSnapshotChange(snapshot);
-  }, [defaults, grid, idDfPriority, ncol, nrow, onEditorSnapshotChange]);
+  }, [defaults, extendedView, grid, idDfPriority, ncol, nrow, onEditorSnapshotChange]);
 
   const configuredWellCount = useMemo(() => {
     const state = collectPlateState(grid, defaults, nrow, ncol, {

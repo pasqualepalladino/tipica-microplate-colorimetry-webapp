@@ -989,6 +989,7 @@ function parseProjectPlateEditorSnapshot(raw: unknown): PlateEditorSnapshot | nu
     nrow,
     ncol,
     idDfPriority: priority,
+    extendedView: typeof payload.extendedView === 'boolean' ? payload.extendedView : undefined,
   };
 }
 

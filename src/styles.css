@@ -1321,3 +1321,124 @@ h2 {
     grid-template-columns: 1fr;
   }
 }
+/* Python-like visual pass 1: make the configurator look more like a compact
+   Tk/ttk utility window with LabelFrame-style sections, not a web results card. */
+.plate-config-dialog-backdrop {
+  background: rgba(240, 240, 240, 0.98);
+}
+
+.plate-config-dialog {
+  padding: 6px 8px;
+  border-color: #9f9f9f;
+  border-radius: 3px;
+  background: #f0f0f0;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+}
+
+.plate-config-dialog .plate-config-panel {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.plate-config-dialog .nested-control-section,
+.plate-config-dialog .control-section {
+  position: relative;
+  gap: 5px;
+  margin: 5px 0 0;
+  padding: 10px 6px 5px;
+  border: 1px solid #b8b8b8;
+  border-radius: 2px;
+  background: #f0f0f0;
+}
+
+.plate-config-dialog .nested-control-section > h3,
+.plate-config-dialog .control-section > h2 {
+  position: absolute;
+  top: -0.72em;
+  left: 8px;
+  margin: 0;
+  padding: 0 4px;
+  color: #202020;
+  background: #f0f0f0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.plate-config-dialog .section-title-row {
+  display: none;
+}
+
+.plate-config-dialog .plate-config-setup-row,
+.plate-config-dialog .plate-config-options-row,
+.plate-config-dialog .plate-config-reference-row,
+.plate-config-dialog .plate-map-editor-actions,
+.plate-config-dialog .plate-config-editor-summary,
+.plate-config-dialog .camera-capture-row {
+  gap: 3px 6px;
+}
+
+.plate-config-dialog .panel-note,
+.plate-config-dialog .file-name {
+  color: #303030;
+}
+
+.plate-config-dialog .primary-button,
+.plate-config-dialog .secondary-button,
+.plate-config-dialog button {
+  min-height: 24px;
+  padding: 1px 7px;
+  border-color: #9f9f9f;
+  border-radius: 2px;
+  color: #111111;
+  background: #f6f6f6;
+  box-shadow: none;
+  font-weight: 500;
+}
+
+.plate-config-dialog .primary-button:hover,
+.plate-config-dialog .secondary-button:hover,
+.plate-config-dialog button:hover {
+  border-color: #7f7f7f;
+  background: #e9e9e9;
+}
+
+.plate-config-dialog .primary-button:disabled,
+.plate-config-dialog .secondary-button:disabled,
+.plate-config-dialog button:disabled {
+  color: #777777;
+  background: #ededed;
+}
+
+.plate-config-dialog input,
+.plate-config-dialog select {
+  border-color: #9f9f9f;
+  border-radius: 2px;
+  background: #ffffff;
+}
+
+.plate-config-dialog .plate-map-wrap {
+  margin-top: 5px;
+  border-color: #a8a8a8;
+  background: #f0f0f0;
+}
+
+.plate-config-dialog .plate-map-grid th {
+  color: #111111;
+  background: #e9e9e9;
+}
+
+.plate-config-dialog .plate-map-grid td {
+  background: #f8f8f8;
+}
+
+.plate-config-dialog .plate-map-grid td > input {
+  border-color: #a6a6a6;
+  border-radius: 1px;
+  background: #ffffff;
+}
+
+.plate-config-dialog .file-control input[type="file"] {
+  color: #111111;
+}

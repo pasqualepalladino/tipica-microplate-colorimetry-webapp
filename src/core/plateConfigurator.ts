@@ -99,6 +99,7 @@ export interface PlateEditorState {
 
 export interface PlateEditorSnapshot extends PlateEditorState {
   idDfPriority: 'row' | 'col';
+  extendedView?: boolean;
 }
 
 // ---------------------------------------------------------------------------
