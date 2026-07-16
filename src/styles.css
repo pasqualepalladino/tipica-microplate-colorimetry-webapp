@@ -1480,3 +1480,29 @@ h2 {
 .compact-configurator-image-name {
   margin: 0;
 }
+.configurator-media-stage {
+  display: none;
+}
+
+.configurator-media-stage-active {
+  display: grid;
+  place-items: center;
+  min-height: 300px;
+  width: min(760px, calc(96vw - 32px));
+  max-width: 100%;
+  border: 1px solid #a8a8a8;
+  background: #f0f0f0;
+  overflow: hidden;
+}
+
+.configurator-media-stage .camera-preview,
+.compact-configurator-media-image {
+  display: block;
+  max-width: 100%;
+  max-height: min(62vh, 560px);
+  object-fit: contain;
+}
+
+.plate-map-wrap-hidden {
+  display: none;
+}

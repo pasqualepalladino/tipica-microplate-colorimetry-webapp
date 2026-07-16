@@ -34,6 +34,7 @@ interface PlateMapEditorProps {
   onUnitLabelChange?: (unitLabel: string) => void;
   onEditorSnapshotChange?: (snapshot: PlateEditorSnapshot) => void;
   onHelpRequest?: () => void;
+  configuratorMediaActive?: boolean;
 }
 
 interface ExpectedRefRow {
@@ -92,6 +93,7 @@ export function PlateMapEditor({
   onUnitLabelChange,
   onEditorSnapshotChange,
   onHelpRequest,
+  configuratorMediaActive = false,
 }: PlateMapEditorProps) {
   const unitParts = useMemo(() => parseUnitLabel(unitLabel), [unitLabel]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -673,7 +675,8 @@ export function PlateMapEditor({
           <p className="panel-note">Empty cell = no data (0 is treated as a value).</p>
         </div>
 
-        <div className="plate-map-wrap">
+        <div id="configurator-media-stage" className={configuratorMediaActive ? "configurator-media-stage configurator-media-stage-active" : "configurator-media-stage"}></div>
+        <div className={configuratorMediaActive ? "plate-map-wrap plate-map-wrap-hidden" : "plate-map-wrap"}>
           <table className="plate-map-grid">
             <thead>
               <tr>

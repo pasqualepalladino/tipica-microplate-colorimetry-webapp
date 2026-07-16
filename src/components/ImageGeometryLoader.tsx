@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { parseGeometryJson } from '../core/geometry';
 import type { PlateGeometry } from '../types/geometry';
 
@@ -8,6 +9,8 @@ interface ImageGeometryLoaderProps {
   showGeometryUpload?: boolean;
   showCameraCapture?: boolean;
   compactConfiguratorMode?: boolean;
+  compactMediaPortalId?: string;
+  onCompactMediaActiveChange?: (active: boolean) => void;
   onImageLoaded: (image: HTMLImageElement, fileName: string) => void;
   onGeometryLoaded: (geometry: PlateGeometry, fileName: string) => void;
   onError: (message: string) => void;
@@ -19,6 +22,8 @@ export function ImageGeometryLoader({
   showGeometryUpload = false,
   showCameraCapture = false,
   compactConfiguratorMode = false,
+  compactMediaPortalId,
+  onCompactMediaActiveChange,
   onImageLoaded,
   onGeometryLoaded,
   onError,
@@ -30,6 +35,7 @@ export function ImageGeometryLoader({
   const [selectedCameraId, setSelectedCameraId] = useState('');
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraStatus, setCameraStatus] = useState('');
+  const [compactPreviewSrc, setCompactPreviewSrc] = useState<string | null>(null);
 
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -44,6 +50,28 @@ export function ImageGeometryLoader({
   useEffect(() => () => {
     stopCamera();
   }, []);
+
+  useEffect(() => {
+    onCompactMediaActiveChange?.(cameraActive || Boolean(compactPreviewSrc));
+  }, [cameraActive, compactPreviewSrc, onCompactMediaActiveChange]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    const stream = streamRef.current;
+
+    if (!cameraActive || !video || !stream) {
+      return;
+    }
+
+    if (video.srcObject !== stream) {
+      video.srcObject = stream;
+    }
+
+    void video.play().catch((error) => {
+      const detail = error instanceof Error ? error.message : 'Unknown camera preview error.';
+      setCameraStatus('Could not show camera preview. ' + detail);
+    });
+  }, [cameraActive]);
 
   const loadCameraDevices = async () => {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -143,8 +171,10 @@ export function ImageGeometryLoader({
     const fileName = `camera-acquisition-${timestamp}.png`;
 
     image.onload = () => {
+      setCompactPreviewSrc(dataUrl);
+      onCompactMediaActiveChange?.(true);
       onImageLoaded(image, fileName);
-      setCameraStatus(`Captured ${fileName}`);
+      setCameraStatus('');
       stopCamera();
     };
 
@@ -167,6 +197,17 @@ export function ImageGeometryLoader({
     const image = new Image();
 
     image.onload = () => {
+      if (compactConfiguratorMode) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === 'string') {
+            setCompactPreviewSrc(reader.result);
+            onCompactMediaActiveChange?.(true);
+            setCameraStatus('');
+          }
+        };
+        reader.readAsDataURL(file);
+      }
       URL.revokeObjectURL(objectUrl);
       onImageLoaded(image, file.name);
       stopCamera();
@@ -199,22 +240,55 @@ export function ImageGeometryLoader({
   };
 
   if (compactConfiguratorMode) {
+    const compactMediaTarget = compactMediaPortalId ? document.getElementById(compactMediaPortalId) : null;
+    const compactMedia = cameraActive ? (
+      <video
+        ref={videoRef}
+        className="camera-preview"
+        playsInline
+        muted
+      />
+    ) : compactPreviewSrc ? (
+      <img className="compact-configurator-media-image" src={compactPreviewSrc} alt="Loaded plate" />
+    ) : null;
+
     return (
       <section className="control-section compact-configurator-image-loader" aria-labelledby="loader-heading">
         <h2 id="loader-heading">Image</h2>
 
+        {compactMediaTarget && compactMedia ? createPortal(compactMedia, compactMediaTarget) : null}
+
         <div className="compact-configurator-image-row">
           <span className="compact-configurator-image-prompt">After completing the plate map:</span>
           {showCameraCapture ? (
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => {
-                void startCamera();
-              }}
-            >
-              ACQUIRE FROM CAMERA
-            </button>
+            cameraActive ? (
+              <>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={handleCaptureImage}
+                >
+                  CAPTURE IMAGE
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={stopCamera}
+                >
+                  CANCEL CAMERA
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  void startCamera();
+                }}
+              >
+                ACQUIRE FROM CAMERA
+              </button>
+            )
           ) : null}
           <button
             type="button"
@@ -232,65 +306,10 @@ export function ImageGeometryLoader({
           />
         </div>
 
-        {cameraActive || cameraStatus ? (
-          <div className="camera-capture-control compact-configurator-camera-control">
-            <div className="camera-capture-row">
-              <button
-                type="button"
-                className="primary-button"
-                disabled={!cameraActive}
-                onClick={handleCaptureImage}
-              >
-                Capture
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={!cameraActive}
-                onClick={stopCamera}
-              >
-                Stop
-              </button>
-            </div>
-
-            {cameraDevices.length > 1 ? (
-              <label className="camera-device-control">
-                <span>Camera</span>
-                <select value={selectedCameraId} onChange={handleCameraSelectionChange}>
-                  {cameraDevices.map((device, index) => (
-                    <option key={device.deviceId || index} value={device.deviceId}>
-                      {device.label || `Camera ${index + 1}`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-
-            {cameraActive ? (
-              <video
-                ref={videoRef}
-                className="camera-preview"
-                playsInline
-                muted
-              />
-            ) : (
-              <video
-                ref={videoRef}
-                className="camera-preview camera-preview-hidden"
-                playsInline
-                muted
-              />
-            )}
-
-            {cameraStatus ? <p className="file-name">{cameraStatus}</p> : null}
-          </div>
-        ) : null}
-
         {imageName ? <p className="file-name compact-configurator-image-name">{imageName}</p> : null}
       </section>
     );
   }
-
   return (
     <section className="control-section" aria-labelledby="loader-heading">
       <h2 id="loader-heading">Files</h2>

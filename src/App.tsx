@@ -10267,10 +10267,12 @@ function App() {
     standardAdditionFitsWithSlopeContext.length,
   ]);
   const [plateConfiguratorDialogDismissed, setPlateConfiguratorDialogDismissed] = useState(false);
+  const [configuratorMediaActive, setConfiguratorMediaActive] = useState(false);
 
-  const configuratorOnly = !image;
+  const configuratorWorkflowOpen = !plateConfiguratorDialogDismissed;
+  const configuratorOnly = configuratorWorkflowOpen && !image;
 
-  const plateConfiguratorDialogOpen = configuratorOnly && !plateConfiguratorDialogDismissed;
+  const plateConfiguratorDialogOpen = configuratorWorkflowOpen;
 
   return (
     <main className={`app-shell ${configuratorOnly ? 'app-shell-configurator-only' : ''}`}>
@@ -10289,12 +10291,15 @@ function App() {
               onUnitLabelChange={setPlateMapUnit}
               onEditorSnapshotChange={setPlateEditorSnapshot}
               onHelpRequest={() => setIsHelpAboutOpen(true)}
+              configuratorMediaActive={configuratorMediaActive}
             />
             <ImageGeometryLoader
               imageName={imageName}
               geometryName={geometryName}
               showCameraCapture
               compactConfiguratorMode
+              compactMediaPortalId="configurator-media-stage"
+              onCompactMediaActiveChange={setConfiguratorMediaActive}
               showGeometryUpload={SHOW_PUBLIC_GEOMETRY_JSON_UPLOAD}
               onImageLoaded={(loadedImage, fileName) => {
                 setImage(loadedImage);
