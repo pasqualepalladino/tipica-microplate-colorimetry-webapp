@@ -2,6 +2,17 @@
 
 TIPICA Webapp is a beta browser-based companion implementation of TIPICA, designed to improve accessibility of image-based plate colorimetric analysis workflows.
 
+## Public webapp, source code, and archive
+
+- Public webapp: https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/
+- Source repository: https://github.com/pasqualepalladino/tipica-microplate-colorimetry-webapp
+- Webapp archive / Zenodo DOI: https://doi.org/10.5281/zenodo.21218968
+- Python reference archive / Zenodo DOI: https://doi.org/10.5281/zenodo.20553451
+
+The browser webapp is archived separately from the Python desktop reference implementation. The public webapp is the operational browser interface; the GitHub repository contains the source code; the Zenodo webapp DOI provides the citable archived software record.
+
+## Beta status and relationship to the Python reference
+
 This beta release is a browser-based companion implementation for TIPICA-style plate colorimetry workflows. It produces Python-style outputs and reproducibility metadata for local review and comparison, but it is not yet validated as a full equivalent to the archived Python reference implementation. Numerical results, XLSX/TXT content, figure formatting, and several diagnostics remain under active parity validation; Python remains the reference for exact artifact structure and scientific outputs.
 
 TIPICA Webapp is currently a beta companion interface under active parity validation. The archived Python desktop implementation remains the reference implementation for the manuscript results.
@@ -80,6 +91,14 @@ RAW_DATA_DETAILS/
   <base>_analysis_run_config.json
 ```
 
+## How to use the public webapp
+
+Open the public browser version:
+
+https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/
+
+All processing is performed locally in the browser. Uploaded images, geometry files, plate maps, and results are not sent to any server by this beta application.
+
 ## How to run locally
 
 ```bash
@@ -106,7 +125,9 @@ These checks are regression guards for the beta browser implementation. Passing 
 
 This repository is the TIPICA Webapp beta browser companion. It is not the archived Python reference implementation and was not used to generate the submitted manuscript results.
 
-If citing this beta webapp, use the metadata in [CITATION.cff](CITATION.cff). When using, validating, or comparing scientific results, also cite the archived Python reference package/manuscript as appropriate. The Python reference package DOI is `10.5281/zenodo.20553451`.
+If citing this beta webapp, use the metadata in [CITATION.cff](CITATION.cff) and the webapp Zenodo DOI: https://doi.org/10.5281/zenodo.21218968.
+
+When using, validating, or comparing scientific results, also cite the archived Python reference package/manuscript as appropriate. The Python reference package DOI is https://doi.org/10.5281/zenodo.20553451.
 
 ## Validation documents
 

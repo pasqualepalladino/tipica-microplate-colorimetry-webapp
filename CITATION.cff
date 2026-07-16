@@ -1,12 +1,12 @@
 cff-version: 1.2.0
-message: "If you use this beta browser companion, please cite this webapp release as appropriate and also cite the archived Python reference package/manuscript when using or comparing scientific results."
+message: "If you use this beta browser companion, please cite this webapp release and also cite the archived Python reference package/manuscript when using or comparing scientific results."
 title: "TIPICA Webapp Beta: Browser companion for image-based plate colorimetry"
 type: software
 authors:
   - family-names: Palladino
     given-names: Pasquale
     orcid: "https://orcid.org/0000-0002-3869-5085"
-abstract: "Beta browser-based companion implementation for local exploration of TIPICA-style image-based plate colorimetry workflows. The archived Python desktop implementation remains the reference implementation for manuscript results."
+abstract: "Beta browser-based companion implementation for local exploration of TIPICA-style image-based plate colorimetry workflows. The public browser webapp is available through GitHub Pages and archived separately from the Python desktop reference implementation. The archived Python desktop implementation remains the reference implementation for manuscript results."
 keywords:
   - digital quantitative colorimetry
   - microplate analysis
@@ -14,7 +14,11 @@ keywords:
   - browser application
   - beta software
 license: AGPL-3.0-only
-version: "0.1.5-beta"
+version: "0.1.32-beta"
+doi: "10.5281/zenodo.21218968"
+url: "https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/"
+repository-code: "https://github.com/pasqualepalladino/tipica-microplate-colorimetry-webapp"
+date-released: "2026-07-16"
 references:
   - type: software
     title: "TIPICA: Tool for Image-based Plate-Integrated Colorimetric Analysis"
