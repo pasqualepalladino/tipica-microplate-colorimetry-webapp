@@ -1528,3 +1528,7 @@ h2 {
 .configurator-media-stage-active > .compact-configurator-media-image {
   display: none !important;
 }
+.configurator-canvas-geometry-instruction {
+  flex-basis: 100%;
+  margin: 0;
+}

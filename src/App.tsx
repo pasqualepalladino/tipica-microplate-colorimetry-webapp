@@ -10389,12 +10389,25 @@ function App() {
             ) : null}
             {image ? (
               <div className="configurator-canvas-geometry-actions">
+                <p className="panel-note configurator-canvas-geometry-instruction">Pick order: A1 → A12 → H12 → H1.</p>
                 <button
                   type="button"
                   className="primary-button"
-                  onClick={handleStartManualPicking}
+                  disabled={!image || manualPickingActive || floorCirclePickingActive || floorGeometryAvailable}
+                  onClick={() => {
+                    if (!geometry) {
+                      handleStartManualPicking();
+                      return;
+                    }
+
+                    handleStartFloorCirclePicking();
+                  }}
                 >
-                  PICK 4 MOUTH/CORNER CIRCLES
+                  {!geometry
+                    ? 'PICK 4 MOUTH/CORNER CIRCLES'
+                    : floorGeometryAvailable
+                      ? 'GEOMETRY COMPLETE'
+                      : 'PICK 4 FLOOR CIRCLES'}
                 </button>
                 <button
                   type="button"
@@ -10402,7 +10415,7 @@ function App() {
                   disabled={manualPoints.length === 0}
                   onClick={handleUndoManualPoint}
                 >
-                  UNDO LAST
+                  UNDO MOUTH
                 </button>
                 <button
                   type="button"
@@ -10410,9 +10423,17 @@ function App() {
                   disabled={manualPoints.length === 0 && !manualPickingActive}
                   onClick={handleResetManualPoints}
                 >
-                  RESET
+                  RESET MOUTH
                 </button>
-                <span className="file-name configurator-canvas-geometry-status">{manualStatus}</span>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!floorGeometryAvailable && manualFloorCircles.length === 0 && !floorCirclePickingActive}
+                  onClick={handleResetFloorCircles}
+                >
+                  RESET FLOOR
+                </button>
+                <span className="file-name configurator-canvas-geometry-status">{manualStatus} · {floorCircleStatus}</span>
               </div>
             ) : null}
           </div>
