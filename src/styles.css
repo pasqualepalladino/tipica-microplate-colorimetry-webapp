@@ -1506,3 +1506,25 @@ h2 {
 .plate-map-wrap-hidden {
   display: none;
 }
+.configurator-media-stage-active .plate-canvas,
+.configurator-media-stage-active canvas,
+.configurator-media-stage-active img {
+  max-width: 100%;
+  max-height: min(62vh, 560px);
+}
+
+.configurator-canvas-geometry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+
+.configurator-canvas-geometry-status {
+  margin-left: 4px;
+}
+/* Never show the old static compact loader image in the configurator stage:
+   after load/capture the interactive PlateCanvas is the single image renderer. */
+.configurator-media-stage-active > .compact-configurator-media-image {
+  display: none !important;
+}

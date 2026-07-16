@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { ChangeEvent, ReactNode } from 'react';
 import { ImageGeometryLoader } from './components/ImageGeometryLoader';
 import { PlateCanvas } from './components/PlateCanvas';
@@ -10268,11 +10269,26 @@ function App() {
   ]);
   const [plateConfiguratorDialogDismissed, setPlateConfiguratorDialogDismissed] = useState(false);
   const [configuratorMediaActive, setConfiguratorMediaActive] = useState(false);
+  const [configuratorMediaStageTarget, setConfiguratorMediaStageTarget] = useState<HTMLElement | null>(null);
 
   const configuratorWorkflowOpen = !plateConfiguratorDialogDismissed;
   const configuratorOnly = configuratorWorkflowOpen && !image;
 
   const plateConfiguratorDialogOpen = configuratorWorkflowOpen;
+
+  // Resolve configurator media stage target after the configurator renders it.
+  useEffect(() => {
+    if (!configuratorMediaActive || !image) {
+      setConfiguratorMediaStageTarget(null);
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      setConfiguratorMediaStageTarget(document.getElementById('configurator-media-stage'));
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [configuratorMediaActive, image]);
 
   return (
     <main className={`app-shell ${configuratorOnly ? 'app-shell-configurator-only' : ''}`}>
@@ -10347,6 +10363,58 @@ function App() {
               }}
               onError={setError}
             />
+            {configuratorMediaStageTarget && image ? createPortal(
+              <PlateCanvas
+                image={image}
+                wells={wells}
+                radiusFactor={radiusFactor}
+                onCanvasSizeChange={handleCanvasSizeChange}
+                manualPoints={manualPoints}
+                manualPickingActive={manualPickingActive}
+                manualMouthRadiusPx={manualMouthRadiusPx}
+                onManualPointPick={handleManualPointPick}
+                onManualMouthRadiusAdjust={handleManualMouthRadiusAdjust}
+                floorCirclePickingActive={floorCirclePickingActive}
+                manualFloorCircles={manualFloorCircles}
+                manualFloorCirclePreview={manualFloorCirclePreview}
+                referenceFloorCircles={referenceFloorCircles}
+                onFloorCirclePointerMove={handleFloorCirclePointerMove}
+                onFloorCirclePointPick={handleFloorCirclePointPick}
+                onFloorCircleRadiusAdjust={handleFloorCircleRadiusAdjust}
+                showMouthGrid={showMouthGrid}
+                showFloorCircles={showFloorCircles}
+                floorCircles={floorCircles}
+              />,
+              configuratorMediaStageTarget,
+            ) : null}
+            {image ? (
+              <div className="configurator-canvas-geometry-actions">
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={handleStartManualPicking}
+                >
+                  PICK 4 MOUTH/CORNER CIRCLES
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={manualPoints.length === 0}
+                  onClick={handleUndoManualPoint}
+                >
+                  UNDO LAST
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={manualPoints.length === 0 && !manualPickingActive}
+                  onClick={handleResetManualPoints}
+                >
+                  RESET
+                </button>
+                <span className="file-name configurator-canvas-geometry-status">{manualStatus}</span>
+              </div>
+            ) : null}
           </div>
         </section>
       ) : null}

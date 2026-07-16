@@ -248,8 +248,6 @@ export function ImageGeometryLoader({
         playsInline
         muted
       />
-    ) : compactPreviewSrc ? (
-      <img className="compact-configurator-media-image" src={compactPreviewSrc} alt="Loaded plate" />
     ) : null;
 
     return (
