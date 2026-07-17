@@ -149,7 +149,7 @@ export function computeRgbLowSignalCorrections(
   return CHANNELS.flatMap((channel) => {
     const points = finiteCalibrationPoints(measurements, plateMap, channel);
 
-    if (points.length === 0) {
+    if (points.length < 3) {
       return [];
     }
 
