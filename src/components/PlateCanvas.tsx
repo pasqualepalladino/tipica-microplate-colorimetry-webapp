@@ -595,9 +595,11 @@ export function PlateCanvas({
 
     suppressNextTouchClickRef.current = true;
 
-    // On mobile, a two-finger pinch is reserved for radius adjustment.
-    // Do not let either finger of the pinch move the preview circle.
-    if (!event.isPrimary || activePointersRef.current.size >= 2) {
+    // Mobile workflow:
+    // - one-finger tap sets/repositions the preview circle;
+    // - two-finger pinch changes radius only;
+    // - touch movement must not drag the preview to the index finger.
+    if (event.type !== 'pointerdown' || !event.isPrimary) {
       return;
     }
 
