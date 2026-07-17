@@ -9,6 +9,8 @@ interface ImageGeometryLoaderProps {
   showGeometryUpload?: boolean;
   showCameraCapture?: boolean;
   compactConfiguratorMode?: boolean;
+  imageInputDisabled?: boolean;
+  imageInputDisabledReason?: string;
   compactMediaPortalId?: string;
   onCompactMediaActiveChange?: (active: boolean) => void;
   onImageLoaded: (image: HTMLImageElement, fileName: string) => void;
@@ -22,6 +24,8 @@ export function ImageGeometryLoader({
   showGeometryUpload = false,
   showCameraCapture = false,
   compactConfiguratorMode = false,
+  imageInputDisabled = false,
+  imageInputDisabledReason,
   compactMediaPortalId,
   onCompactMediaActiveChange,
   onImageLoaded,
@@ -36,6 +40,9 @@ export function ImageGeometryLoader({
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraStatus, setCameraStatus] = useState('');
   const [compactPreviewSrc, setCompactPreviewSrc] = useState<string | null>(null);
+  const imageDisabledMessage = imageInputDisabled
+    ? imageInputDisabledReason ?? 'Configure at least one well before loading/acquiring an image.'
+    : null;
 
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -50,6 +57,12 @@ export function ImageGeometryLoader({
   useEffect(() => () => {
     stopCamera();
   }, []);
+
+  useEffect(() => {
+    if (imageInputDisabled) {
+      stopCamera();
+    }
+  }, [imageInputDisabled]);
 
   useEffect(() => {
     onCompactMediaActiveChange?.(cameraActive || Boolean(compactPreviewSrc));
@@ -97,6 +110,11 @@ export function ImageGeometryLoader({
   };
 
   const startCamera = async (deviceIdOverride?: string) => {
+    if (imageInputDisabled) {
+      setCameraStatus(imageDisabledMessage ?? 'Image input is disabled.');
+      return;
+    }
+
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraStatus('Camera API not available in this browser.');
       return;
@@ -145,6 +163,11 @@ export function ImageGeometryLoader({
   };
 
   const handleCaptureImage = () => {
+    if (imageInputDisabled) {
+      setCameraStatus(imageDisabledMessage ?? 'Image input is disabled.');
+      return;
+    }
+
     const video = videoRef.current;
 
     if (!video || !cameraActive || video.videoWidth <= 0 || video.videoHeight <= 0) {
@@ -187,6 +210,12 @@ export function ImageGeometryLoader({
   };
 
   const handleImageChange = (event: ChangeEvent<HTMLInputElement>) => {
+    if (imageInputDisabled) {
+      event.currentTarget.value = '';
+      setCameraStatus(imageDisabledMessage ?? 'Image input is disabled.');
+      return;
+    }
+
     const file = event.currentTarget.files?.[0];
 
     if (!file) {
@@ -264,6 +293,7 @@ export function ImageGeometryLoader({
                 <button
                   type="button"
                   className="primary-button"
+                  disabled={imageInputDisabled}
                   onClick={handleCaptureImage}
                 >
                   CAPTURE IMAGE
@@ -280,6 +310,7 @@ export function ImageGeometryLoader({
               <button
                 type="button"
                 className="secondary-button"
+                disabled={imageInputDisabled}
                 onClick={() => {
                   void startCamera();
                 }}
@@ -291,7 +322,15 @@ export function ImageGeometryLoader({
           <button
             type="button"
             className="secondary-button"
-            onClick={() => imageInputRef.current?.click()}
+            disabled={imageInputDisabled}
+            onClick={() => {
+              if (imageInputDisabled) {
+                setCameraStatus(imageDisabledMessage ?? 'Image input is disabled.');
+                return;
+              }
+
+              imageInputRef.current?.click();
+            }}
           >
             LOAD IMAGE
           </button>
@@ -300,9 +339,12 @@ export function ImageGeometryLoader({
             className="hidden-file-input"
             type="file"
             accept="image/jpeg,image/png,image/webp"
+            disabled={imageInputDisabled}
             onChange={handleImageChange}
           />
         </div>
+
+        {imageDisabledMessage ? <p className="panel-note">{imageDisabledMessage}</p> : null}
 
         {imageName ? <p className="file-name compact-configurator-image-name">{imageName}</p> : null}
       </section>

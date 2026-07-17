@@ -10340,6 +10340,8 @@ function App() {
               geometryName={geometryName}
               showCameraCapture
               compactConfiguratorMode
+              imageInputDisabled={configuredWellCount === 0}
+              imageInputDisabledReason="Configure at least one well before loading/acquiring an image."
               compactMediaPortalId="configurator-media-stage"
               onCompactMediaActiveChange={setConfiguratorMediaActive}
               showGeometryUpload={SHOW_PUBLIC_GEOMETRY_JSON_UPLOAD}
