@@ -1,7 +1,7 @@
 {
   "name": "dqcolorimetry-webapp-beta",
   "private": true,
-  "version": "0.1.36-beta",
+  "version": "0.1.37-beta",
   "description": "Beta browser companion implementation for TIPICA image-based plate colorimetry workflows.",
   "author": "Pasquale Palladino",
   "license": "AGPL-3.0-only",
