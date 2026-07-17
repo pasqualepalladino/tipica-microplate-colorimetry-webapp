@@ -657,22 +657,25 @@ export function PlateMapEditor({
             Copy col 1
           </button>
           {extendedView ? (
-            <>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={handleExportCsvTemplate}
-              >
-                Export CSV template
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={handleImportCsvClick}
-              >
-                Import CSV
-              </button>
-            </>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={handleExportCsvTemplate}
+            >
+              Export CSV template
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={handleImportCsvClick}
+          >
+            Import CSV
+          </button>
+          {!extendedView ? (
+            <button type="button" className="secondary-button" onClick={onStartNewAnalysis}>
+              RESET
+            </button>
           ) : null}
           <input
             ref={fileInputRef}

@@ -10298,7 +10298,7 @@ function App() {
   const [configuratorMediaStageTarget, setConfiguratorMediaStageTarget] = useState<HTMLElement | null>(null);
 
   const configuratorWorkflowOpen = !plateConfiguratorDialogDismissed;
-  const configuratorOnly = configuratorWorkflowOpen && !image;
+  const configuratorOnly = configuratorWorkflowOpen;
 
   const plateConfiguratorDialogOpen = configuratorWorkflowOpen;
 

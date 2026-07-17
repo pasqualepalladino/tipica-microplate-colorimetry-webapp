@@ -1098,9 +1098,9 @@ h2 {
   overflow: visible;
 }
 
-.app-shell-configurator-only .canvas-stage,
-.app-shell-configurator-only .empty-canvas,
-.app-shell-configurator-only .result-details {
+.app-shell-configurator-only > .canvas-panel .canvas-stage,
+.app-shell-configurator-only > .canvas-panel .empty-canvas,
+.app-shell-configurator-only > .canvas-panel .result-details {
   display: none;
 }
 
@@ -1784,4 +1784,11 @@ h2 {
   flex-wrap: wrap;
   gap: 4px 6px;
   align-items: center;
+}
+/* Exclusive configurator workflow:
+   while the Plate Configurator dialog is open, the legacy workspace behind it
+   must not be visible or scrollable, including after image/camera loading. */
+.app-shell-configurator-only > .control-panel,
+.app-shell-configurator-only > .canvas-panel {
+  display: none;
 }
