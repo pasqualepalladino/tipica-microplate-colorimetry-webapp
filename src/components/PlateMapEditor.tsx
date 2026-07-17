@@ -34,6 +34,7 @@ interface PlateMapEditorProps {
   onUnitLabelChange?: (unitLabel: string) => void;
   onEditorSnapshotChange?: (snapshot: PlateEditorSnapshot) => void;
   onHelpRequest?: () => void;
+  onStartNewAnalysis?: () => void;
   configuratorMediaActive?: boolean;
   reviewContent?: ReactNode;
   workflowContent?: ReactNode;
@@ -95,6 +96,7 @@ export function PlateMapEditor({
   onUnitLabelChange,
   onEditorSnapshotChange,
   onHelpRequest,
+  onStartNewAnalysis,
   configuratorMediaActive = false,
   reviewContent,
   workflowContent,
@@ -622,6 +624,9 @@ export function PlateMapEditor({
                   -
                 </button>
                 <p className="panel-note plate-config-reference-count">Valid reference rows: {collectedExpectedRefs.length}</p>
+                <button type="button" className="secondary-button" onClick={onStartNewAnalysis}>
+                  RESET
+                </button>
               </div>
             ) : null}
           </div>

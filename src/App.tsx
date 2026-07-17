@@ -10332,6 +10332,7 @@ function App() {
               onUnitLabelChange={setPlateMapUnit}
               onEditorSnapshotChange={setPlateEditorSnapshot}
               onHelpRequest={() => setIsHelpAboutOpen(true)}
+              onStartNewAnalysis={() => window.location.reload()}
               configuratorMediaActive={configuratorMediaActive}
               workflowContent={(image && measurements.length === 0 && calibrationFits.length === 0 && standardAdditionFitsWithSlopeContext.length === 0 && unknownResults.length === 0) ? (
                 <div className="configurator-canvas-geometry-actions">
