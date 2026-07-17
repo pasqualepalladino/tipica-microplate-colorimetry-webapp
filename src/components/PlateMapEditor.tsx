@@ -529,6 +529,29 @@ export function PlateMapEditor({
               />
             </label>
           ) : null}
+          {extendedView ? (
+            <fieldset className="plate-config-inline-radio-group">
+              <legend>ID/DF priority</legend>
+              <label className="radio-control">
+                <input
+                  type="radio"
+                  name="idDfPriority"
+                  checked={idDfPriority === 'row'}
+                  onChange={() => setIdDfPriority('row')}
+                />
+                <span>Rows</span>
+              </label>
+              <label className="radio-control">
+                <input
+                  type="radio"
+                  name="idDfPriority"
+                  checked={idDfPriority === 'col'}
+                  onChange={() => setIdDfPriority('col')}
+                />
+                <span>Columns</span>
+              </label>
+            </fieldset>
+          ) : null}
           {onHelpRequest ? (
             <button
               type="button"
@@ -541,38 +564,7 @@ export function PlateMapEditor({
           ) : null}
         </div>
       </section>
-
-      {extendedView ? (
-      <section className="nested-control-section" aria-labelledby="analysis-options-heading">
-        <h3 id="analysis-options-heading">Analysis options</h3>
-
-        <div className="plate-config-options-row">
-          <fieldset className="plate-config-inline-radio-group">
-            <legend>ID/DF priority</legend>
-            <label className="radio-control">
-              <input
-                type="radio"
-                name="idDfPriority"
-                checked={idDfPriority === 'row'}
-                onChange={() => setIdDfPriority('row')}
-              />
-              <span>Rows</span>
-            </label>
-            <label className="radio-control">
-              <input
-                type="radio"
-                name="idDfPriority"
-                checked={idDfPriority === 'col'}
-                onChange={() => setIdDfPriority('col')}
-              />
-              <span>Columns</span>
-            </label>
-          </fieldset>
-        </div>
-      </section>
-      ) : null}
-
-      {extendedView ? (
+{extendedView ? (
       <section className="nested-control-section" aria-labelledby="reference-values-heading">
         <h3 id="reference-values-heading">Reference values</h3>
 
