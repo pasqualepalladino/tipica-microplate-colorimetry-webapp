@@ -1,4 +1,4 @@
-import type { MouseEvent } from 'react';
+import type { MouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { drawOverlay, estimateRoiRadius, getCanvasCoordinateSize, getImageAnalysisSize } from '../core/plate';
 import type { FloorCircle, Point } from '../types/geometry';
@@ -532,7 +532,7 @@ export function PlateCanvas({
     wells,
   ]);
 
-  const getCanvasPoint = (event: MouseEvent<HTMLCanvasElement>): Point | null => {
+  const getCanvasPoint = (event: MouseEvent<HTMLCanvasElement> | ReactPointerEvent<HTMLCanvasElement>): Point | null => {
     const canvas = canvasRef.current;
 
     if (!canvas) {
@@ -549,13 +549,7 @@ export function PlateCanvas({
     };
   };
 
-  const handleCanvasMouseMove = (event: MouseEvent<HTMLCanvasElement>) => {
-    const point = getCanvasPoint(event);
-
-    if (!point) {
-      return;
-    }
-
+  const updatePickingPreview = (point: Point) => {
     if (floorCirclePickingActive) {
       onFloorCirclePointerMove(point);
       return;
@@ -564,6 +558,30 @@ export function PlateCanvas({
     if (manualPickingActive && manualPoints.length < MANUAL_MOUTH_REFERENCES.length) {
       setManualPreviewPoint(point);
     }
+  };
+
+  const handleCanvasMouseMove = (event: MouseEvent<HTMLCanvasElement>) => {
+    const point = getCanvasPoint(event);
+
+    if (!point) {
+      return;
+    }
+
+    updatePickingPreview(point);
+  };
+
+  const handleCanvasPointerPreview = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (event.pointerType === 'mouse') {
+      return;
+    }
+
+    const point = getCanvasPoint(event);
+
+    if (!point) {
+      return;
+    }
+
+    updatePickingPreview(point);
   };
 
   const handleCanvasClick = (event: MouseEvent<HTMLCanvasElement>) => {
@@ -599,6 +617,8 @@ export function PlateCanvas({
         className={`plate-canvas${manualPickingActive || floorCirclePickingActive ? ' is-picking' : ''}`}
         aria-label="96-well plate ROI overlay"
         onMouseMove={handleCanvasMouseMove}
+        onPointerDown={handleCanvasPointerPreview}
+        onPointerMove={handleCanvasPointerPreview}
         onMouseLeave={() => setManualPreviewPoint(null)}
         onClick={handleCanvasClick}
       />
