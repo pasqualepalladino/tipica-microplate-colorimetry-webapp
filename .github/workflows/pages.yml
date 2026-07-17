@@ -1,5 +1,5 @@
 name: Deploy webapp to GitHub Pages
-run-name: Deploy webapp to GitHub Pages v0.1.41-beta
+run-name: Deploy webapp to GitHub Pages v0.1.42-beta
 
 on:
   push:
