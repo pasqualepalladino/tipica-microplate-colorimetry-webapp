@@ -15,6 +15,7 @@ interface PlateCanvasProps {
   onManualPointPick: (point: Point) => void;
   onManualMouthPreviewMove?: (point: Point | null) => void;
   manualMouthConfirmAvailable?: boolean;
+  manualMouthConfirmPoint?: Point | null;
   onManualMouthConfirm?: () => void;
   onManualMouthRadiusAdjust: (delta: number) => void;
   floorCirclePickingActive: boolean;
@@ -24,6 +25,7 @@ interface PlateCanvasProps {
   onFloorCirclePointerMove: (point: Point) => void;
   onFloorCirclePointPick: (point: Point) => void;
   floorCircleConfirmAvailable?: boolean;
+  floorCircleConfirmPoint?: Point | null;
   onFloorCircleConfirm?: () => void;
   onFloorCircleRadiusAdjust: (delta: number) => void;
   showMouthGrid: boolean;
@@ -298,6 +300,7 @@ export function PlateCanvas({
   onManualPointPick,
   onManualMouthPreviewMove,
   manualMouthConfirmAvailable = false,
+  manualMouthConfirmPoint = null,
   onManualMouthConfirm,
   onManualMouthRadiusAdjust,
   floorCirclePickingActive,
@@ -307,6 +310,7 @@ export function PlateCanvas({
   onFloorCirclePointerMove,
   onFloorCirclePointPick,
   floorCircleConfirmAvailable = false,
+  floorCircleConfirmPoint = null,
   onFloorCircleConfirm,
   onFloorCircleRadiusAdjust,
   showMouthGrid,
@@ -650,6 +654,32 @@ export function PlateCanvas({
       ? 'CONFIRM FLOOR POINT'
       : '';
 
+  const floatingConfirmPoint = manualPickingActive && manualMouthConfirmAvailable
+    ? manualMouthConfirmPoint ?? manualPreviewPoint
+    : floorCirclePickingActive && floorCircleConfirmAvailable
+      ? floorCircleConfirmPoint
+      : null;
+
+  const floatingConfirmStyle = (() => {
+    const canvas = canvasRef.current;
+
+    if (!floatingConfirmPoint || !canvas || canvas.width <= 0 || canvas.height <= 0) {
+      return undefined;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    const x = (floatingConfirmPoint.x / canvas.width) * rect.width;
+    const y = (floatingConfirmPoint.y / canvas.height) * rect.height;
+
+    const left = Math.min(Math.max(x + 72, 82), Math.max(82, rect.width - 82));
+    const top = Math.min(Math.max(y - 52, 26), Math.max(26, rect.height - 26));
+
+    return {
+      left: `${left}px`,
+      top: `${top}px`,
+    };
+  })();
+
   const handleFloatingConfirm = () => {
     if (manualPickingActive && manualMouthConfirmAvailable) {
       onManualMouthConfirm?.();
@@ -673,10 +703,11 @@ export function PlateCanvas({
         onMouseLeave={clearManualMouthPreview}
         onClick={handleCanvasClick}
       />
-      {floatingConfirmLabel ? (
+      {floatingConfirmLabel && floatingConfirmStyle ? (
         <button
           type="button"
           className="canvas-floating-confirm-button"
+          style={floatingConfirmStyle}
           onClick={handleFloatingConfirm}
         >
           {floatingConfirmLabel}
