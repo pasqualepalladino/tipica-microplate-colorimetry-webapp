@@ -14,6 +14,8 @@ interface PlateCanvasProps {
   manualMouthRadiusPx: number;
   onManualPointPick: (point: Point) => void;
   onManualMouthPreviewMove?: (point: Point | null) => void;
+  manualMouthConfirmAvailable?: boolean;
+  onManualMouthConfirm?: () => void;
   onManualMouthRadiusAdjust: (delta: number) => void;
   floorCirclePickingActive: boolean;
   manualFloorCircles: FloorCircle[];
@@ -21,6 +23,8 @@ interface PlateCanvasProps {
   referenceFloorCircles: FloorCircle[];
   onFloorCirclePointerMove: (point: Point) => void;
   onFloorCirclePointPick: (point: Point) => void;
+  floorCircleConfirmAvailable?: boolean;
+  onFloorCircleConfirm?: () => void;
   onFloorCircleRadiusAdjust: (delta: number) => void;
   showMouthGrid: boolean;
   showFloorCircles: boolean;
@@ -293,6 +297,8 @@ export function PlateCanvas({
   manualMouthRadiusPx,
   onManualPointPick,
   onManualMouthPreviewMove,
+  manualMouthConfirmAvailable = false,
+  onManualMouthConfirm,
   onManualMouthRadiusAdjust,
   floorCirclePickingActive,
   manualFloorCircles,
@@ -300,6 +306,8 @@ export function PlateCanvas({
   referenceFloorCircles,
   onFloorCirclePointerMove,
   onFloorCirclePointPick,
+  floorCircleConfirmAvailable = false,
+  onFloorCircleConfirm,
   onFloorCircleRadiusAdjust,
   showMouthGrid,
   showFloorCircles,
@@ -628,6 +636,23 @@ export function PlateCanvas({
     );
   }
 
+  const floatingConfirmLabel = manualPickingActive && manualMouthConfirmAvailable
+    ? 'CONFIRM MOUTH POINT'
+    : floorCirclePickingActive && floorCircleConfirmAvailable
+      ? 'CONFIRM FLOOR POINT'
+      : '';
+
+  const handleFloatingConfirm = () => {
+    if (manualPickingActive && manualMouthConfirmAvailable) {
+      onManualMouthConfirm?.();
+      return;
+    }
+
+    if (floorCirclePickingActive && floorCircleConfirmAvailable) {
+      onFloorCircleConfirm?.();
+    }
+  };
+
   return (
     <div className="canvas-stage">
       <canvas
@@ -640,6 +665,15 @@ export function PlateCanvas({
         onMouseLeave={clearManualMouthPreview}
         onClick={handleCanvasClick}
       />
+      {floatingConfirmLabel ? (
+        <button
+          type="button"
+          className="canvas-floating-confirm-button"
+          onClick={handleFloatingConfirm}
+        >
+          {floatingConfirmLabel}
+        </button>
+      ) : null}
     </div>
   );
 }

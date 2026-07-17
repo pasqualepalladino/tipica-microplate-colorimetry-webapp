@@ -498,9 +498,30 @@ h2 {
 }
 
 .canvas-stage {
+  position: relative;
   width: 100%;
   max-width: 1500px;
   align-self: center;
+}
+
+.canvas-floating-confirm-button {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 5;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid #007a5a;
+  border-radius: 999px;
+  color: #ffffff;
+  background: #007a5a;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+  font-weight: 800;
+  transform: translate(-50%, -50%);
+}
+
+.canvas-floating-confirm-button:active {
+  transform: translate(-50%, -50%) scale(0.98);
 }
 
 .plate-canvas {

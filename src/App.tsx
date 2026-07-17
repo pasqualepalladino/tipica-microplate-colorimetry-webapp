@@ -10522,6 +10522,7 @@ function App() {
                 manualMouthRadiusPx={manualMouthRadiusPx}
                 onManualPointPick={handleManualPointPick}
                 onManualMouthPreviewMove={setManualMouthPreviewPoint}
+                manualMouthConfirmAvailable={Boolean(manualMouthPreviewPoint)}                 onManualMouthConfirm={() => {                   if (!manualMouthPreviewPoint) {                     return;                   }                    handleManualPointPick(manualMouthPreviewPoint);                   setManualMouthPreviewPoint(null);                 }}
                 onManualMouthRadiusAdjust={handleManualMouthRadiusAdjust}
                 floorCirclePickingActive={floorCirclePickingActive}
                 manualFloorCircles={manualFloorCircles}
@@ -10529,6 +10530,7 @@ function App() {
                 referenceFloorCircles={referenceFloorCircles}
                 onFloorCirclePointerMove={handleFloorCirclePointerMove}
                 onFloorCirclePointPick={handleFloorCirclePointPick}
+                floorCircleConfirmAvailable={Boolean(manualFloorCirclePreviewCenter)}                 onFloorCircleConfirm={() => {                   if (!manualFloorCirclePreviewCenter) {                     return;                   }                    handleFloorCirclePointPick(manualFloorCirclePreviewCenter);                 }}
                 onFloorCircleRadiusAdjust={handleFloorCircleRadiusAdjust}
                 showMouthGrid={showMouthGrid}
                 showFloorCircles={showFloorCircles}
@@ -10991,6 +10993,7 @@ function App() {
           manualMouthRadiusPx={manualMouthRadiusPx}
           onManualPointPick={handleManualPointPick}
           onManualMouthPreviewMove={setManualMouthPreviewPoint}
+          manualMouthConfirmAvailable={Boolean(manualMouthPreviewPoint)}           onManualMouthConfirm={() => {             if (!manualMouthPreviewPoint) {               return;             }              handleManualPointPick(manualMouthPreviewPoint);             setManualMouthPreviewPoint(null);           }}
           onManualMouthRadiusAdjust={handleManualMouthRadiusAdjust}
           floorCirclePickingActive={floorCirclePickingActive}
           manualFloorCircles={manualFloorCircles}
@@ -10998,6 +11001,7 @@ function App() {
           referenceFloorCircles={referenceFloorCircles}
           onFloorCirclePointerMove={handleFloorCirclePointerMove}
           onFloorCirclePointPick={handleFloorCirclePointPick}
+          floorCircleConfirmAvailable={Boolean(manualFloorCirclePreviewCenter)}           onFloorCircleConfirm={() => {             if (!manualFloorCirclePreviewCenter) {               return;             }              handleFloorCirclePointPick(manualFloorCirclePreviewCenter);           }}
           onFloorCircleRadiusAdjust={handleFloorCircleRadiusAdjust}
           showMouthGrid={showMouthGrid}
           showFloorCircles={showFloorCircles}
