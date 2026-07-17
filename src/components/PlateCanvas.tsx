@@ -304,6 +304,8 @@ export function PlateCanvas({
   floorCircles,
 }: PlateCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const activePointersRef = useRef<Map<number, Point>>(new Map());
+  const lastPinchDistanceRef = useRef<number | null>(null);
   const [manualPreviewPoint, setManualPreviewPoint] = useState<Point | null>(null);
 
   useEffect(() => {
@@ -345,6 +347,127 @@ export function PlateCanvas({
     onManualMouthRadiusAdjust,
   ]);
 
+  useEffect(() => {
+    const canvas = canvasRef.current;
+
+    if (!canvas) {
+      return;
+    }
+
+    const activePointers = activePointersRef.current;
+    const isRadiusGestureActive = () =>
+      floorCirclePickingActive || (manualPickingActive && manualPoints.length < MANUAL_MOUTH_REFERENCES.length);
+
+    const clearPinch = () => {
+      activePointers.clear();
+      lastPinchDistanceRef.current = null;
+    };
+
+    const getPinchDistance = () => {
+      const pointers = Array.from(activePointers.values());
+
+      if (pointers.length < 2) {
+        return null;
+      }
+
+      return distance(pointers[0], pointers[1]);
+    };
+
+    const cssDeltaToCanvasDelta = (cssDelta: number) => {
+      const rect = canvas.getBoundingClientRect();
+
+      if (rect.width <= 0 || rect.height <= 0) {
+        return cssDelta;
+      }
+
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const meanScale = (scaleX + scaleY) / 2;
+
+      return cssDelta * meanScale * 0.45;
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!isRadiusGestureActive() || event.pointerType === 'mouse') {
+        return;
+      }
+
+      activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+      if (activePointers.size >= 2) {
+        event.preventDefault();
+        lastPinchDistanceRef.current = getPinchDistance();
+        try {
+          canvas.setPointerCapture(event.pointerId);
+        } catch {
+          // Ignore pointer-capture failures on older mobile browsers.
+        }
+      }
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!isRadiusGestureActive() || event.pointerType === 'mouse' || !activePointers.has(event.pointerId)) {
+        return;
+      }
+
+      activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+      if (activePointers.size < 2) {
+        return;
+      }
+
+      event.preventDefault();
+
+      const nextDistance = getPinchDistance();
+      const previousDistance = lastPinchDistanceRef.current;
+
+      if (nextDistance === null || previousDistance === null) {
+        lastPinchDistanceRef.current = nextDistance;
+        return;
+      }
+
+      const delta = cssDeltaToCanvasDelta(nextDistance - previousDistance);
+
+      if (Math.abs(delta) >= 0.25) {
+        if (floorCirclePickingActive) {
+          onFloorCircleRadiusAdjust(delta);
+        } else {
+          onManualMouthRadiusAdjust(delta);
+        }
+
+        lastPinchDistanceRef.current = nextDistance;
+      }
+    };
+
+    const handlePointerEnd = (event: PointerEvent) => {
+      if (activePointers.has(event.pointerId)) {
+        activePointers.delete(event.pointerId);
+      }
+
+      lastPinchDistanceRef.current = activePointers.size >= 2 ? getPinchDistance() : null;
+    };
+
+    canvas.addEventListener('pointerdown', handlePointerDown, { passive: false });
+    canvas.addEventListener('pointermove', handlePointerMove, { passive: false });
+    canvas.addEventListener('pointerup', handlePointerEnd);
+    canvas.addEventListener('pointercancel', handlePointerEnd);
+    canvas.addEventListener('pointerleave', handlePointerEnd);
+
+    return () => {
+      canvas.removeEventListener('pointerdown', handlePointerDown);
+      canvas.removeEventListener('pointermove', handlePointerMove);
+      canvas.removeEventListener('pointerup', handlePointerEnd);
+      canvas.removeEventListener('pointercancel', handlePointerEnd);
+      canvas.removeEventListener('pointerleave', handlePointerEnd);
+      clearPinch();
+    };
+  }, [
+    floorCirclePickingActive,
+    manualPickingActive,
+    manualPoints.length,
+    onFloorCircleRadiusAdjust,
+    onManualMouthRadiusAdjust,
+  ]);
   useEffect(() => {
     const canvas = canvasRef.current;
 

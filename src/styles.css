@@ -514,6 +514,8 @@ h2 {
 
 .plate-canvas.is-picking {
   cursor: crosshair;
+  touch-action: none;
+  user-select: none;
 }
 
 .empty-canvas {
