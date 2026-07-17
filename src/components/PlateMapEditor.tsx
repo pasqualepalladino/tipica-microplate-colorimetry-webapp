@@ -36,6 +36,7 @@ interface PlateMapEditorProps {
   onHelpRequest?: () => void;
   configuratorMediaActive?: boolean;
   reviewContent?: ReactNode;
+  workflowContent?: ReactNode;
 }
 
 interface ExpectedRefRow {
@@ -96,6 +97,7 @@ export function PlateMapEditor({
   onHelpRequest,
   configuratorMediaActive = false,
   reviewContent,
+  workflowContent,
 }: PlateMapEditorProps) {
   const unitParts = useMemo(() => parseUnitLabel(unitLabel), [unitLabel]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -627,8 +629,8 @@ export function PlateMapEditor({
       </section>
       ) : null}
 
-      <section className={reviewContent ? "nested-control-section configurator-review-section" : "nested-control-section"} aria-labelledby={reviewContent ? "configurator-review-heading" : "plate-map-editor-heading"}>
-        <h3 id={reviewContent ? "configurator-review-heading" : "plate-map-editor-heading"}>{reviewContent ? '4. Review the results' : '1. Plate map editor'}</h3>
+      <section className={reviewContent ? "nested-control-section configurator-review-section" : workflowContent ? "nested-control-section configurator-workflow-section" : "nested-control-section"} aria-labelledby={reviewContent ? "configurator-review-heading" : workflowContent ? "configurator-workflow-heading" : "plate-map-editor-heading"}>
+        <h3 id={reviewContent ? "configurator-review-heading" : workflowContent ? "configurator-workflow-heading" : "plate-map-editor-heading"}>{reviewContent ? '4. Review the results' : workflowContent ? '2. Image / Geometry' : '1. Plate map editor'}</h3>
 
         {reviewContent ? (
           <div className="configurator-review-stage">
@@ -636,7 +638,13 @@ export function PlateMapEditor({
           </div>
         ) : null}
 
-        <div className="button-row left-aligned-button-row plate-map-editor-actions">
+
+        {workflowContent ? (
+          <div className="configurator-workflow-actions-stage">
+            {workflowContent}
+          </div>
+        ) : null}
+<div className="button-row left-aligned-button-row plate-map-editor-actions">
           <button type="button" className="secondary-button" onClick={handleCopyRowA}>
             Copy row A
           </button>

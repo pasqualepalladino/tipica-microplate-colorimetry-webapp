@@ -10333,7 +10333,47 @@ function App() {
               onEditorSnapshotChange={setPlateEditorSnapshot}
               onHelpRequest={() => setIsHelpAboutOpen(true)}
               configuratorMediaActive={configuratorMediaActive}
-              reviewContent={(measurements.length > 0 || calibrationFits.length > 0 || standardAdditionFitsWithSlopeContext.length > 0 || unknownResults.length > 0) ? (
+              workflowContent={(image && measurements.length === 0 && calibrationFits.length === 0 && standardAdditionFitsWithSlopeContext.length === 0 && unknownResults.length === 0) ? (
+                <div className="configurator-canvas-geometry-actions">
+                  <p className="panel-note configurator-canvas-geometry-instruction">
+                    Pick order: A1 to A12 to H12 to H1.{floorGeometryAvailable ? ' Geometry complete.' : ''}
+                  </p>
+                  <button
+                    type="button"
+                    className={['primary-button', 'configurator-step-button', !geometry ? 'configurator-step-button-mouth' : !floorGeometryAvailable ? 'configurator-step-button-floor' : 'configurator-step-button-run'].join(' ')}
+                    disabled={!image || configuredWellCount === 0 || manualPickingActive || floorCirclePickingActive || (floorGeometryAvailable && (!overlayReady || isExtracting || isFitting || isRunningCompleteAnalysis || projectImageMismatchBlocksExtraction))}
+                    onClick={() => {
+                      if (!geometry) {
+                        handleStartManualPicking();
+                        return;
+                      }
+
+                      if (!floorGeometryAvailable) {
+                        handleStartFloorCirclePicking();
+                        return;
+                      }
+
+                      void handleRunCompleteValidatedAnalysis();
+                    }}
+                  >
+                    {!geometry
+                      ? 'PICK 4 MOUTH/CORNER CIRCLES'
+                      : !floorGeometryAvailable
+                        ? 'PICK 4 FLOOR CIRCLES'
+                        : 'RUN TIPICA ANALYSIS'}
+                  </button>
+                  <button type="button" className="secondary-button" disabled={manualPoints.length === 0} onClick={handleUndoManualPoint}>
+                    UNDO MOUTH
+                  </button>
+                  <button type="button" className="secondary-button" disabled={manualPoints.length === 0 && !manualPickingActive} onClick={handleResetManualPoints}>
+                    RESET MOUTH
+                  </button>
+                  <button type="button" className="secondary-button" disabled={!floorGeometryAvailable && manualFloorCircles.length === 0 && !floorCirclePickingActive} onClick={handleResetFloorCircles}>
+                    RESET FLOOR
+                  </button>
+                  <span className="file-name configurator-canvas-geometry-status">{manualStatus} · {floorCircleStatus}</span>
+                </div>
+              ) : null}              reviewContent={(measurements.length > 0 || calibrationFits.length > 0 || standardAdditionFitsWithSlopeContext.length > 0 || unknownResults.length > 0) ? (
                 <>
                   <details className="configurator-result-details" open>
                     <summary>Status</summary>

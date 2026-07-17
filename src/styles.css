@@ -1732,3 +1732,27 @@ h2 {
   max-width: 100%;
   box-sizing: border-box;
 }
+/* Workflow stage: after image load, replace map editing controls with geometry/run controls. */
+.configurator-workflow-section .plate-map-editor-actions,
+.configurator-workflow-section .plate-config-editor-summary,
+.configurator-workflow-section .plate-map-wrap {
+  display: none;
+}
+
+.configurator-workflow-actions-stage {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 5px;
+}
+
+.configurator-workflow-section .configurator-media-stage {
+  margin-top: 5px;
+}
+
+.plate-config-dialog > .configurator-canvas-geometry-actions {
+  display: none;
+}
+
+.configurator-workflow-actions-stage .configurator-canvas-geometry-actions {
+  display: flex;
+}
