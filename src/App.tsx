@@ -8049,7 +8049,6 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
         <section className="about-dialog-section">
           <h3>How to use</h3>
           <ol>
-            <li>Load or acquire the plate image.</li>
             <li>
               Define the plate map using one of these alternatives:
               <ol type="a">
@@ -8057,10 +8056,11 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
                 <li>Fill the plate map manually.</li>
               </ol>
             </li>
+            <li>Load or acquire the plate image after the plate map has been defined.</li>
             <li>
               Complete geometry and analysis:
               <ol type="a">
-                <li>Pick the 4 mouth/corner circles in the order A1 → A12 → H12 → H1.</li>
+                <li>Pick the 4 mouth/corner circles in the order A1 to A12 to H12 to H1.</li>
                 <li>Pick the 4 floor circles in the same order.</li>
                 <li>Run TIPICA analysis.</li>
               </ol>
@@ -8071,22 +8071,23 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
         </section>
 
         <section className="about-dialog-section">
-          <h3>Header block</h3>
+          <h3>Experimental setup block</h3>
           <ul>
+            <li>Plate format defines the expected well-grid layout.</li>
             <li>Unit and x 10^ define the displayed concentration unit.</li>
+            <li>Extended view shows the full editable plate-map table.</li>
+            <li>ID/DF priority chooses whether row defaults or column defaults are applied first.</li>
           </ul>
         </section>
 
         <section className="about-dialog-section">
-          <h3>Analysis options block</h3>
+          <h3>Analysis behavior</h3>
           <ul>
             <li>All points are always used in fitting.</li>
             <li>Primary RGB calibration and standard-addition fit rows use robust residual-based IRLS with covariance propagation.</li>
             <li>RGB signal is fixed to full background normalization. The image is never modified.</li>
-            <li>ID/DF priority: chooses whether row defaults or column defaults are applied first.</li>
           </ul>
         </section>
-
         <section className="about-dialog-section">
           <h3>Reference values block</h3>
           <ul>
