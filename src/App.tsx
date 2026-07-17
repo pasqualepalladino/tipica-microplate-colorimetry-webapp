@@ -10419,7 +10419,7 @@ function App() {
                   ) : null}
                 </>
               ) : null}            />
-              <h2 className="configurator-step-heading">2. Image</h2>
+              <h2 className="configurator-step-heading">Image</h2>
             <ImageGeometryLoader
               imageName={imageName}
               geometryName={geometryName}

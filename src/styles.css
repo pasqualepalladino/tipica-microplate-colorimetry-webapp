@@ -1756,3 +1756,32 @@ h2 {
 .configurator-workflow-actions-stage .configurator-canvas-geometry-actions {
   display: flex;
 }
+/* Hide legacy separate image step chrome in the compact configurator flow. */
+.plate-config-dialog > .configurator-step-heading {
+  display: none;
+}
+
+.plate-config-dialog > .compact-configurator-image-loader {
+  margin: 4px 0 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.plate-config-dialog > .compact-configurator-image-loader fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.plate-config-dialog > .compact-configurator-image-loader legend {
+  display: none;
+}
+
+.plate-config-dialog > .compact-configurator-image-loader .compact-configurator-image-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  align-items: center;
+}

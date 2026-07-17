@@ -32,6 +32,9 @@ export function ImageGeometryLoader({
   onGeometryLoaded,
   onError,
 }: ImageGeometryLoaderProps) {
+  if (compactConfiguratorMode && (imageInputDisabled || imageName)) {
+    return null;
+  }
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -281,12 +284,12 @@ export function ImageGeometryLoader({
 
     return (
       <section className="control-section compact-configurator-image-loader" aria-labelledby="loader-heading">
-        <h2 id="loader-heading">Image</h2>
+
 
         {compactMediaTarget && compactMedia ? createPortal(compactMedia, compactMediaTarget) : null}
 
         <div className="compact-configurator-image-row">
-          <span className="compact-configurator-image-prompt">After completing the plate map:</span>
+
           {showCameraCapture ? (
             cameraActive ? (
               <>

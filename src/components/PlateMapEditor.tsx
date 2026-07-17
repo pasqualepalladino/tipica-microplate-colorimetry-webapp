@@ -634,8 +634,8 @@ export function PlateMapEditor({
       </section>
       ) : null}
 
-      <section className={reviewContent ? "nested-control-section configurator-review-section" : workflowContent ? "nested-control-section configurator-workflow-section" : "nested-control-section"} aria-labelledby={reviewContent ? "configurator-review-heading" : workflowContent ? "configurator-workflow-heading" : "plate-map-editor-heading"}>
-        <h3 id={reviewContent ? "configurator-review-heading" : workflowContent ? "configurator-workflow-heading" : "plate-map-editor-heading"}>{reviewContent ? '4. Review the results' : workflowContent ? '2. Image / Geometry' : '1. Plate map editor'}</h3>
+      <section className={reviewContent ? "nested-control-section configurator-review-section" : workflowContent && configuratorMediaActive ? "nested-control-section configurator-workflow-section" : "nested-control-section"} aria-labelledby={reviewContent ? "configurator-review-heading" : workflowContent && configuratorMediaActive ? "configurator-workflow-heading" : "plate-map-editor-heading"}>
+        <h3 id={reviewContent ? "configurator-review-heading" : workflowContent ? "configurator-workflow-heading" : "plate-map-editor-heading"}>{reviewContent ? 'Review the results' : workflowContent ? 'Image / Geometry' : 'Plate map editor'}</h3>
 
         {reviewContent ? (
           <div className="configurator-review-stage">
