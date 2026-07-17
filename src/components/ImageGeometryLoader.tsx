@@ -40,6 +40,7 @@ export function ImageGeometryLoader({
   const streamRef = useRef<MediaStream | null>(null);
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState('');
+  const [selectedCameraFacingMode, setSelectedCameraFacingMode] = useState<'environment' | 'user'>('environment');
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraStatus, setCameraStatus] = useState('');
   const [compactPreviewSrc, setCompactPreviewSrc] = useState<string | null>(null);
@@ -89,6 +90,14 @@ export function ImageGeometryLoader({
     });
   }, [cameraActive]);
 
+  const findPreferredRearCameraId = (devices: MediaDeviceInfo[]) => {
+    const rearCamera = devices.find((device) =>
+      /\b(back|rear|environment|world|wide|telephoto|ultra wide)\b/i.test(device.label),
+    );
+
+    return rearCamera?.deviceId ?? '';
+  };
+
   const loadCameraDevices = async () => {
     if (!navigator.mediaDevices?.enumerateDevices) {
       setCameraStatus('Camera API not available in this browser.');
@@ -100,19 +109,23 @@ export function ImageGeometryLoader({
       const videoDevices = devices.filter((device) => device.kind === 'videoinput');
       setCameraDevices(videoDevices);
 
-      if (!selectedCameraId && videoDevices[0]?.deviceId) {
-        setSelectedCameraId(videoDevices[0].deviceId);
+      if (!selectedCameraId && selectedCameraFacingMode === 'environment') {
+        const preferredRearCameraId = findPreferredRearCameraId(videoDevices);
+
+        if (preferredRearCameraId) {
+          setSelectedCameraId(preferredRearCameraId);
+        }
       }
 
       return videoDevices;
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Unknown camera error.';
-      setCameraStatus(`Could not list cameras. ${detail}`);
+      setCameraStatus('Could not list cameras. ' + detail);
       return [];
     }
   };
 
-  const startCamera = async (deviceIdOverride?: string) => {
+  const startCamera = async (deviceIdOverride?: string, facingModeOverride: 'environment' | 'user' = selectedCameraFacingMode) => {
     if (imageInputDisabled) {
       setCameraStatus(imageDisabledMessage ?? 'Image input is disabled.');
       return;
@@ -128,12 +141,12 @@ export function ImageGeometryLoader({
       setCameraStatus('Starting camera...');
 
       const devices = await loadCameraDevices();
-      const requestedDeviceId = deviceIdOverride || selectedCameraId || devices[0]?.deviceId;
+      const requestedDeviceId = deviceIdOverride || (facingModeOverride === 'environment' ? selectedCameraId || findPreferredRearCameraId(devices) : '');
 
       const constraints: MediaStreamConstraints = {
         video: requestedDeviceId
           ? { deviceId: { exact: requestedDeviceId } }
-          : { facingMode: { ideal: 'environment' } },
+          : { facingMode: { ideal: facingModeOverride } },
         audio: false,
       };
 
@@ -165,6 +178,12 @@ export function ImageGeometryLoader({
     }
   };
 
+
+  const handleCameraFacingModeChange = (facingMode: 'environment' | 'user') => {
+    setSelectedCameraFacingMode(facingMode);
+    setSelectedCameraId('');
+    void startCamera('', facingMode);
+  };
   const handleCaptureImage = () => {
     if (imageInputDisabled) {
       setCameraStatus(imageDisabledMessage ?? 'Image input is disabled.');
@@ -309,18 +328,31 @@ export function ImageGeometryLoader({
                   CANCEL CAMERA
                 </button>
               </>
-            ) : (
+            ) : null
+          ) : null}
+          {showCameraCapture ? (
+            <>
               <button
                 type="button"
-                className="secondary-button"
+                className={selectedCameraFacingMode === 'environment' ? 'primary-button' : 'secondary-button'}
                 disabled={imageInputDisabled}
                 onClick={() => {
-                  void startCamera();
+                  handleCameraFacingModeChange('environment');
                 }}
               >
-                ACQUIRE FROM CAMERA
+                REAR CAMERA
               </button>
-            )
+              <button
+                type="button"
+                className={selectedCameraFacingMode === 'user' ? 'primary-button' : 'secondary-button'}
+                disabled={imageInputDisabled}
+                onClick={() => {
+                  handleCameraFacingModeChange('user');
+                }}
+              >
+                FRONT CAMERA
+              </button>
+            </>
           ) : null}
           <button
             type="button"
