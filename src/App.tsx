@@ -10333,7 +10333,51 @@ function App() {
               onEditorSnapshotChange={setPlateEditorSnapshot}
               onHelpRequest={() => setIsHelpAboutOpen(true)}
               configuratorMediaActive={configuratorMediaActive}
-            />
+              reviewContent={(measurements.length > 0 || calibrationFits.length > 0 || standardAdditionFitsWithSlopeContext.length > 0 || unknownResults.length > 0) ? (
+                <>
+                  <details className="configurator-result-details" open>
+                    <summary>Status</summary>
+                    <dl className="status-list compact-status-list">
+                      <div><dt>Extraction</dt><dd>{extractionSummary}</dd></div>
+                      <div><dt>Fitting</dt><dd>{fittingSummary}</dd></div>
+                      <div><dt>Analysis</dt><dd>{analysisStatusLabel}</dd></div>
+                      <div><dt>Package</dt><dd>{pendingCompleteAnalysisPackageExport ? 'Preparing ZIP' : measurements.length > 0 ? 'Ready' : 'Waiting'}</dd></div>
+                    </dl>
+                  </details>
+
+                  {calibrationFits.length > 0 ? (
+                    <details className="configurator-result-details">
+                      <summary>Calibration fits ({calibrationFits.length})</summary>
+                      <CalibrationFitTable fits={calibrationFits} />
+                    </details>
+                  ) : null}
+
+                  {standardAdditionFitsWithSlopeContext.length > 0 ? (
+                    <details className="configurator-result-details">
+                      <summary>Standard addition fits ({standardAdditionFitsWithSlopeContext.length})</summary>
+                      <StandardAdditionFitTable fits={standardAdditionFitsWithSlopeContext} />
+                    </details>
+                  ) : null}
+
+                  {unknownResults.length > 0 ? (
+                    <details className="configurator-result-details">
+                      <summary>Unknown results ({unknownResults.length})</summary>
+                      <UnknownResultsTable results={unknownResults} />
+                    </details>
+                  ) : null}
+
+                  {measurements.length > 0 ? (
+                    <details className="configurator-result-details">
+                      <summary>RGB/PAbs results ({measurements.length})</summary>
+                      <ResultsTable
+                        measurements={measurements}
+                        correctedMeasurements={correctedMeasurementSet.measurements}
+                        correctionApplied={lowSignalCorrectionEffective}
+                      />
+                    </details>
+                  ) : null}
+                </>
+              ) : null}            />
               <h2 className="configurator-step-heading">2. Image</h2>
             <ImageGeometryLoader
               imageName={imageName}

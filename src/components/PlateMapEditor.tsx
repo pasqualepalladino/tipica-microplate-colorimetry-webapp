@@ -1,5 +1,5 @@
 import type { ChangeEvent } from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState , type ReactNode} from 'react';
 import type { WellConfig } from '../types/plateMap';
 import {
   applyTagToRow,
@@ -35,6 +35,7 @@ interface PlateMapEditorProps {
   onEditorSnapshotChange?: (snapshot: PlateEditorSnapshot) => void;
   onHelpRequest?: () => void;
   configuratorMediaActive?: boolean;
+  reviewContent?: ReactNode;
 }
 
 interface ExpectedRefRow {
@@ -94,6 +95,7 @@ export function PlateMapEditor({
   onEditorSnapshotChange,
   onHelpRequest,
   configuratorMediaActive = false,
+  reviewContent,
 }: PlateMapEditorProps) {
   const unitParts = useMemo(() => parseUnitLabel(unitLabel), [unitLabel]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -633,8 +635,14 @@ export function PlateMapEditor({
       </section>
       ) : null}
 
-      <section className="nested-control-section" aria-labelledby="plate-map-editor-heading">
-        <h3 id="plate-map-editor-heading">1. Plate map editor</h3>
+      <section className={reviewContent ? "nested-control-section configurator-review-section" : "nested-control-section"} aria-labelledby={reviewContent ? "configurator-review-heading" : "plate-map-editor-heading"}>
+        <h3 id={reviewContent ? "configurator-review-heading" : "plate-map-editor-heading"}>{reviewContent ? '4. Review the results' : '1. Plate map editor'}</h3>
+
+        {reviewContent ? (
+          <div className="configurator-review-stage">
+            {reviewContent}
+          </div>
+        ) : null}
 
         <div className="button-row left-aligned-button-row plate-map-editor-actions">
           <button type="button" className="secondary-button" onClick={handleCopyRowA}>

@@ -1616,3 +1616,119 @@ h2 {
   line-height: 1.1;
   font-weight: 700;
 }
+
+/* Review results inside the configurator plate-map stage. */
+.configurator-review-stage {
+  display: grid;
+  gap: 5px;
+  max-width: min(100%, calc(96vw - 24px));
+  max-height: min(62vh, 560px);
+  overflow: auto;
+  border: 1px solid #a8a8a8;
+  background: #f0f0f0;
+  padding: 6px;
+}
+
+.configurator-review-section .plate-map-editor-actions,
+.configurator-review-section .plate-config-editor-summary,
+.configurator-review-section .configurator-media-stage,
+.configurator-review-section .plate-map-wrap {
+  display: none;
+}
+
+.configurator-result-details {
+  border: 1px solid #d0d0d0;
+  border-radius: 3px;
+  background: #ffffff;
+}
+
+.configurator-result-details summary {
+  cursor: pointer;
+  padding: 4px 6px;
+  font-weight: 700;
+}
+
+.configurator-result-details > .status-list,
+.configurator-result-details > .results-table-wrap {
+  margin: 4px 6px 6px;
+}
+
+.configurator-result-details .results-table-wrap {
+  max-height: 260px;
+  overflow: auto;
+}
+/* Keep wide review tables inside the configurator review block. */
+.configurator-review-stage {
+  width: min(100%, calc(96vw - 24px));
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.configurator-review-stage .configurator-result-details {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  box-sizing: border-box;
+}
+
+.configurator-review-stage .configurator-result-details > summary {
+  position: sticky;
+  left: 0;
+  background: #ffffff;
+  z-index: 1;
+}
+
+.configurator-review-stage table {
+  width: max-content;
+  max-width: none;
+}
+
+.configurator-review-stage .results-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+/* Hard containment for wide review tables: keep block fixed, scroll inside. */
+.configurator-review-stage {
+  grid-template-columns: minmax(0, 1fr);
+  width: min(760px, calc(96vw - 32px));
+  max-width: min(760px, calc(96vw - 32px));
+  min-width: 0;
+  max-height: min(62vh, 560px);
+  overflow: auto;
+  box-sizing: border-box;
+  contain: inline-size;
+}
+
+.configurator-review-stage > *,
+.configurator-review-stage .configurator-result-details,
+.configurator-review-stage .results-table-wrap {
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.configurator-review-stage .configurator-result-details {
+  overflow: hidden;
+}
+
+.configurator-review-stage .configurator-result-details[open] {
+  overflow: auto;
+}
+
+.configurator-review-stage .results-table-wrap {
+  display: block;
+  overflow: auto;
+}
+
+.configurator-review-stage table {
+  width: max-content;
+  min-width: 100%;
+}
+
+.configurator-review-stage .configurator-result-details > summary {
+  position: sticky;
+  left: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
