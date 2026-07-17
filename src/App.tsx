@@ -8461,6 +8461,7 @@ function App() {
   const [manualPickingActive, setManualPickingActive] = useState(false);
   const [manualPoints, setManualPoints] = useState<Point[]>([]);
   const [manualMouthRadiusPx, setManualMouthRadiusPx] = useState(DEFAULT_MANUAL_MOUTH_RADIUS_PX);
+  const [manualMouthPreviewPoint, setManualMouthPreviewPoint] = useState<Point | null>(null);
   const [floorCirclePickingActive, setFloorCirclePickingActive] = useState(false);
   const [manualFloorCircles, setManualFloorCircles] = useState<FloorCircle[]>([]);
   const [manualFloorCirclePreviewCenter, setManualFloorCirclePreviewCenter] = useState<Point | null>(null);
@@ -10364,6 +10365,39 @@ function App() {
                         ? 'PICK 4 FLOOR CIRCLES'
                         : 'RUN TIPICA ANALYSIS'}
                   </button>
+                {manualPickingActive ? (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={!manualMouthPreviewPoint}
+                    onClick={() => {
+                      if (!manualMouthPreviewPoint) {
+                        return;
+                      }
+
+                      handleManualPointPick(manualMouthPreviewPoint);
+                      setManualMouthPreviewPoint(null);
+                    }}
+                  >
+                    CONFIRM MOUTH POINT
+                  </button>
+                ) : null}
+                {floorCirclePickingActive ? (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={!manualFloorCirclePreviewCenter}
+                    onClick={() => {
+                      if (!manualFloorCirclePreviewCenter) {
+                        return;
+                      }
+
+                      handleFloorCirclePointPick(manualFloorCirclePreviewCenter);
+                    }}
+                  >
+                    CONFIRM FLOOR POINT
+                  </button>
+                ) : null}
                   <button type="button" className="secondary-button" disabled={manualPoints.length === 0} onClick={handleUndoManualPoint}>
                     UNDO MOUTH
                   </button>
@@ -10487,6 +10521,7 @@ function App() {
                 manualPickingActive={manualPickingActive}
                 manualMouthRadiusPx={manualMouthRadiusPx}
                 onManualPointPick={handleManualPointPick}
+                onManualMouthPreviewMove={setManualMouthPreviewPoint}
                 onManualMouthRadiusAdjust={handleManualMouthRadiusAdjust}
                 floorCirclePickingActive={floorCirclePickingActive}
                 manualFloorCircles={manualFloorCircles}
@@ -10955,6 +10990,7 @@ function App() {
           manualPickingActive={manualPickingActive}
           manualMouthRadiusPx={manualMouthRadiusPx}
           onManualPointPick={handleManualPointPick}
+          onManualMouthPreviewMove={setManualMouthPreviewPoint}
           onManualMouthRadiusAdjust={handleManualMouthRadiusAdjust}
           floorCirclePickingActive={floorCirclePickingActive}
           manualFloorCircles={manualFloorCircles}

@@ -13,6 +13,7 @@ interface PlateCanvasProps {
   manualPickingActive: boolean;
   manualMouthRadiusPx: number;
   onManualPointPick: (point: Point) => void;
+  onManualMouthPreviewMove?: (point: Point | null) => void;
   onManualMouthRadiusAdjust: (delta: number) => void;
   floorCirclePickingActive: boolean;
   manualFloorCircles: FloorCircle[];
@@ -291,6 +292,7 @@ export function PlateCanvas({
   manualPickingActive,
   manualMouthRadiusPx,
   onManualPointPick,
+  onManualMouthPreviewMove,
   onManualMouthRadiusAdjust,
   floorCirclePickingActive,
   manualFloorCircles,
@@ -306,13 +308,15 @@ export function PlateCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const activePointersRef = useRef<Map<number, Point>>(new Map());
   const lastPinchDistanceRef = useRef<number | null>(null);
+  const suppressNextTouchClickRef = useRef(false);
   const [manualPreviewPoint, setManualPreviewPoint] = useState<Point | null>(null);
 
   useEffect(() => {
     if (!manualPickingActive) {
       setManualPreviewPoint(null);
+      onManualMouthPreviewMove?.(null);
     }
-  }, [manualPickingActive]);
+  }, [manualPickingActive, onManualMouthPreviewMove]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -557,7 +561,13 @@ export function PlateCanvas({
 
     if (manualPickingActive && manualPoints.length < MANUAL_MOUTH_REFERENCES.length) {
       setManualPreviewPoint(point);
+      onManualMouthPreviewMove?.(point);
     }
+  };
+
+  const clearManualMouthPreview = () => {
+    setManualPreviewPoint(null);
+    onManualMouthPreviewMove?.(null);
   };
 
   const handleCanvasMouseMove = (event: MouseEvent<HTMLCanvasElement>) => {
@@ -575,6 +585,8 @@ export function PlateCanvas({
       return;
     }
 
+    suppressNextTouchClickRef.current = true;
+
     const point = getCanvasPoint(event);
 
     if (!point) {
@@ -585,6 +597,12 @@ export function PlateCanvas({
   };
 
   const handleCanvasClick = (event: MouseEvent<HTMLCanvasElement>) => {
+    if (suppressNextTouchClickRef.current) {
+      suppressNextTouchClickRef.current = false;
+      event.preventDefault();
+      return;
+    }
+
     const point = getCanvasPoint(event);
 
     if (!point) {
@@ -592,7 +610,7 @@ export function PlateCanvas({
     }
 
     if (manualPickingActive && manualPoints.length < 4) {
-      setManualPreviewPoint(null);
+      clearManualMouthPreview();
       onManualPointPick(point);
       return;
     }
@@ -619,7 +637,7 @@ export function PlateCanvas({
         onMouseMove={handleCanvasMouseMove}
         onPointerDown={handleCanvasPointerPreview}
         onPointerMove={handleCanvasPointerPreview}
-        onMouseLeave={() => setManualPreviewPoint(null)}
+        onMouseLeave={clearManualMouthPreview}
         onClick={handleCanvasClick}
       />
     </div>
