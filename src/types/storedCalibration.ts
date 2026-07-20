@@ -1,6 +1,14 @@
 import type { FitChannel } from './plateMap';
 import type { MethodMetadata } from './results';
 
+export interface StoredCalibrationPoint {
+  x: number;
+  y: number;
+  yerr: number;
+  n: number;
+  excluded?: boolean;
+}
+
 export interface StoredCalibrationFit {
   channel: FitChannel;
   slope: number;
@@ -17,6 +25,7 @@ export interface StoredCalibrationFit {
   nClipPoints?: number | null;
   clipX?: string;
   clipDelta?: string;
+  points?: StoredCalibrationPoint[];
 }
 
 export interface PythonStoredCalibrationChannel {
@@ -35,6 +44,7 @@ export interface PythonStoredCalibrationChannel {
   nClipPoints?: number | null;
   clipX?: string;
   clipDelta?: string;
+  points?: StoredCalibrationPoint[];
 }
 
 export interface RgbLowSignalClipPoint {

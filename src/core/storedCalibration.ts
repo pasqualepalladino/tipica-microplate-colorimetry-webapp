@@ -7,6 +7,7 @@ import type {
 import type {
   StoredCalibration,
   StoredCalibrationFit,
+  StoredCalibrationPoint,
   PythonStoredCalibrationChannel,
   RgbLowSignalClipPoint,
   RgbLowSignalCorrection,
@@ -416,6 +417,20 @@ function channelValue(rgb: Rgb, channel: FitChannel): number {
   return rgb.b;
 }
 
+function parseStoredCalibrationPoint(rawPoint: unknown): StoredCalibrationPoint {
+  if (!isRecord(rawPoint)) {
+    throw new Error('Each stored calibration point must be an object.');
+  }
+
+  return {
+    x: parseFiniteNumber(rawPoint.x, 'calibration point x'),
+    y: parseFiniteNumber(rawPoint.y, 'calibration point y'),
+    yerr: parseNonNegativeNumber(rawPoint.yerr ?? 0, 'calibration point yerr'),
+    n: parsePositiveInteger(rawPoint.n ?? 1, 'calibration point n'),
+    ...(typeof rawPoint.excluded === 'boolean' ? { excluded: rawPoint.excluded } : {}),
+  };
+}
+
 function parseStoredCalibrationFit(rawFit: unknown): StoredCalibrationFit {
   if (!isRecord(rawFit)) {
     throw new Error('Each stored calibration fit must be an object.');
@@ -437,6 +452,9 @@ function parseStoredCalibrationFit(rawFit: unknown): StoredCalibrationFit {
     ...(typeof rawFit.nClipPoints === 'number' && Number.isFinite(rawFit.nClipPoints) ? { nClipPoints: rawFit.nClipPoints } : {}),
     ...(typeof rawFit.clipX === 'string' ? { clipX: rawFit.clipX } : {}),
     ...(typeof rawFit.clipDelta === 'string' ? { clipDelta: rawFit.clipDelta } : {}),
+    ...(Array.isArray(rawFit.points)
+      ? { points: rawFit.points.map(parseStoredCalibrationPoint) }
+      : {}),
   };
 }
 
@@ -470,6 +488,9 @@ function parsePythonStoredChannel(channelName: string, rawChannel: unknown): Pyt
     : Array.isArray(correction.clip_delta)
       ? correction.clip_delta.join(',')
       : undefined;
+  const points = Array.isArray(rawChannel.calibration_points)
+    ? rawChannel.calibration_points.map(parseStoredCalibrationPoint)
+    : undefined;
 
   return {
     channel: channelName,
@@ -489,6 +510,41 @@ function parsePythonStoredChannel(channelName: string, rawChannel: unknown): Pyt
     ...(optionalFiniteNumber(rawChannel.NClipPoints) !== undefined ? { nClipPoints: optionalFiniteNumber(rawChannel.NClipPoints) } : {}),
     ...(clipX !== undefined ? { clipX } : {}),
     ...(clipDelta !== undefined ? { clipDelta } : {}),
+    ...(points && points.length > 0 ? { points } : {}),
+  };
+}
+
+function parseWebStoredPythonChannel(rawChannel: unknown): PythonStoredCalibrationChannel | null {
+  if (!isRecord(rawChannel) || typeof rawChannel.channel !== 'string' || rawChannel.channel.trim() === '') {
+    return null;
+  }
+
+  const slope = optionalFiniteNumber(rawChannel.slope);
+  const intercept = optionalFiniteNumber(rawChannel.intercept);
+  const r2 = optionalFiniteNumber(rawChannel.r2);
+  if (slope === undefined || intercept === undefined || r2 === undefined) {
+    return null;
+  }
+
+  const points = Array.isArray(rawChannel.points)
+    ? rawChannel.points.map(parseStoredCalibrationPoint)
+    : undefined;
+
+  return {
+    channel: rawChannel.channel.trim(),
+    n: typeof rawChannel.n === 'number' && Number.isFinite(rawChannel.n)
+      ? Math.max(0, Math.round(rawChannel.n))
+      : 0,
+    slope,
+    intercept,
+    r2,
+    ...(optionalFiniteNumber(rawChannel.rmse) !== undefined ? { rmse: optionalFiniteNumber(rawChannel.rmse) } : {}),
+    ...(optionalFiniteNumber(rawChannel.sigmaCal) !== undefined ? { sigmaCal: optionalFiniteNumber(rawChannel.sigmaCal) } : {}),
+    ...(typeof rawChannel.sigmaSource === 'string' ? { sigmaSource: rawChannel.sigmaSource } : {}),
+    ...(optionalFiniteNumber(rawChannel.snr) !== undefined ? { snr: optionalFiniteNumber(rawChannel.snr) } : {}),
+    ...(optionalFiniteNumber(rawChannel.lod) !== undefined ? { lod: optionalFiniteNumber(rawChannel.lod) } : {}),
+    ...(optionalFiniteNumber(rawChannel.loq) !== undefined ? { loq: optionalFiniteNumber(rawChannel.loq) } : {}),
+    ...(points && points.length > 0 ? { points } : {}),
   };
 }
 
@@ -618,6 +674,7 @@ function parsePythonStoredCalibrationBundle(raw: Record<string, unknown>): Store
       ...(channel.nClipPoints !== undefined ? { nClipPoints: channel.nClipPoints } : {}),
       ...(channel.clipX !== undefined ? { clipX: channel.clipX } : {}),
       ...(channel.clipDelta !== undefined ? { clipDelta: channel.clipDelta } : {}),
+      ...(channel.points && channel.points.length > 0 ? { points: channel.points } : {}),
     });
   });
 
@@ -722,7 +779,10 @@ function parseOptionalMethodMetadata(rawMetadata: unknown): MethodMetadata | und
   };
 }
 
-function normalizeCalibrationFits(fits: CalibrationFit[]): StoredCalibrationFit[] {
+function normalizeCalibrationFits(
+  fits: CalibrationFit[],
+  calibrationPointsByChannel: Partial<Record<FitChannel, StoredCalibrationPoint[]>> = {},
+): StoredCalibrationFit[] {
   const fitByChannel = new Map<FitChannel, CalibrationFit>();
 
   for (const fit of fits) {
@@ -736,12 +796,64 @@ function normalizeCalibrationFits(fits: CalibrationFit[]): StoredCalibrationFit[
       throw new Error(`Current calibration is missing the ${channel} fit.`);
     }
 
+    const points = calibrationPointsByChannel[channel] ?? [];
+
     return {
       channel,
       slope: parseFiniteNumber(fit.slope, `${channel} slope`),
       intercept: parseFiniteNumber(fit.intercept, `${channel} intercept`),
       r2: parseFiniteNumber(fit.r2, `${channel} r2`),
       n: parsePositiveInteger(fit.n, `${channel} n`),
+      ...(typeof fit.rmse === 'number' && Number.isFinite(fit.rmse)
+        ? { rmse: fit.rmse }
+        : {}),
+      ...(typeof fit.sigmaCal === 'number' && Number.isFinite(fit.sigmaCal)
+        ? { sigmaCal: fit.sigmaCal }
+        : {}),
+      ...(typeof fit.sigmaSource === 'string'
+        ? { sigmaSource: fit.sigmaSource }
+        : {}),
+      ...(typeof fit.snr === 'number' && Number.isFinite(fit.snr)
+        ? { snr: fit.snr }
+        : {}),
+      ...(typeof fit.lod === 'number' && Number.isFinite(fit.lod)
+        ? { lod: fit.lod }
+        : {}),
+      ...(typeof fit.loq === 'number' && Number.isFinite(fit.loq)
+        ? { loq: fit.loq }
+        : {}),
+      ...(typeof fit.S0 === 'number' && Number.isFinite(fit.S0)
+        ? { S0: fit.S0 }
+        : {}),
+      ...(typeof fit.clipX === 'string'
+        ? { clipX: fit.clipX }
+        : {}),
+      ...(typeof fit.clipDelta === 'string'
+        ? { clipDelta: fit.clipDelta }
+        : {}),
+      ...(points.length > 0
+        ? {
+            points: points.map((point) => ({
+              x: parseFiniteNumber(
+                point.x,
+                `${channel} calibration point x`,
+              ),
+              y: parseFiniteNumber(
+                point.y,
+                `${channel} calibration point y`,
+              ),
+              yerr: parseNonNegativeNumber(
+                point.yerr,
+                `${channel} calibration point yerr`,
+              ),
+              n: parsePositiveInteger(
+                point.n,
+                `${channel} calibration point n`,
+              ),
+              ...(typeof point.excluded === 'boolean' ? { excluded: point.excluded } : {}),
+            })),
+          }
+        : {}),
     };
   });
 }
@@ -761,6 +873,7 @@ export function createStoredCalibrationFromFits(
   corrections: RgbLowSignalCorrection[] = [],
   createdAt = new Date().toISOString(),
   methodMetadata?: MethodMetadata,
+  calibrationPointsByChannel: Partial<Record<FitChannel, StoredCalibrationPoint[]>> = {},
 ): StoredCalibration {
   const normalizedSourceName = sourceName.trim() || 'current image';
 
@@ -769,9 +882,14 @@ export function createStoredCalibrationFromFits(
     sourceName: normalizedSourceName,
     createdAt,
     unit: 'mM',
-    fits: normalizeCalibrationFits(fits),
+    fits: normalizeCalibrationFits(
+      fits,
+      calibrationPointsByChannel,
+    ),
     corrections,
-    ...(methodMetadata ? { methodMetadata: { ...methodMetadata, createdAt } } : {}),
+    ...(methodMetadata
+      ? { methodMetadata: { ...methodMetadata, createdAt } }
+      : {}),
   };
 }
 
@@ -853,6 +971,15 @@ export function parseStoredCalibrationJson(raw: unknown): StoredCalibration {
     });
   }
 
+  const pythonChannels = Array.isArray(raw.pythonChannels)
+    ? raw.pythonChannels.flatMap((rawChannel) => {
+        const channel = parseWebStoredPythonChannel(rawChannel);
+        return channel ? [channel] : [];
+      })
+    : undefined;
+  const selectedChannel = raw.selectedChannel === 'R' || raw.selectedChannel === 'G' || raw.selectedChannel === 'B'
+    ? raw.selectedChannel
+    : undefined;
   const cielabReference = isRecord(raw.cielabReference)
     ? (() => {
         const l = optionalFiniteNumber(raw.cielabReference.l);
@@ -881,6 +1008,8 @@ export function parseStoredCalibrationJson(raw: unknown): StoredCalibration {
     unit: 'mM',
     fits,
     corrections,
+    ...(selectedChannel ? { selectedChannel } : {}),
+    ...(pythonChannels && pythonChannels.length > 0 ? { pythonChannels } : {}),
     methodMetadata: parseOptionalMethodMetadata(raw.methodMetadata),
     ...(cielabReference ? { cielabReference } : {}),
     ...(emptyWellPayload ? { emptyWellPayload } : {}),

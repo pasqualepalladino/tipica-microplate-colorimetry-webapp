@@ -66,12 +66,14 @@ import {
   downloadStoredCalibrationJson,
   estimateUnknownConcentrationsFromStoredCalibration,
   parseStoredCalibrationJson,
+  storedCalibrationToJson,
 } from './core/storedCalibration';
 import type { FloorCircle, PlateGeometry, Point } from './types/geometry';
 import type { WellCenter } from './types/plate';
 import type { CalibrationFit, FitChannel, StandardAdditionFit, WellConfig } from './types/plateMap';
 import type { MethodMetadata, Rgb, RoiMode, RoiPixelStatisticsMode, WellMeasurement } from './types/results';
 import type {
+  PythonStoredCalibrationChannel,
   RgbLowSignalCorrection,
   StoredCalibration,
   StoredCielabReference,
@@ -1337,13 +1339,13 @@ function drawDiagnosticPixels(
   ctx.restore();
 }
 
-function drawDiagnosticLabel(ctx: CanvasRenderingContext2D, text: string, x = 12, y = 20): void {
+function drawDiagnosticLabel(ctx: CanvasRenderingContext2D, text: string, x = 12, y = 20, fontSize = 16): void {
   ctx.save();
-  ctx.font = '700 16px Inter, ui-sans-serif, system-ui, sans-serif';
+  ctx.font = `700 ${fontSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
   ctx.textBaseline = 'top';
   const metrics = ctx.measureText(text);
   ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
-  ctx.fillRect(x - 6, y - 5, metrics.width + 12, 26);
+  ctx.fillRect(x - 8, y - 6, metrics.width + 16, fontSize + 12);
   ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
   ctx.fillText(text, x, y);
   ctx.restore();
@@ -1480,10 +1482,20 @@ function drawBackgroundDiagnostics(
   drawDiagnosticLabel(
     ctx,
     `Background mask: ${diagnostics.diagnostics.maskAlgorithm ?? diagnostics.selectedModel}; candidates ${diagnostics.candidatePixels.length}, accepted ${diagnostics.acceptedPixels.length}, samples ${diagnostics.samplePixels.length}`,
+    12,
+    12,
+    32,
+  );
+  drawDiagnosticLabel(
+    ctx,
+    'Colors: blue = candidate (visible blue = rejected); yellow = accepted; magenta = model sample',
+    12,
+    54,
+    32,
   );
 
   if (diagnostics.warning) {
-    drawDiagnosticLabel(ctx, diagnostics.warning, 12, 50);
+    drawDiagnosticLabel(ctx, diagnostics.warning, 12, 96, 32);
   }
 }
 
@@ -1619,6 +1631,7 @@ interface PythonResultsChannelRank {
   lod: number;
   loq: number;
   scoreFormula: string;
+  bestStandardAdditionFit?: StandardAdditionFit;
 }
 
 function pabsChannelValue(measurement: WellMeasurement, channel: FitChannel): number {
@@ -1653,11 +1666,12 @@ function addZipBlob(
 }
 
 function createPythonResultsCaptionText(imageBase: string, unitLabel: string, expectedRefs: ExpectedRef[]): string {
+  const formatCaptionNumber = (value: number): string => Number(value.toFixed(3)).toString();
   const referenceLines = expectedRefs.length > 0
     ? expectedRefs.map((ref, index) => {
       const label = ref.label || ref.refId || `Reference ${index + 1}`;
-      const sdText = ref.sd !== null && Number.isFinite(ref.sd) ? ` +/- ${formatFitCell(ref.sd)}` : '';
-      return `- ${label}: ${formatFitCell(ref.value)}${sdText} ${unitLabel}`;
+      const sdText = ref.sd !== null && Number.isFinite(ref.sd) ? ` +/- ${formatCaptionNumber(ref.sd)}` : '';
+      return `- ${label}: ${formatCaptionNumber(ref.value)}${sdText} ${unitLabel}`;
     }).join('\n')
     : '- No external reference values were configured.';
 
@@ -1675,7 +1689,7 @@ Fitting and quantification
 Calibration and standard-addition fits in the primary RGB export path use robust residual-based IRLS linear regression with covariance propagation. For standard addition, the original-sample concentration is C0 = DF x q/m, where y = m x + q and x is the added concentration.
 
 Ranking score
-For primary RGB figure/channel selection, the RGB ranking helper uses fit-quality criteria from calibration and standard addition. When both are available, the score uses slope agreement, calibration R2, standard-addition R2 and LOQ; the RGB PNG channel selection uses the best available standard-addition fit for that channel. If calibration+standard-addition ranking is unavailable, fallback RGB channel scores use calibration-only or standard-addition-only fit quality. Expected/reference values, recovery, SNR and clipping are external checks and are not used to choose the ranked RGB method.
+Overall method score: one value per method/channel, computed across all available standard-addition groups. It is used to compare methods, assign Selected and Rank, and choose the method shown in BEST_CHANNEL. Group score: one value for one Sample ID + dilution-factor group. It is used only within the already selected method to choose the ID/DF group shown in BEST_CHANNEL. Expected/reference values, recovery, SNR and clipping are external checks and are not used in either score.
 
 The workbook-level 07_METHOD_COMPARISON sheet reports the cross-method diagnostic score separately, using common comparable factors across RGB/PAbs and CIELAB/DeltaE methods.
 
@@ -1701,7 +1715,7 @@ File scope
 This caption applies to diagnostic outputs in RAW_DATA_DETAILS for ${imageBase}: BG_STAT_MASK.png, FIGURE_CIELAB_DELTAE.png, METHOD_COMPARISON.png, DIAGNOSTICS.xlsx and analysis_run_config.json.
 
 BG_STAT_MASK.png
-The web export shows the accepted inter-well background sampling mask overlaid on the analyzed image for auditability. Accepted background pixels are selected from inter-well regions after model-based geometric exclusion, including the projected well volume from mouth to floor when floor geometry is available, followed by robust intensity filtering. The overlay is a visual diagnostic of the same background-sampling step used by the calculations.
+The web export shows the inter-well background sampling mask overlaid on the analyzed image for auditability. Blue marks all candidate pixels before robust acceptance; because yellow is drawn on top, blue pixels that remain visible are candidate pixels rejected by the acceptance filter. Yellow marks accepted background pixels. Magenta marks the final sparse samples used by the background model. Accepted pixels are selected from inter-well regions after model-based geometric exclusion, including the projected well volume from mouth to floor when floor geometry is available, followed by robust intensity filtering.
 
 analysis_run_config.json
 Web-specific reproducibility and audit metadata for the exported run. It records the app-side configuration, selected analysis options and geometry/background settings needed to understand or reproduce how this ZIP was generated. It is not a result table and does not change concentration calculations; it is included to help users, reviewers or support personnel verify the analysis context after export.
@@ -3381,6 +3395,9 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "Col", Meaning: "Plate column index", Formula: "1-based column number", Unit: "well-column index", "Where used": "RAW, REPLICATES_MEAN", "Shown when": "always", Notes: "" },
     { Term: "CommonFactorsN", Meaning: "Number of common factors used in the score", Formula: "3 for R2_cal, R2_std_mean and SlopeAgreement; LOQ is included in the score formula but not counted in CommonFactorsN; 1 for calibration-only or stdadd-only fallbacks", Unit: "integer", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "Used to avoid comparing scores obtained from different formulas." },
     { Term: "ComparableGroup", Meaning: "Set of methods scored with the same formula", Formula: "calibration_plus_stdadd, calibration_only, stdadd_only, or not_ranked", Unit: "text", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "Scores are directly comparable only within the same group. The group with the largest CommonFactorsN is used for Selected/Rank." },
+    { Term: "Overall method score", Meaning: "One value per analytical method/channel, aggregating every available standard-addition group. Used to compare methods and choose Selected, Rank and the BEST_CHANNEL method.", Formula: "mean(SA_k)^2 × √(R2_cal × mean(R2_std,k)) / LOQ", Unit: `1/${unitLabel}`, "Where used": "07_METHOD_COMPARISON; Selected; Rank; BEST_CHANNEL method selection", "Shown when": "calibration_plus_stdadd", Notes: "One value per method/channel. It is not a per-dilution score." },
+    { Term: "Group score", Meaning: "One value for one Sample ID + dilution-factor group. Used only after the method is selected, to choose the ID/DF group shown in BEST_CHANNEL.", Formula: "SA_k^2 × √(R2_cal × R2_std,k) / LOQ", Unit: `1/${unitLabel}`, "Where used": "standard-addition result tables; best ID/DF selection within the selected method", "Shown when": "standard-addition group present", Notes: "One value per ID/DF group. It must not be reused as the overall method score." },
+    { Term: "SA_k", Meaning: "Slope agreement for standard-addition group k", Formula: "min(|m_cal|, |m_std,k|) / max(|m_cal|, |m_std,k|)", Unit: "dimensionless", "Where used": "Overall method score; Group score", "Shown when": "calibration_plus_stdadd", Notes: "k identifies Sample ID and Dilution Factor." },
     { Term: "Conc", Meaning: "Configured concentration for calibration or added-standard wells", Formula: "user/configurator input", Unit: unitLabel, "Where used": "RAW, REPLICATES_MEAN, FITTING", "Shown when": "always", Notes: "Unknown wells may have undefined Conc." },
     { Term: "Best diagnostic comparison method", Meaning: "Highest-scoring method in the diagnostic method-comparison table", Formula: "method with maximum METHOD_COMPARISON Score", Unit: "method name", "Where used": "OVERVIEW", "Shown when": "METHOD_COMPARISON rows are available", Notes: "Reported separately from the selected quantitative RGB/PAbs method." },
     { Term: "Best diagnostic comparison score", Meaning: "Score of the best diagnostic comparison method", Formula: "maximum METHOD_COMPARISON Score", Unit: "score", "Where used": "OVERVIEW", "Shown when": "METHOD_COMPARISON rows are available", Notes: "Use for diagnostic comparison, not as a replacement for the primary quantitative RGB/PAbs selection." },
@@ -3452,8 +3469,8 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "Robust SD", Meaning: "Robust dispersion across replicates", Formula: "1.4826 × MAD, where MAD = median(|x − median(x)|)", Unit: "same as variable", "Where used": "REPLICATES_MEAN", "Shown when": "always", Notes: "Computed within each replicate group." },
     { Term: "Row", Meaning: "Plate row label", Formula: "A-based alphabetical row label", Unit: "well-row label", "Where used": "RAW, REPLICATES_MEAN", "Shown when": "always", Notes: "" },
     { Term: "S0_calibration", Meaning: "Channel-wide low-signal offset estimated from raw calibration", Formula: "max(0, −min(raw calibration response))", Unit: "signal", "Where used": "FITTING", "Shown when": "RGB calibration", Notes: "Estimated before forced-zero calibration and transferred to StdAdd/unknown data." },
-    { Term: "Score", Meaning: "Common method-ranking score", Formula: "for calibration plus standard addition: SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ)", Unit: `1/${unitLabel}`, "Where used": "FIGURE_RGB.png, METHOD_COMPARISON.png, 07_METHOD_COMPARISON", "Shown when": "method comparison present", Notes: "Expected/reference values, recovery, SNR and clipping are not used in this score." },
-    { Term: "ScoreFormula", Meaning: "Formula used to compute Score", Formula: "text descriptor", Unit: "text", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "Documents which score formula was applied to the row." },
+    { Term: "Overall method score", Meaning: "Common cross-method ranking score; one value per method/channel", Formula: "for calibration plus standard addition: SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ)", Unit: `1/${unitLabel}`, "Where used": "FIGURE_RGB.png, METHOD_COMPARISON.png, 07_METHOD_COMPARISON", "Shown when": "method comparison present", Notes: "Expected/reference values, recovery, SNR and clipping are not used in this score." },
+    { Term: "OverallScoreFormula", Meaning: "Formula used to compute Overall method score", Formula: "text descriptor", Unit: "text", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "Documents which score formula was applied to the row." },
     { Term: "Selected", Meaning: "Workbook-level selected method flag", Formula: "1 for the highest-ranked row within the most informative ComparableGroup, otherwise 0", Unit: "0/1", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "Selection in the workbook is derived from method-comparison rank and not from expected/recovery." },
     { Term: "Selected/Rank", Meaning: "Selected method flag and rank position", Formula: "Selected = 1 for the selected method; Rank = score order within the highest common-factor group", Unit: "0/1 and integer", "Where used": "07_METHOD_COMPARISON", "Shown when": "method comparison present", Notes: "" },
     { Term: "Sheet", Meaning: "Workbook sheet name", Formula: "worksheet name", Unit: "text", "Where used": "01_CONTENTS", "Shown when": "always", Notes: "" },
@@ -4401,6 +4418,30 @@ function buildCielabFittingRows(
         beta_k: '',
         bias_index_k: '',
       });
+    } else {
+      const storedChannel = storedCielabChannelForDescriptor(descriptor.channel, storedCalibration);
+      if (storedChannel) {
+        rows.push({
+          Channel: channelLabel(descriptor.channel),
+          FitType: 'Calibration',
+          ID: '',
+          DF: '',
+          n_points: storedChannel.n,
+          m: finiteOrBlank(storedChannel.slope),
+          q: finiteOrBlank(storedChannel.intercept),
+          R2: finiteOrBlank(storedChannel.r2),
+          RMSE: finiteOrBlank(storedChannel.rmse ?? Number.NaN),
+          LOD: finiteOrBlank(storedChannel.lod ?? Number.NaN),
+          LOQ: finiteOrBlank(storedChannel.loq ?? Number.NaN),
+          C0: '',
+          C0_sd: '',
+          sigma_cal: finiteOrBlank(storedChannel.sigmaCal ?? Number.NaN),
+          sigma_source: storedChannel.sigmaSource ?? 'stored_calibration',
+          SNR: finiteOrBlank(storedChannel.snr ?? Number.NaN),
+          beta_k: '',
+          bias_index_k: '',
+        });
+      }
     }
 
     standardGroups.forEach((group) => {
@@ -4444,6 +4485,165 @@ function buildCielabFittingRows(
   return rows;
 }
 
+function storedCielabChannelForDescriptor(
+  descriptorChannel: string,
+  storedCalibration: StoredCalibration | null | undefined,
+): PythonStoredCalibrationChannel | null {
+  const aliases = descriptorChannel === 'DeltaE_ab' || descriptorChannel === 'DeltaE'
+    ? ['DeltaE_ab', 'DeltaE']
+    : descriptorChannel === 'DeltaE_ab_chroma' || descriptorChannel === 'DeltaE_chroma'
+      ? ['DeltaE_ab_chroma', 'DeltaE_chroma']
+      : [descriptorChannel];
+
+  return storedCalibration?.pythonChannels?.find((channel) => aliases.includes(channel.channel)) ?? null;
+}
+
+function storedCielabCalibrationPoints(
+  descriptorChannel: string,
+  storedCalibration: StoredCalibration | null | undefined,
+): CielabCompositePoint[] {
+  const storedChannel = storedCielabChannelForDescriptor(descriptorChannel, storedCalibration);
+
+  return (storedChannel?.points ?? [])
+    .filter((point) => point.excluded !== true)
+    .map((point) => ({
+      x: point.x,
+      y: point.y,
+      yerr: point.yerr,
+    }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+    .sort((a, b) => a.x - b.x);
+}
+
+function buildStoredCielabChannels(
+  points: CielabDiagnosticPoint[],
+): PythonStoredCalibrationChannel[] {
+  const calibrationPoints = diagnosticCielabPointsForRole(points, 'C');
+
+  return CIELAB_REPORT_DESCRIPTORS.flatMap((descriptor) => {
+    const groupedRows = groupedMedianCielabFitRows(calibrationPoints, descriptor.getValue);
+    const fit = fitLineWithCovariance(
+      groupedRows.map((point) => point.x),
+      groupedRows.map((point) => point.y),
+    );
+
+    if (fit.n <= 0 || !Number.isFinite(fit.slope) || !Number.isFinite(fit.intercept) || !Number.isFinite(fit.r2)) {
+      return [];
+    }
+
+    const groupedValues = new Map<number, number[]>();
+    calibrationPoints.forEach((point) => {
+      if (typeof point.conc !== 'number' || !Number.isFinite(point.conc)) {
+        return;
+      }
+      const value = cielabValueAsNumber(descriptor.getValue(point));
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      const values = groupedValues.get(point.conc) ?? [];
+      values.push(value);
+      groupedValues.set(point.conc, values);
+    });
+
+    const storedPoints = [...groupedValues.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([x, values]) => ({
+        x,
+        y: medianFinite(values),
+        yerr: sampleStandardDeviation(values),
+        n: values.length,
+        excluded: false,
+      }));
+    const sigmaEstimate = estimateSigmaForPythonResultsLoq(storedPoints);
+    const sigmaCal = sigmaEstimate.sigma;
+    const lod = Number.isFinite(sigmaCal) && sigmaCal > 0 && Math.abs(fit.slope) > 1e-15
+      ? (3 * sigmaCal) / Math.abs(fit.slope)
+      : undefined;
+    const loq = Number.isFinite(sigmaCal) && sigmaCal > 0 && Math.abs(fit.slope) > 1e-15
+      ? (10 * sigmaCal) / Math.abs(fit.slope)
+      : undefined;
+
+    const rmse = finiteRmse(groupedRows, fit.slope, fit.intercept);
+
+    return [{
+      channel: descriptor.channel,
+      n: fit.n,
+      slope: fit.slope,
+      intercept: fit.intercept,
+      r2: fit.r2,
+      ...(typeof rmse === 'number' && Number.isFinite(rmse) ? { rmse } : {}),
+      ...(Number.isFinite(sigmaCal) ? { sigmaCal } : {}),
+      sigmaSource: sigmaEstimate.source,
+      ...(lod !== undefined ? { lod } : {}),
+      ...(loq !== undefined ? { loq } : {}),
+      points: storedPoints,
+    }];
+  });
+}
+
+function completeStoredCalibrationBundle(
+  calibration: StoredCalibration,
+  calibrationMeasurements: WellMeasurement[],
+  plateMap: WellConfig[],
+  calibrationFits: CalibrationFit[],
+  standardAdditionFits: StandardAdditionFit[],
+): StoredCalibration {
+  calibration.fits = calibration.fits.map((fit) => {
+    const sigmaEstimate = estimateSigmaForPythonResultsLoq(fit.points ?? []);
+    const sigmaCal = Number.isFinite(fit.sigmaCal ?? Number.NaN)
+      ? fit.sigmaCal as number
+      : sigmaEstimate.sigma;
+    const sigmaSource = Number.isFinite(fit.sigmaCal ?? Number.NaN)
+      ? (fit.sigmaSource ?? 'stored_calibration')
+      : sigmaEstimate.source;
+    const lod = Number.isFinite(fit.lod ?? Number.NaN)
+      ? fit.lod as number
+      : Number.isFinite(sigmaCal) && sigmaCal > 0 && Math.abs(fit.slope) > 1e-15
+        ? (3 * sigmaCal) / Math.abs(fit.slope)
+        : Number.NaN;
+    const loq = Number.isFinite(fit.loq ?? Number.NaN)
+      ? fit.loq as number
+      : Number.isFinite(sigmaCal) && sigmaCal > 0 && Math.abs(fit.slope) > 1e-15
+        ? (10 * sigmaCal) / Math.abs(fit.slope)
+        : Number.NaN;
+    const snr = Number.isFinite(fit.snr ?? Number.NaN)
+      ? fit.snr as number
+      : Number.isFinite(sigmaCal) && sigmaCal > 0
+        ? Math.abs(fit.slope) / sigmaCal
+        : Number.NaN;
+
+    return {
+      ...fit,
+      ...(Number.isFinite(sigmaCal) ? { sigmaCal } : {}),
+      sigmaSource,
+      ...(Number.isFinite(snr) ? { snr } : {}),
+      ...(Number.isFinite(lod) ? { lod } : {}),
+      ...(Number.isFinite(loq) ? { loq } : {}),
+    };
+  });
+
+  const generatedCielab = buildCielabDiagnosticPoints(calibrationMeasurements, plateMap);
+  calibration.pythonChannels = buildStoredCielabChannels(generatedCielab.points);
+
+  if (generatedCielab.reference) {
+    calibration.cielabReference = {
+      l: generatedCielab.reference.l,
+      a: generatedCielab.reference.a,
+      b: generatedCielab.reference.b,
+      source: generatedCielab.referenceSource,
+    };
+  }
+
+  calibration.selectedChannel = computePythonResultsChannelRankings(
+    calibrationFits,
+    standardAdditionFits,
+    calibrationMeasurements,
+    plateMap,
+  )[0]?.channel ?? calibration.selectedChannel ?? 'R';
+
+  return calibration;
+}
+
 function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
   return [
     { Term: "area", Meaning: "Accepted background-mask area or fit-input sample area, depending on sheet", Formula: "number of accepted pixels represented by the BG cell record", Unit: "pixels", 'Where used': "02_BG_SAMPLES, 13_BG_MODEL_INPUTS", Notes: "In DIAGNOSTICS/02_BG_SAMPLES this is the background-cell diagnostic area; in DIAGNOSTICS/13_BG_MODEL_INPUTS it is the area represented by the actual polynomial fit input sample." },
@@ -4474,6 +4674,9 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "Code implementation", Meaning: "Main computational libraries and code provenance", Formula: "custom TypeScript/browser implementation using ImageData/Canvas-based image sampling, TypeScript numerical routines, XLSX export and browser-generated PNG outputs", Unit: "software provenance", 'Where used': "DIAGNOSTICS.xlsx and diagnostic PNG files", Notes: "Sources/libraries: browser ImageData/Canvas for image pixels and masks; custom TypeScript routines for numerical fitting and sRGB/D65 CIELAB conversion; XLSX/PNG export generated in the browser workflow." },
     { Term: "CommonFactorsN", Meaning: "Number of common factors used in the score", Formula: "3 for R2_cal, R2_std_mean and SlopeAgreement; LOQ is included in the score formula but not counted in CommonFactorsN; 1 for calibration-only or stdadd-only fallbacks", Unit: "integer", 'Where used': "10_METHOD_COMPARISON", Notes: "Used to avoid comparing scores obtained from different formulas." },
     { Term: "ComparableGroup", Meaning: "Set of methods scored with the same formula", Formula: "calibration_plus_stdadd, calibration_only, stdadd_only, or not_ranked", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Scores are directly comparable only within the same group." },
+    { Term: "Overall method score", Meaning: "One value per analytical method/channel, aggregating every available standard-addition group. Used to compare methods and choose Selected, Rank and the BEST_CHANNEL method.", Formula: "mean(SA_k)^2 × √(R2_cal × mean(R2_std,k)) / LOQ", Unit: `1/${unitLabel}`, 'Where used': "10_METHOD_COMPARISON; Selected; Rank; BEST_CHANNEL method selection", Notes: "One value per method/channel. It is not a per-dilution score." },
+    { Term: "Group score", Meaning: "One value for one Sample ID + dilution-factor group. Used only after the method is selected, to choose the ID/DF group shown in BEST_CHANNEL.", Formula: "SA_k^2 × √(R2_cal × R2_std,k) / LOQ", Unit: `1/${unitLabel}`, 'Where used': "standard-addition result tables; best ID/DF selection within the selected method", Notes: "One value per ID/DF group. It must not be reused as the overall method score." },
+    { Term: "SA_k", Meaning: "Slope agreement for standard-addition group k", Formula: "min(|m_cal|, |m_std,k|) / max(|m_cal|, |m_std,k|)", Unit: "dimensionless", 'Where used': "Overall method score; Group score", Notes: "k identifies Sample ID and Dilution Factor." },
     { Term: "corr_col/corr_row", Meaning: "Correlation with column/row position", Formula: "Pearson correlation", Unit: "dimensionless", 'Where used': "09_SPATIAL_DIAGNOSTICS", Notes: "Diagnostic only." },
     { Term: "D_warning/D_critical", Meaning: "Floor-geometry warning and critical flags", Formula: "rule-based thresholds on floor/mouth geometry descriptors", Unit: "0/1", 'Where used': "05_GEOMETRY_QC", Notes: "Critical is stricter than warning." },
     { Term: "dataset", Meaning: "Dataset used for spatial trend", Formula: "unknown or empty", Unit: "text", 'Where used': "09_SPATIAL_DIAGNOSTICS", Notes: "Spatial diagnostics are descriptive and do not alter results." },
@@ -4523,9 +4726,9 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "reference_*/delta_reference_*/recovery_pct_*", Meaning: "External reference checks used in diagnostic comparison", Formula: "delta = estimate - reference; recovery = 100 x estimate/reference", Unit: `${unitLabel} or %`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Reference values are external checks and are not part of Score." },
     { Term: "RGB to CIELAB", Meaning: "Diagnostic conversion from RGB to CIE L*a*b*", Formula: "linearized sRGB -> XYZ using the standard sRGB-to-XYZ matrix and D65 reference white -> CIE L*a*b*", Unit: "dimensionless", 'Where used': "FIGURE_CIELAB_DELTAE.png, RAW_DATA_DETAILS_CAPTION.txt, 04_WELL_ROBUST_STATS, 11_CIELAB_FITTING", Notes: "References: IEC 61966-2-1:1999 sRGB; CIE 1976 L*a*b*; CIE standard illuminant D65." },
     { Term: "Row/Col/Well", Meaning: "Human-readable well position", Formula: "Row is A-based; Col is 1-based; Well = Row + Col", Unit: "well label", 'Where used': "03_BG_WELL_FIT, 04_WELL_ROBUST_STATS, 05_GEOMETRY_QC, 06_WELL_BOTTOM, 08_EMPTY_WELLS", Notes: "Used for true well-level records, not for inter-well BG cells." },
-    { Term: "Score", Meaning: "Common ranking score", Formula: "for calibration+standard addition: SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ); fallback groups use the formula stated in ScoreFormula", Unit: `1/${unitLabel}`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Expected/reference values, SNR and clipping are excluded." },
-    { Term: "Score/ScoreFormula", Meaning: "Common method-ranking score and formula descriptor", Formula: "SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ) for calibration_plus_stdadd rows", Unit: `1/${unitLabel} and text`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Expected/reference values, SNR and clipping are not part of Score." },
-    { Term: "ScoreFormula", Meaning: "Formula used to compute Score", Formula: "text descriptor", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Documents which score formula was applied to the row." },
+    { Term: "Overall method score", Meaning: "Common ranking score; one value per method/channel", Formula: "for calibration+standard addition: SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ); fallback groups use the formula stated in ScoreFormula", Unit: `1/${unitLabel}`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Expected/reference values, SNR and clipping are excluded." },
+    { Term: "Overall method score / formula", Meaning: "Cross-method ranking value and its formula descriptor", Formula: "SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ) for calibration_plus_stdadd rows", Unit: `1/${unitLabel} and text`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Expected/reference values, SNR and clipping are not part of Score." },
+    { Term: "OverallScoreFormula", Meaning: "Formula used to compute Overall method score", Formula: "text descriptor", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Documents which score formula was applied to the row." },
     { Term: "Sheet", Meaning: "Workbook sheet name", Formula: "worksheet name", Unit: "text", 'Where used': "01_CONTENTS", Notes: "" },
     { Term: "shift_frac_of_mouth_r", Meaning: "Relative mouth-to-floor center shift", Formula: "shift_px / mouth_r", Unit: "dimensionless", 'Where used': "05_GEOMETRY_QC", Notes: "Large values indicate poor floor/mouth alignment; in mouth-floor-intersection ROI, mouth_r is standardized from local pitch and physical 96-well mouth diameter." },
     { Term: "shift_px", Meaning: "Mouth-to-floor center shift", Formula: "Euclidean distance between mouth center and floor center used by the TypeScript geometry/ROI pipeline", Unit: "pixels", 'Where used': "06_WELL_BOTTOM, 05_GEOMETRY_QC", Notes: "Large values indicate poor floor/mouth alignment." },
@@ -4771,11 +4974,11 @@ function cielabCompositeDisplayName(channel: CielabCompositeChannel): string {
 
 function cielabCompositeColor(channel: CielabCompositeChannel): string {
   const palette: Record<CielabCompositeChannel, string> = {
-    DeltaE_ab: '#2b3437',
-    DeltaE_ab_chroma: '#7a4d00',
-    DeltaL: '#405f0a',
-    Deltaa: '#5b2c83',
-    Deltab: '#0b6b76',
+    DeltaE_ab: '#7f7f7f',
+    DeltaE_ab_chroma: '#8c564b',
+    DeltaL: '#bcbd22',
+    Deltaa: '#9467bd',
+    Deltab: '#17becf',
   };
 
   return palette[channel];
@@ -4940,7 +5143,20 @@ function buildCielabCompositeScientificLines({
       const fitRow = rows.find((row) => String(row.Channel) === channel);
       const methodRow = comparisonByMethod.get(channel);
       const c0 = numericRowValue(fitRow, 'C0');
-      const score = numericRowValue(methodRow, 'Score');
+      const r2Cal = numericRowValue(calRows.find((row) => String(row.Channel) === channel), 'R2');
+      const r2Std = numericRowValue(fitRow, 'R2');
+      const slopeCal = numericRowValue(calRows.find((row) => String(row.Channel) === channel), 'm');
+      const slopeStd = numericRowValue(fitRow, 'm');
+      const slopeAgreement = Number.isFinite(slopeCal) && Number.isFinite(slopeStd)
+        ? Math.min(Math.abs(slopeCal), Math.abs(slopeStd))
+          / Math.max(Math.abs(slopeCal), Math.abs(slopeStd), 1e-12)
+        : Number.NaN;
+      const score = computePythonFitBaseScore(
+        Math.max(0, r2Cal),
+        Math.max(0, r2Std),
+        slopeAgreement,
+        numericRowValue(methodRow, 'LOQ'),
+      );
       const matchedRef = expectedRefs.find((ref) => referenceMatchesSample(ref, sampleId));
       const refValue = matchedRef?.value ?? Number.NaN;
       const delta = Number.isFinite(c0) && Number.isFinite(refValue) ? c0 - refValue : Number.NaN;
@@ -4956,7 +5172,7 @@ function buildCielabCompositeScientificLines({
       ];
     });
     pushTable(formatFigureRgbTable(
-      ['Channel', `C0 (${unitLabel})`, 'Score', `Δ (${unitLabel})`, 'Recovery (%)'],
+      ['Channel', `C0 (${unitLabel})`, 'Group score', `Δ (${unitLabel})`, 'Recovery (%)'],
       resultRows,
     ));
 
@@ -4980,7 +5196,7 @@ function buildCielabCompositeScientificLines({
     ));
 
     pushText('');
-    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureDilutionFactor(dilutionFactor)}`, true);
+    pushText(`Standard-addition fit | ID: ${sampleId} | DF=${formatFigureDilutionFactor(dilutionFactor)}`, true);
     const stdFitRows = CIELAB_COMPOSITE_CHANNELS.map((channel) => {
       const fitRow = rows.find((row) => String(row.Channel) === channel);
       return [
@@ -5008,7 +5224,7 @@ function drawPythonStyleCielabCompositePanel(
   expectedRefs: ExpectedRef[],
   pythonFigureStyle = false,
   showXAxis = true,
-  xRangeOverride?: { min: number; max: number },
+  xAxisOverride?: { min: number; max: number; ticks: number[] },
 ): void {
   const color = cielabCompositeColor(channel);
   const ptToPx = 300 / 72;
@@ -5060,7 +5276,7 @@ function drawPythonStyleCielabCompositePanel(
 
   const calibrationSlope = numericRowValue(calibrationFit, 'm');
   const calibrationIntercept = numericRowValue(calibrationFit, 'q');
-  const xRange = xRangeOverride ?? rangeWithPadding([
+  const fallbackXValues = [
     ...calibrationPoints.map((point) => point.x),
     ...stdPoints.map((point) => point.x),
     ...refXValues,
@@ -5070,39 +5286,20 @@ function drawPythonStyleCielabCompositePanel(
       if (!Number.isFinite(slope) || Math.abs(slope) <= 1e-15 || !Number.isFinite(intercept)) {
         return [];
       }
-
       return [-intercept / slope];
     }),
-  ], 0, 1);
-  const yFromFits = [
-    Number.isFinite(calibrationSlope) && Number.isFinite(calibrationIntercept)
-      ? calibrationSlope * xRange.min + calibrationIntercept
-      : Number.NaN,
-    Number.isFinite(calibrationSlope) && Number.isFinite(calibrationIntercept)
-      ? calibrationSlope * xRange.max + calibrationIntercept
-      : Number.NaN,
-    ...stdFits.flatMap((fit) => {
-      const slope = numericRowValue(fit, 'm');
-      const intercept = numericRowValue(fit, 'q');
-      return Number.isFinite(slope) && Number.isFinite(intercept)
-        ? [slope * xRange.min + intercept, slope * xRange.max + intercept]
-        : [];
-    }),
   ];
-  const yRange = rangeWithPadding([
-    ...calibrationPoints.map((point) => point.y),
-    ...calibrationPoints.flatMap((point) => Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []),
-    ...stdPoints.map((point) => point.y),
-    ...stdPoints.flatMap((point) => Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []),
-    ...yFromFits,
-    ...(refXValues.length > 0 ? [0] : []),
-  ], 0, 1, 0.10);
-  const xToPx = (value: number) => plot.x + ((value - xRange.min) / (xRange.max - xRange.min)) * plot.width;
-  const yToPx = (value: number) => plot.y + plot.height - ((value - yRange.min) / (yRange.max - yRange.min)) * plot.height;
-  const xTicks = pythonFigureStyle && xRange.min <= -50 && xRange.max >= 50
-    ? [-50, -25, 0, 25, 50]
-    : niceTicks(xRange.min, xRange.max, 5);
-  const yTicks = niceTicks(yRange.min, yRange.max, 5);
+  const xAxis = xAxisOverride ?? buildFourTickPlotAxis(fallbackXValues, 0.08, 0.08, 1);
+  const yValues = [
+    0,
+    ...calibrationPoints.flatMap((point) => [point.y, point.y - (point.yerr ?? 0), point.y + (point.yerr ?? 0)]),
+    ...stdPoints.flatMap((point) => [point.y, point.y - (point.yerr ?? 0), point.y + (point.yerr ?? 0)]),
+  ].filter(Number.isFinite);
+  const yAxis = buildFourTickPlotAxis(yValues, 0.06, 0.10, 1);
+  const xToPx = (value: number) => plot.x + ((value - xAxis.min) / (xAxis.max - xAxis.min)) * plot.width;
+  const yToPx = (value: number) => plot.y + plot.height - ((value - yAxis.min) / (yAxis.max - yAxis.min)) * plot.height;
+  const xTicks = xAxis.ticks;
+  const yTicks = yAxis.ticks;
 
   ctx.save();
 
@@ -5172,10 +5369,11 @@ function drawPythonStyleCielabCompositePanel(
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = pythonFigureStyle ? 0.8 * ptToPx : 1.4;
     ctx.stroke();
-    ctx.fillText(formatAxisTick(tick), plot.x - 8 * ptToPx, py);
+    const labelY = Math.min(plot.y + plot.height - tickFontPx * 0.62, Math.max(plot.y + tickFontPx * 0.62, py));
+    ctx.fillText(formatAxisTick(tick), plot.x - 8 * ptToPx, labelY);
   });
 
-  if (yRange.min < 0 && yRange.max > 0) {
+  if (yAxis.min < 0 && yAxis.max > 0) {
     const yZero = yToPx(0);
     ctx.beginPath();
     ctx.moveTo(plot.x, yZero);
@@ -5198,14 +5396,19 @@ function drawPythonStyleCielabCompositePanel(
   ctx.fillText(cielabCompositeDisplayName(channel), 0, 0);
   ctx.restore();
 
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(plot.x, plot.y, plot.width, plot.height);
+  ctx.clip();
+
   if (Number.isFinite(calibrationSlope) && Number.isFinite(calibrationIntercept)) {
     ctx.save();
     ctx.setLineDash(pythonFigureStyle ? [14 * ptToPx, 7 * ptToPx] : [8, 6]);
     ctx.strokeStyle = color;
     ctx.lineWidth = lineDashedPx;
     ctx.beginPath();
-    ctx.moveTo(xToPx(xRange.min), yToPx(calibrationSlope * xRange.min + calibrationIntercept));
-    ctx.lineTo(xToPx(xRange.max), yToPx(calibrationSlope * xRange.max + calibrationIntercept));
+    ctx.moveTo(xToPx(xAxis.min), yToPx(calibrationSlope * xAxis.min + calibrationIntercept));
+    ctx.lineTo(xToPx(xAxis.max), yToPx(calibrationSlope * xAxis.max + calibrationIntercept));
     ctx.stroke();
     ctx.restore();
   }
@@ -5232,8 +5435,8 @@ function drawPythonStyleCielabCompositePanel(
       ctx.strokeStyle = color;
       ctx.lineWidth = lineSolidPx;
       ctx.beginPath();
-      ctx.moveTo(xToPx(xRange.min), yToPx(slope * xRange.min + intercept));
-      ctx.lineTo(xToPx(xRange.max), yToPx(slope * xRange.max + intercept));
+      ctx.moveTo(xToPx(xAxis.min), yToPx(slope * xAxis.min + intercept));
+      ctx.lineTo(xToPx(xAxis.max), yToPx(slope * xAxis.max + intercept));
       ctx.stroke();
     }
 
@@ -5282,10 +5485,28 @@ function drawPythonStyleCielabCompositePanel(
     });
   });
 
+  ctx.restore();
+
   const legendItems = [
     'o calibration',
-    's std add ID=1, DF=10',
-    ...(expectedRefs.length > 0 ? ['□ ICP-MS (ref ID=1, DF=10)'] : []),
+    ...standardGroups.map((group) =>
+      `s std add ID=${group.sampleId}, DF=${formatFigureDilutionFactor(group.dilutionFactor)}`
+    ),
+    ...standardGroups.flatMap((group) => {
+      const ref = expectedRefs.find((candidate) =>
+        referenceMatchesSample(candidate, group.sampleId)
+      );
+
+      if (!ref) {
+        return [];
+      }
+
+      const refLabel = ref.label.trim() || ref.refId.trim() || 'Reference';
+
+      return [
+        `ref ${refLabel} (ref ID=${group.sampleId}, DF=${formatFigureDilutionFactor(group.dilutionFactor)})`,
+      ];
+    }),
   ];
   ctx.font = `${legendFontPx}px ${fontFamily}`;
   const legendRow = 12 * ptToPx;
@@ -5308,15 +5529,16 @@ function buildPythonStyleCielabDeltaECanvas(
   plateMap: WellConfig[],
   unitLabel: string,
   expectedRefs: ExpectedRef[],
+  displayMeasurements: WellMeasurement[],
+  calibrationFits: CalibrationFit[],
+  standardAdditionFits: StandardAdditionFit[],
   storedCielabReference?: StoredCielabReference,
+  storedCalibration?: StoredCalibration | null,
   floorDQualitySummary?: string,
 ): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   const width = 2481;
-  const height = 3021;
   const ctx = canvas.getContext('2d');
-  canvas.width = width;
-  canvas.height = height;
 
   if (!ctx) {
     throw new Error('Could not create CIELAB/DeltaE diagnostic canvas.');
@@ -5326,7 +5548,7 @@ function buildPythonStyleCielabDeltaECanvas(
   const compositeDescriptors = CIELAB_REPORT_DESCRIPTORS.filter((descriptor) =>
     CIELAB_COMPOSITE_CHANNELS.includes(descriptor.channel as CielabCompositeChannel),
   );
-  const fitRows = buildCielabFittingRows(points, compositeDescriptors, undefined);
+  const fitRows = buildCielabFittingRows(points, compositeDescriptors, storedCalibration);
   const comparisonRows = buildMethodComparisonRowsFromFitRows(fitRows, expectedRefs, true);
   const selectedDescriptor = String(comparisonRows[0]?.Method ?? CIELAB_COMPOSITE_CHANNELS[0]);
   const scientificLines = buildCielabCompositeScientificLines({
@@ -5339,6 +5561,14 @@ function buildPythonStyleCielabDeltaECanvas(
     selectedDescriptor,
     floorDQualitySummary,
   });
+  const scientificLineCount = scientificLines.length;
+  const requiredTextHeight = 760 + scientificLineCount * 38 + 110;
+  const minimumPanelHeight = 360;
+  const requiredPanelHeight = 140 + CIELAB_COMPOSITE_CHANNELS.length * minimumPanelHeight;
+  const height = Math.max(3021, requiredTextHeight, requiredPanelHeight);
+
+  canvas.width = width;
+  canvas.height = height;
 
   void imageBase;
   ctx.fillStyle = '#ffffff';
@@ -5365,41 +5595,20 @@ function buildPythonStyleCielabDeltaECanvas(
   const panelData = CIELAB_COMPOSITE_CHANNELS.map((channel) => {
     const calibrationFit = fitRows.find((row) => row.FitType === 'Calibration' && String(row.Channel) === channel);
     const standardGroups = collectCielabCompositeStdGroups(channel, points, fitRows);
-    const calibrationPoints = collectCielabCompositeCalibrationPoints(channel, points);
+    const currentCalibrationPoints = collectCielabCompositeCalibrationPoints(channel, points);
+    const calibrationPoints = currentCalibrationPoints.length > 0
+      ? currentCalibrationPoints
+      : storedCielabCalibrationPoints(channel, storedCalibration);
     return { channel, calibrationFit, standardGroups, calibrationPoints, methodRow: comparisonByMethod.get(channel) };
   });
-  const commonXValues = panelData.flatMap(({ calibrationPoints, standardGroups }) => {
-    const stdPoints = standardGroups.flatMap((group) => group.points);
-    const refXValues = standardGroups.flatMap((group) => expectedRefs.flatMap((ref) => {
-      if (!referenceMatchesSample(ref, group.sampleId)) {
-        return [];
-      }
-      const x = -ref.value / Math.max(group.dilutionFactor, 1e-12);
-      const xSd = ref.sd !== null && Number.isFinite(ref.sd)
-        ? Math.abs(ref.sd / Math.max(group.dilutionFactor, 1e-12))
-        : Number.NaN;
-      return Number.isFinite(x)
-        ? [x, Number.isFinite(xSd) ? x - xSd : Number.NaN, Number.isFinite(xSd) ? x + xSd : Number.NaN]
-        : [];
-    }));
-    const fitIntercepts = standardGroups.flatMap((group) => {
-      const slope = numericRowValue(group.fit, 'm');
-      const intercept = numericRowValue(group.fit, 'q');
-      return Number.isFinite(slope) && Math.abs(slope) > 1e-15 && Number.isFinite(intercept)
-        ? [-intercept / slope]
-        : [];
-    });
-    return [
-      ...calibrationPoints.map((point) => point.x),
-      ...stdPoints.map((point) => point.x),
-      ...refXValues,
-      ...fitIntercepts,
-      -50,
-      0,
-      50,
-    ];
-  }).filter(Number.isFinite);
-  const commonXRange = rangeWithPadding(commonXValues, 0, 1);
+  const commonXAxis = computeSharedPythonRgbAxisSpec(
+    calibrationFits,
+    standardAdditionFits,
+    displayMeasurements,
+    plateMap,
+    expectedRefs,
+    storedCalibration,
+  ).x;
 
   panelData.forEach(({ channel, calibrationFit, standardGroups, calibrationPoints, methodRow }, index) => {
     drawPythonStyleCielabCompositePanel(
@@ -5414,7 +5623,7 @@ function buildPythonStyleCielabDeltaECanvas(
       expectedRefs,
       true,
       index === CIELAB_COMPOSITE_CHANNELS.length - 1,
-      commonXRange,
+      commonXAxis,
     );
   });
 
@@ -5782,7 +5991,7 @@ function buildPythonStyleMethodComparisonCanvas(
 
   const drawLegend = (
     plot: { x: number; y: number; width: number; height: number },
-    items: { label: string; color: string; marker: 'circle' | 'square' | 'line' | 'dash' | 'band' }[],
+    items: { label: string; color: string; marker: 'circle' | 'square' | 'triangle' | 'line' | 'dash' | 'band' }[],
     anchor: 'upper-left' | 'lower-left' | 'upper-right' | 'lower-right' = 'upper-left',
   ): void => {
     const unique = items.filter((item, index, arr) => arr.findIndex((other) => other.label === item.label) === index);
@@ -5790,8 +5999,11 @@ function buildPythonStyleMethodComparisonCanvas(
       return;
     }
     const rowH = 15 * ptToPx;
+    ctx.save();
+    ctx.font = `${legendFontPx}px ${fontFamily}`;
     const textW = Math.max(...unique.map((item) => ctx.measureText(item.label).width), 0);
-    const boxW = Math.min(plot.width * 0.44, Math.max(150 * ptToPx, textW + 42 * ptToPx));
+    ctx.restore();
+    const boxW = Math.min(plot.width - 24 * ptToPx, Math.max(150 * ptToPx, textW + 42 * ptToPx));
     const boxH = unique.length * rowH + 8 * ptToPx;
     const x0 = anchor.endsWith('right') ? plot.x + plot.width - boxW - 8 * ptToPx : plot.x + 12 * ptToPx;
     const y0 = anchor.startsWith('lower') ? plot.y + plot.height - boxH - 8 * ptToPx : plot.y + 10 * ptToPx;
@@ -5813,6 +6025,13 @@ function buildPythonStyleMethodComparisonCanvas(
         ctx.fill();
       } else if (item.marker === 'square') {
         ctx.fillRect(x + 4 * ptToPx, y - 3.2 * ptToPx, 6.4 * ptToPx, 6.4 * ptToPx);
+      } else if (item.marker === 'triangle') {
+        ctx.beginPath();
+        ctx.moveTo(x + 8 * ptToPx, y - 4.5 * ptToPx);
+        ctx.lineTo(x + 12.5 * ptToPx, y + 3.5 * ptToPx);
+        ctx.lineTo(x + 3.5 * ptToPx, y + 3.5 * ptToPx);
+        ctx.closePath();
+        ctx.fill();
       } else if (item.marker === 'band') {
         ctx.globalAlpha = 0.25;
         ctx.fillRect(x + 2 * ptToPx, y - 4 * ptToPx, 13 * ptToPx, 8 * ptToPx);
@@ -5837,7 +6056,7 @@ function buildPythonStyleMethodComparisonCanvas(
 
   const chooseLegendAnchor = (
     plot: { x: number; y: number; width: number; height: number },
-    items: { label: string; color: string; marker: 'circle' | 'square' | 'line' | 'dash' | 'band' }[],
+    items: { label: string; color: string; marker: 'circle' | 'square' | 'triangle' | 'line' | 'dash' | 'band' }[],
     occupied: { x: number; y: number }[],
   ): 'upper-left' | 'lower-left' | 'upper-right' | 'lower-right' => {
     const unique = items.filter((item, index, arr) => arr.findIndex((other) => other.label === item.label) === index);
@@ -5851,7 +6070,7 @@ function buildPythonStyleMethodComparisonCanvas(
     ctx.restore();
 
     const rowH = 15 * ptToPx;
-    const boxW = Math.min(plot.width * 0.44, Math.max(150 * ptToPx, textW + 42 * ptToPx));
+    const boxW = Math.min(plot.width - 24 * ptToPx, Math.max(150 * ptToPx, textW + 42 * ptToPx));
     const boxH = unique.length * rowH + 8 * ptToPx;
     const margin = 8 * ptToPx;
     const pad = 7 * ptToPx;
@@ -5952,10 +6171,10 @@ function buildPythonStyleMethodComparisonCanvas(
 
   if (panels.agreement_bias) {
     const plot = panels.agreement_bias;
-    const range = { min: 0, max: 1.1 };
-    const agreementTicks = [0, 0.2, 0.4, 0.6, 0.8, 1.0];
+    const range = { min: 0, max: 1 };
+    const agreementTicks = [0, 0.2, 0.4, 0.6, 0.8, 1];
     drawPanelFrame(plot, panelSpecs[panelSpecs.length - 1].name === 'agreement_bias');
-    drawYTicksAndGrid(plot, range, 5, agreementTicks);
+    drawYTicksAndGrid(plot, range, 6, agreementTicks);
     drawYLabel(plot, 'agreement / bias');
 
     ctx.save();
@@ -5989,13 +6208,16 @@ function buildPythonStyleMethodComparisonCanvas(
       .filter((payload) => Number.isFinite(payload.value));
     let yLo = 0;
     let yHi = 1;
+    let referenceTicks = [0, 1 / 3, 2 / 3, 1];
 
     if (refPayloads.length > 0) {
       const refCenter = medianFinite(refPayloads.map((payload) => payload.value));
       const refRange = Math.max(...refPayloads.map((payload) => payload.value)) - Math.min(...refPayloads.map((payload) => payload.value));
-      const finiteSds = refPayloads.map((payload) => Number.isFinite(payload.sd) ? payload.sd : Number.NaN).filter(Number.isFinite);
+      const finiteSds = refPayloads
+        .map((payload) => Number.isFinite(payload.sd) ? payload.sd : Number.NaN)
+        .filter(Number.isFinite);
       const maxSd = Math.max(...finiteSds, Math.max(1, 0.03 * Math.max(Math.abs(refCenter), 1)));
-      const robustWindow = Math.max(20, 0.75 * Math.max(Math.abs(refCenter), 1), 6 * maxSd, 2 * refRange);
+      const nearbyReliableWindow = Math.max(3 * maxSd, 0.20 * Math.max(Math.abs(refCenter), 1));
       const axisValues: number[] = [];
 
       refPayloads.forEach((payload) => {
@@ -6009,29 +6231,36 @@ function buildPythonStyleMethodComparisonCanvas(
         if (!Number.isFinite(estimate) || isLowReliabilityMethodComparisonRow(row, expectedRefs)) {
           return;
         }
-        if (Math.abs(estimate - refCenter) <= robustWindow) {
-          const sd = Number.isFinite(estimateSd) ? estimateSd : 0;
+        if (Math.abs(estimate - refCenter) <= nearbyReliableWindow) {
+          const sd = Number.isFinite(estimateSd) ? Math.max(estimateSd, 0) : 0;
           axisValues.push(estimate - sd, estimate, estimate + sd);
         }
       });
 
-      const range = rangeFromValues(axisValues.length >= 2 ? axisValues : [refCenter - robustWindow, refCenter + robustWindow], 0, 1, 0.16);
-      yLo = 0;
-      yHi = Math.max(range.max, 1);
+      const fallbackHalfSpan = Math.max(10, 3 * maxSd, 1.5 * refRange);
+      const axis = buildNicePlotAxisUpToSix(
+        axisValues.length >= 2 ? axisValues : [refCenter - fallbackHalfSpan, refCenter + fallbackHalfSpan],
+        0.08,
+        0.08,
+        Math.max(1, 0.10 * Math.max(Math.abs(refCenter), 1)),
+      );
+      yLo = axis.min;
+      yHi = axis.max;
+      referenceTicks = axis.ticks;
     } else {
-      const range = rangeFromValues(estimateValues, 0, 1, 0.25);
-      yLo = 0;
-      yHi = Math.max(range.max, 1);
+      const finiteEstimates = estimateValues.filter(Number.isFinite);
+      const axis = buildNicePlotAxisUpToSix(finiteEstimates, 0.10, 0.10, 1);
+      yLo = axis.min;
+      yHi = axis.max;
+      referenceTicks = axis.ticks;
     }
 
-    const referenceMax = Math.max(100, Math.ceil(yHi / 100) * 100);
-    const range = { min: 0, max: referenceMax };
-    const referenceTicks = Array.from({ length: Math.floor(referenceMax / 100) + 1 }, (_, i) => i * 100);
+    const range = { min: yLo, max: yHi };
     drawPanelFrame(plot, panelSpecs[panelSpecs.length - 1].name === 'reference_values');
-    drawYTicksAndGrid(plot, range, 5, referenceTicks, true);
+    drawYTicksAndGrid(plot, range, 6, referenceTicks, true);
     drawYLabel(plot, `Reference value(s) (${unitLabel})`);
 
-    const legendItems: { label: string; color: string; marker: 'circle' | 'square' | 'line' | 'dash' | 'band' }[] = [];
+    const legendItems: { label: string; color: string; marker: 'circle' | 'square' | 'triangle' | 'line' | 'dash' | 'band' }[] = [];
     const referenceOccupiedPoints: { x: number; y: number }[] = [];
 
     refPayloads.forEach((payload, index) => {
@@ -6059,6 +6288,7 @@ function buildPythonStyleMethodComparisonCanvas(
     let shownUnreliable = false;
     let shownClip = false;
     const yrange = Math.max(yHi - yLo, 1);
+    const edgeInsetPx = 10 * ptToPx;
     const textDy = 0.025 * yrange;
 
     rows.forEach((row, index) => {
@@ -6070,9 +6300,15 @@ function buildPythonStyleMethodComparisonCanvas(
       const isReliable = !isLowReliabilityMethodComparisonRow(row, expectedRefs);
       const color = isReliable ? '#1f77b4' : '#d62728';
       const x = xToPx(plot, index);
-      const clipped = estimate > yHi || estimate < yLo;
+      const clippedHigh = estimate > yHi;
+      const clippedLow = estimate < yLo;
+      const clipped = clippedHigh || clippedLow;
       const yPlotValue = Math.min(Math.max(estimate, yLo), yHi);
-      const y = yToPx(plot, range, yPlotValue);
+      const y = clippedHigh
+        ? plot.y + edgeInsetPx
+        : clippedLow
+          ? plot.y + plot.height - edgeInsetPx
+          : yToPx(plot, range, yPlotValue);
       referenceOccupiedPoints.push({ x, y });
       const lower = Math.max(yLo, estimate - estimateSd);
       const upper = Math.min(yHi, estimate + estimateSd);
@@ -6081,12 +6317,14 @@ function buildPythonStyleMethodComparisonCanvas(
         drawVerticalErrorBar(ctx, x, yToPx(plot, range, lower), yToPx(plot, range, upper), 3 * ptToPx, color);
       }
 
-      ctx.save();
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(x, y, markerRadius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
+      if (!clipped) {
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(x, y, markerRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
 
       const source = xlsxString(row, 'Estimate_source');
       const sourceTxt = source === 'unknown_from_calibration'
@@ -6096,7 +6334,7 @@ function buildPythonStyleMethodComparisonCanvas(
           : 'estimated value';
 
       if (isReliable && !shownReliable) {
-        legendItems.push({ label: `${sourceTxt} (reliable scale)`, color, marker: 'circle' });
+        legendItems.push({ label: `${sourceTxt} (reliable)`, color, marker: 'circle' });
         shownReliable = true;
       } else if (!isReliable && !shownUnreliable) {
         legendItems.push({ label: `${sourceTxt} (low reliability)`, color, marker: 'circle' });
@@ -6120,35 +6358,41 @@ function buildPythonStyleMethodComparisonCanvas(
 
       if (clipped) {
         if (!shownClip) {
-          legendItems.push({ label: 'out of scale', color, marker: 'circle' });
+          legendItems.push({ label: 'out of scale: triangle at display boundary', color: '#000000', marker: 'triangle' });
           shownClip = true;
         }
-        const edgeValue = estimate > yHi ? yHi : yLo;
-        const edgeY = yToPx(plot, range, edgeValue);
+        const edgeY = clippedHigh ? plot.y + edgeInsetPx : plot.y + plot.height - edgeInsetPx;
+        const labelTier = index % 2;
         ctx.save();
         ctx.fillStyle = color;
         ctx.beginPath();
-        if (estimate > yHi) {
-          ctx.moveTo(x, edgeY + 3 * ptToPx);
-          ctx.lineTo(x + 4 * ptToPx, edgeY + 11 * ptToPx);
-          ctx.lineTo(x - 4 * ptToPx, edgeY + 11 * ptToPx);
+        if (clippedHigh) {
+          ctx.moveTo(x, edgeY - 7 * ptToPx);
+          ctx.lineTo(x + 4 * ptToPx, edgeY + 1 * ptToPx);
+          ctx.lineTo(x - 4 * ptToPx, edgeY + 1 * ptToPx);
         } else {
-          ctx.moveTo(x, edgeY - 3 * ptToPx);
-          ctx.lineTo(x + 4 * ptToPx, edgeY - 11 * ptToPx);
-          ctx.lineTo(x - 4 * ptToPx, edgeY - 11 * ptToPx);
+          ctx.moveTo(x, edgeY + 7 * ptToPx);
+          ctx.lineTo(x + 4 * ptToPx, edgeY - 1 * ptToPx);
+          ctx.lineTo(x - 4 * ptToPx, edgeY - 1 * ptToPx);
         }
         ctx.closePath();
         ctx.fill();
         ctx.font = `${smallFontPx}px ${fontFamily}`;
         ctx.textAlign = 'center';
-        if (estimate > yHi) {
+        if (clippedHigh) {
           ctx.textBaseline = 'top';
-          const labelY = Math.min(plot.y + plot.height - 13 * ptToPx, edgeY + 13 * ptToPx);
+          const labelY = Math.min(
+            plot.y + plot.height - 13 * ptToPx,
+            edgeY + (9 + 12 * labelTier) * ptToPx,
+          );
           referenceOccupiedPoints.push({ x, y: labelY });
           ctx.fillText('out of scale', x, labelY);
         } else {
           ctx.textBaseline = 'bottom';
-          const labelY = Math.max(plot.y + 13 * ptToPx, edgeY - 13 * ptToPx);
+          const labelY = Math.max(
+            plot.y + 13 * ptToPx,
+            edgeY - (9 + 12 * labelTier) * ptToPx,
+          );
           referenceOccupiedPoints.push({ x, y: labelY });
           ctx.fillText('out of scale', x, labelY);
         }
@@ -6161,8 +6405,8 @@ function buildPythonStyleMethodComparisonCanvas(
 
   if (panels.r2) {
     const plot = panels.r2;
-    const range = { min: 0, max: 1.1 };
-    const r2Ticks = [0, 0.2, 0.4, 0.6, 0.8, 1.0];
+    const range = { min: 0, max: 1.08 };
+    const r2Ticks = [0, 0.25, 0.5, 0.75, 1];
     drawPanelFrame(plot, panelSpecs[panelSpecs.length - 1].name === 'r2');
     drawYTicksAndGrid(plot, range, 5, r2Ticks);
     drawYLabel(plot, 'R²');
@@ -6393,6 +6637,52 @@ function collectCalibrationPointsForChannel(
   return groupedPythonResultsPoints(grouped);
 }
 
+function storedCalibrationPointsForChannel(
+  calibration: StoredCalibration | null | undefined,
+  channel: FitChannel,
+): PythonResultsPlotPoint[] {
+  const points =
+    calibration?.fits.find((fit) => fit.channel === channel)?.points
+    ?? [];
+
+  return points
+    .filter((point) => point.excluded !== true)
+    .map((point) => ({
+      x: point.x,
+      y: point.y,
+      yerr: point.yerr,
+      n: point.n,
+    }))
+    .filter((point) =>
+      Number.isFinite(point.x)
+      && Number.isFinite(point.y)
+      && Number.isFinite(point.yerr)
+      && Number.isFinite(point.n)
+      && point.n > 0
+    )
+    .sort((a, b) => a.x - b.x);
+}
+
+function collectEffectiveCalibrationPointsForChannel(
+  channel: FitChannel,
+  measurements: WellMeasurement[],
+  plateMap: WellConfig[],
+  storedCalibration?: StoredCalibration | null,
+): PythonResultsPlotPoint[] {
+  const currentPoints = collectCalibrationPointsForChannel(
+    channel,
+    measurements,
+    plateMap,
+  );
+
+  return currentPoints.length > 0
+    ? currentPoints
+    : storedCalibrationPointsForChannel(
+        storedCalibration,
+        channel,
+      );
+}
+
 function collectStandardAdditionPointsForFit(
   fit: StandardAdditionFit,
   channel: FitChannel,
@@ -6500,24 +6790,22 @@ function computePythonResultsChannelRankings(
 ): PythonResultsChannelRank[] {
   return PYTHON_RESULTS_CHANNELS.map((channel) => {
     const cal = calibrationFits.find((fit) => fit.channel === channel);
-    const std = standardAdditionFits.filter((fit) => fit.channel === channel);
-    const bestStd = std
-      .filter((fit) => Number.isFinite(fit.r2))
-      .sort((a, b) => (b.r2 ?? Number.NEGATIVE_INFINITY) - (a.r2 ?? Number.NEGATIVE_INFINITY))[0];
+    const std = standardAdditionFits.filter((fit) => fit.channel === channel && Number.isFinite(fit.r2));
     const calibrationPoints = collectCalibrationPointsForChannel(channel, measurements, plateMap);
     const estimatedSigma = estimateSigmaForPythonResultsLoq(calibrationPoints);
     const sigma = cal?.sigmaCal ?? estimatedSigma.sigma;
     const source = cal?.sigmaSource ?? estimatedSigma.source;
     const hasCal = Boolean(cal && Number.isFinite(cal.slope) && Number.isFinite(cal.r2));
-    const hasStd = Boolean(bestStd && Number.isFinite(bestStd.r2));
+    const hasStd = std.length > 0;
     const r2Cal = hasCal && cal ? Math.max(0, cal.r2) : Number.NaN;
-    const r2Std = hasStd && bestStd ? Math.max(0, bestStd.r2) : Number.NaN;
-    const slopeAgreement = hasCal && hasStd && cal && bestStd && Number.isFinite(bestStd.slope)
-      ? (() => {
-        const denominator = Math.max(Math.abs(cal.slope), Math.abs(bestStd.slope), 1e-12);
-        return Math.min(Math.abs(cal.slope), Math.abs(bestStd.slope)) / denominator;
-      })()
-      : Number.NaN;
+    const r2Std = hasStd ? meanFinite(std.map((fit) => Math.max(0, fit.r2))) : Number.NaN;
+    const slopeAgreements = hasCal && cal
+      ? std.map((fit) => {
+        const denominator = Math.max(Math.abs(cal.slope), Math.abs(fit.slope), 1e-12);
+        return Math.min(Math.abs(cal.slope), Math.abs(fit.slope)) / denominator;
+      })
+      : [];
+    const slopeAgreement = meanFinite(slopeAgreements);
     const slope = cal?.slope ?? Number.NaN;
     const lod = cal && Number.isFinite(cal.lod ?? Number.NaN)
       ? cal.lod as number
@@ -6529,41 +6817,37 @@ function computePythonResultsChannelRankings(
       : cal && Number.isFinite(sigma) && sigma > 0 && Number.isFinite(slope) && Math.abs(slope) > 1e-15
         ? (10 * sigma) / Math.abs(slope)
         : Number.NaN;
+    const rankedStd = hasCal && cal
+      ? std.map((fit) => {
+        const denominator = Math.max(Math.abs(cal.slope), Math.abs(fit.slope), 1e-12);
+        const agreement = Math.min(Math.abs(cal.slope), Math.abs(fit.slope)) / denominator;
+        return { fit, score: computePythonFitBaseScore(r2Cal, Math.max(0, fit.r2), agreement, loq) };
+      }).sort((a, b) => b.score - a.score)
+      : [];
+    const bestStd = rankedStd[0]?.fit ?? std[0];
     let score = Number.NaN;
     let scoreFormula = 'unavailable';
 
     if (hasCal && hasStd) {
       score = computePythonFitBaseScore(r2Cal, r2Std, slopeAgreement, loq);
       scoreFormula = Number.isFinite(loq) && loq > 0
-        ? 'slope_agreement^2 * sqrt(R2_cal * R2_std) * (1/LOQ)'
-        : 'slope_agreement^2 * sqrt(R2_cal * R2_std)';
-      if (!Number.isFinite(score) || score <= 0) {
-        score = 0;
-      }
+        ? 'mean(slope_agreement_k)^2 * sqrt(R2_cal * mean(R2_std_k)) * (1/LOQ)'
+        : 'mean(slope_agreement_k)^2 * sqrt(R2_cal * mean(R2_std_k))';
+      if (!Number.isFinite(score) || score <= 0) score = 0;
     } else if (hasCal && cal) {
       score = (r2Cal ** 2) * Math.abs(cal.slope);
       scoreFormula = 'R2_cal^2 * abs(m_cal)';
     } else if (hasStd && bestStd) {
-      score = (r2Std ** 2) * Math.abs(bestStd.slope);
+      score = (Math.max(0, bestStd.r2) ** 2) * Math.abs(bestStd.slope);
       scoreFormula = 'R2_std^2 * abs(m_std)';
     } else {
       score = 0;
     }
 
-    return {
-      channel,
-      score,
-      r2Cal,
-      r2Std,
-      slopeAgreement,
-      sigmaCal: sigma,
-      sigmaSource: source,
-      lod,
-      loq,
-      scoreFormula,
-    };
+    return { channel, score, r2Cal, r2Std, slopeAgreement, sigmaCal: sigma, sigmaSource: source, lod, loq, scoreFormula, bestStandardAdditionFit: bestStd };
   }).sort((a, b) => b.score - a.score || PYTHON_RESULTS_CHANNELS.indexOf(a.channel) - PYTHON_RESULTS_CHANNELS.indexOf(b.channel));
 }
+
 function selectBestRgbChannel(
   calibrationFits: CalibrationFit[],
   standardAdditionFits: StandardAdditionFit[],
@@ -6968,12 +7252,6 @@ function buildFigureRgbScientificLines({
 
   pushText('PAbs = log₁₀(I_BG / I_well)');
   pushText('');
-  pushText(`Mode: ${modeLabel}`);
-  pushText('Fit: robust IRLS');
-  pushText(`Plate: ${plateMap.length}-well | QC: ${plateStatus}`);
-  pushText(`Plate QC: wells flagged ${flagged}/${total} | wells critical ${critical}/${total}`);
-  pushText(floorDQualitySummary ?? `Floor D QC: ${floorGeometryAvailable ? 'available' : 'missing'}`);
-  pushText('');
   pushText('REFERENCE VALUES', true);
   if (expectedRefs.length === 0) {
     pushText('NA');
@@ -6986,6 +7264,13 @@ function buildFigureRgbScientificLines({
     });
   }
 
+  pushText('');
+  pushText(`Mode: ${modeLabel}`);
+  pushText('Fit: robust IRLS');
+  pushText(`Plate: ${plateMap.length}-well | QC: ${plateStatus}`);
+  pushText(`Plate QC: wells flagged ${flagged}/${total} | wells critical ${critical}/${total}`);
+  pushText(floorDQualitySummary ?? `Floor D QC: ${floorGeometryAvailable ? 'available' : 'missing'}`);
+
   const groupedFits = new Map<string, StandardAdditionFit[]>();
   standardAdditionFits.forEach((fit) => {
     const key = `${fit.sampleId}|${fit.dilutionFactor}`;
@@ -6994,45 +7279,7 @@ function buildFigureRgbScientificLines({
     groupedFits.set(key, items);
   });
 
-  for (const [groupKey, fits] of groupedFits.entries()) {
-    const [sampleId, dilutionFactorRaw] = groupKey.split('|');
-    const dilutionFactor = Number(dilutionFactorRaw);
-    pushText('');
-    pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureDilutionFactor(dilutionFactor)}`, true);
-
-    const resultRows: string[][] = [];
-    for (const channel of PYTHON_RESULTS_CHANNELS) {
-      const fit = fits.find((item) => item.channel === channel);
-      if (!fit) {
-        continue;
-      }
-      const ranking = rankingByChannel.get(channel);
-      const matchedRef = expectedRefs.find((ref) => {
-        const refId = ref.refId.trim();
-        if (!refId) {
-          return true;
-        }
-        return refId === fit.sampleId.trim();
-      });
-      const c0 = fit.concentrationInOriginalSample;
-      const refValue = matchedRef?.value ?? Number.NaN;
-      const delta = Number.isFinite(c0) && Number.isFinite(refValue) ? c0 - refValue : Number.NaN;
-      const recovery = Number.isFinite(c0) && Number.isFinite(refValue) && Math.abs(refValue) > 1e-15
-        ? (100 * c0) / refValue
-        : Number.NaN;
-      resultRows.push([
-        figureRgbChannelShort(channel),
-        formatFigureConcentrationNumber(c0, refValue),
-        formatFigureScientificNumber(ranking?.score ?? Number.NaN),
-        formatFigureDeltaNumber(delta, refValue),
-        Number.isFinite(recovery) ? recovery.toFixed(0) : 'NA',
-      ]);
-    }
-    pushTable(formatFigureRgbTable(
-      ['Channel', `C0 (${unitLabel})`, 'Score', `Δ (${unitLabel})`, 'Recovery (%)'],
-      resultRows,
-    ));
-
+  if (calibrationFits.length > 0) {
     pushText('');
     pushText('Calibration', true);
     const calibrationRows = PYTHON_RESULTS_CHANNELS.map((channel) => {
@@ -7051,9 +7298,62 @@ function buildFigureRgbScientificLines({
       ['Channel', 'Slope', 'Intercept', 'R2', `LOD (${unitLabel})`, `LOQ (${unitLabel})`],
       calibrationRows,
     ));
+  }
 
+  for (const [groupKey, fits] of groupedFits.entries()) {
+    const [sampleId, dilutionFactorRaw] = groupKey.split('|');
+    const dilutionFactor = Number(dilutionFactorRaw);
     pushText('');
     pushText(`Std Add | ID: ${sampleId} | DF=${formatFigureDilutionFactor(dilutionFactor)}`, true);
+
+    const resultRows: string[][] = [];
+    for (const channel of PYTHON_RESULTS_CHANNELS) {
+      const fit = fits.find((item) => item.channel === channel);
+      if (!fit) {
+        continue;
+      }
+      const ranking = rankingByChannel.get(channel);
+      const calibrationFit = calibrationFits.find((item) => item.channel === channel);
+      const groupSlopeAgreement = calibrationFit && Number.isFinite(calibrationFit.slope) && Number.isFinite(fit.slope)
+        ? Math.min(Math.abs(calibrationFit.slope), Math.abs(fit.slope))
+          / Math.max(Math.abs(calibrationFit.slope), Math.abs(fit.slope), 1e-12)
+        : Number.NaN;
+      const groupScore = calibrationFit
+        ? computePythonFitBaseScore(
+          Math.max(0, calibrationFit.r2),
+          Math.max(0, fit.r2),
+          groupSlopeAgreement,
+          ranking?.loq ?? Number.NaN,
+        )
+        : Number.NaN;
+      const matchedRef = expectedRefs.find((ref) => {
+        const refId = ref.refId.trim();
+        if (!refId) {
+          return true;
+        }
+        return refId === fit.sampleId.trim();
+      });
+      const c0 = fit.concentrationInOriginalSample;
+      const refValue = matchedRef?.value ?? Number.NaN;
+      const delta = Number.isFinite(c0) && Number.isFinite(refValue) ? c0 - refValue : Number.NaN;
+      const recovery = Number.isFinite(c0) && Number.isFinite(refValue) && Math.abs(refValue) > 1e-15
+        ? (100 * c0) / refValue
+        : Number.NaN;
+      resultRows.push([
+        figureRgbChannelShort(channel),
+        formatFigureConcentrationNumber(c0, refValue),
+        formatFigureScientificNumber(groupScore),
+        formatFigureDeltaNumber(delta, refValue),
+        Number.isFinite(recovery) ? recovery.toFixed(0) : 'NA',
+      ]);
+    }
+    pushTable(formatFigureRgbTable(
+      ['Channel', `C0 (${unitLabel})`, 'Group score', `Δ (${unitLabel})`, 'Recovery (%)'],
+      resultRows,
+    ));
+
+    pushText('');
+    pushText(`Standard-addition fit | ID: ${sampleId} | DF=${formatFigureDilutionFactor(dilutionFactor)}`, true);
     const stdFitRows = PYTHON_RESULTS_CHANNELS.map((channel) => {
       const fit = fits.find((item) => item.channel === channel);
       return [
@@ -7069,7 +7369,191 @@ function buildFigureRgbScientificLines({
     ));
   }
 
+  pushText('');
+  pushText('SCORE DEFINITIONS', true);
+  pushText('Overall method score = mean(SAₖ)² × √(R²cal × mean(R²std,ₖ)) / LOQ');
+  pushText('Group scoreₖ = SAₖ² × √(R²cal × R²std,ₖ) / LOQ');
+  pushText('SAₖ = min(|mcal|, |mstd,ₖ|) / max(|mcal|, |mstd,ₖ|)');
+
   return lines;
+}
+
+interface PythonChannelAxisSpec {
+  x: { min: number; max: number; ticks: number[] };
+  y: { min: number; max: number; ticks: number[] };
+}
+
+function nicePlotStep(rawStep: number): number {
+  const safeStep = Number.isFinite(rawStep) && rawStep > 0 ? rawStep : 1;
+  const exponent = Math.floor(Math.log10(safeStep));
+  const magnitude = 10 ** exponent;
+  const fraction = safeStep / magnitude;
+  const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+  return niceFraction * magnitude;
+}
+
+function nextNicePlotStep(step: number): number {
+  const safeStep = Number.isFinite(step) && step > 0 ? step : 1;
+  const exponent = Math.floor(Math.log10(safeStep));
+  const magnitude = 10 ** exponent;
+  const fraction = safeStep / magnitude;
+  if (fraction < 1.5) return 2 * magnitude;
+  if (fraction < 3.5) return 5 * magnitude;
+  if (fraction < 7.5) return 10 * magnitude;
+  return 20 * magnitude;
+}
+
+function buildNicePlotAxisUpToSix(
+  values: number[],
+  lowerPaddingFraction: number,
+  upperPaddingFraction: number,
+  minimumSpan: number,
+): { min: number; max: number; ticks: number[] } {
+  const finiteValues = values.filter(Number.isFinite);
+  let dataMin = finiteValues.length > 0 ? Math.min(...finiteValues) : 0;
+  let dataMax = finiteValues.length > 0 ? Math.max(...finiteValues) : 1;
+
+  if (!Number.isFinite(dataMin) || !Number.isFinite(dataMax)) {
+    dataMin = 0;
+    dataMax = 1;
+  }
+  if (dataMax < dataMin) {
+    [dataMin, dataMax] = [dataMax, dataMin];
+  }
+
+  const baseSpan = Math.max(dataMax - dataMin, minimumSpan, Number.EPSILON);
+  const paddedMin = dataMin - lowerPaddingFraction * baseSpan;
+  const paddedMax = dataMax + upperPaddingFraction * baseSpan;
+  const paddedSpan = Math.max(paddedMax - paddedMin, minimumSpan, Number.EPSILON);
+  let step = nicePlotStep(paddedSpan / 5);
+  let axisMin = Math.floor(paddedMin / step) * step;
+  let axisMax = Math.ceil(paddedMax / step) * step;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const intervalCount = Math.max(1, Math.round((axisMax - axisMin) / step));
+    if (intervalCount <= 5) {
+      break;
+    }
+    step = nextNicePlotStep(step);
+    axisMin = Math.floor(paddedMin / step) * step;
+    axisMax = Math.ceil(paddedMax / step) * step;
+  }
+
+  let intervalCount = Math.max(1, Math.round((axisMax - axisMin) / step));
+  if (intervalCount < 3) {
+    const missing = 3 - intervalCount;
+    const below = Math.floor(missing / 2);
+    const above = missing - below;
+    axisMin -= below * step;
+    axisMax += above * step;
+    intervalCount = 3;
+  }
+
+  const ticks = Array.from({ length: intervalCount + 1 }, (_, index) =>
+    Number((axisMin + index * step).toPrecision(12)),
+  );
+  return { min: ticks[0], max: ticks[ticks.length - 1], ticks };
+}
+
+function buildFourTickPlotAxis(
+  values: number[],
+  lowerPaddingFraction: number,
+  upperPaddingFraction: number,
+  minimumSpan: number,
+): { min: number; max: number; ticks: number[] } {
+  const finiteValues = values.filter(Number.isFinite);
+  let dataMin = finiteValues.length > 0 ? Math.min(...finiteValues) : 0;
+  let dataMax = finiteValues.length > 0 ? Math.max(...finiteValues) : 1;
+
+  if (!Number.isFinite(dataMin) || !Number.isFinite(dataMax)) {
+    dataMin = 0;
+    dataMax = 1;
+  }
+  if (dataMax < dataMin) {
+    [dataMin, dataMax] = [dataMax, dataMin];
+  }
+
+  const baseSpan = Math.max(dataMax - dataMin, minimumSpan, Number.EPSILON);
+  const paddedMin = dataMin - lowerPaddingFraction * baseSpan;
+  const paddedMax = dataMax + upperPaddingFraction * baseSpan;
+  const paddedSpan = Math.max(paddedMax - paddedMin, minimumSpan, Number.EPSILON);
+  let step = nicePlotStep(paddedSpan / 3);
+  let axisMin = Math.floor(paddedMin / step) * step;
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const candidateMin = Math.floor(paddedMin / step) * step;
+    const candidateMax = candidateMin + 3 * step;
+    if (candidateMax >= paddedMax - Math.abs(step) * 1e-10) {
+      axisMin = candidateMin;
+      break;
+    }
+    step = nextNicePlotStep(step);
+    axisMin = Math.floor(paddedMin / step) * step;
+  }
+
+  const axisMax = axisMin + 3 * step;
+  const ticks = Array.from({ length: 4 }, (_, index) =>
+    Number((axisMin + index * step).toPrecision(12)),
+  );
+  return { min: ticks[0], max: ticks[3], ticks };
+}
+
+function computeSharedPythonRgbAxisSpec(
+  calibrationFits: CalibrationFit[],
+  standardAdditionFits: StandardAdditionFit[],
+  displayMeasurements: WellMeasurement[],
+  plateMap: WellConfig[],
+  expectedRefs: ExpectedRef[],
+  storedCalibration?: StoredCalibration | null,
+  yChannel?: FitChannel,
+): PythonChannelAxisSpec {
+  const yChannels = yChannel ? [yChannel] : PYTHON_RESULTS_CHANNELS;
+  const groups = PYTHON_RESULTS_CHANNELS.flatMap((channel) =>
+    collectStandardAdditionGroupsForChannel(channel, standardAdditionFits, displayMeasurements, plateMap),
+  );
+  const calibrationPoints = PYTHON_RESULTS_CHANNELS.flatMap((channel) =>
+    collectEffectiveCalibrationPointsForChannel(channel, displayMeasurements, plateMap, storedCalibration),
+  );
+  const yGroups = yChannels.flatMap((channel) =>
+    collectStandardAdditionGroupsForChannel(channel, standardAdditionFits, displayMeasurements, plateMap),
+  );
+  const yCalibrationPoints = yChannels.flatMap((channel) =>
+    collectEffectiveCalibrationPointsForChannel(channel, displayMeasurements, plateMap, storedCalibration),
+  );
+  const referenceX = groups.flatMap(({ fit }) => expectedRefs.flatMap((ref) => {
+    if (!referenceMatchesSample(ref, fit.sampleId)) return [];
+    const df = Math.max(fit.dilutionFactor, 1e-12);
+    const x = -ref.value / df;
+    const xSd = ref.sd !== null && Number.isFinite(ref.sd) ? Math.abs(ref.sd / df) : Number.NaN;
+    return Number.isFinite(x) ? [x, x - (Number.isFinite(xSd) ? xSd : 0), x + (Number.isFinite(xSd) ? xSd : 0)] : [];
+  }));
+  const fitInterceptX = [...calibrationFits, ...standardAdditionFits].flatMap((fit) => {
+    if (!Number.isFinite(fit.slope) || Math.abs(fit.slope) <= 1e-15 || !Number.isFinite(fit.intercept)) {
+      return [];
+    }
+    const value = -fit.intercept / fit.slope;
+    return Number.isFinite(value) ? [value] : [];
+  });
+  const xValues = [
+    ...calibrationPoints.map((point) => point.x),
+    ...groups.flatMap((group) => group.points.map((point) => point.x)),
+    ...referenceX,
+    ...fitInterceptX,
+  ].filter(Number.isFinite);
+  const xAxis = buildFourTickPlotAxis(xValues, 0.08, 0.08, 1);
+  const yValues = [
+    0,
+    ...yCalibrationPoints.flatMap((point) => [point.y, point.y - (point.yerr ?? 0), point.y + (point.yerr ?? 0)]),
+    ...yGroups.flatMap((group) => group.points.flatMap((point) => [point.y, point.y - (point.yerr ?? 0), point.y + (point.yerr ?? 0)])),
+  ].filter(Number.isFinite);
+  return {
+    x: xAxis,
+    // Keep the shared X range, but derive Y only from visible observations,
+    // error bars and the zero/reference level. Regression lines remain clipped
+    // to the plot rectangle and no longer flatten the apparent slope by
+    // forcing their full shared-X extrapolation into the Y limits.
+    y: buildFourTickPlotAxis(yValues, 0.06, 0.10, 0.05),
+  };
 }
 
 function drawPythonStyleChannelPanel(
@@ -7084,6 +7568,8 @@ function drawPythonStyleChannelPanel(
   expectedRefs: ExpectedRef[],
   monochrome = false,
   pythonFigureStyle = false,
+  axisSpec?: PythonChannelAxisSpec,
+  standaloneAxes = false,
 ): void {
   void rankInfo;
 
@@ -7102,8 +7588,10 @@ function drawPythonStyleChannelPanel(
   const tickMajorPx = pythonFigureStyle ? 4.0 * ptToPx : 8;
   const tickMinorPx = pythonFigureStyle ? 2.5 * ptToPx : 5;
 
-  const margin = pythonFigureStyle
-    ? { left: 118, right: 26, top: 0, bottom: 0 }
+  const margin = standaloneAxes
+    ? { left: 165, right: 38, top: 22, bottom: 105 }
+    : pythonFigureStyle
+      ? { left: 118, right: 26, top: 0, bottom: 0 }
     : { left: 76, right: 20, top: 26, bottom: 56 };
   const plot = {
     x: bounds.x + margin.left,
@@ -7202,11 +7690,13 @@ function drawPythonStyleChannelPanel(
     return { min: lo, max: hi <= lo ? lo + step * nticks : hi, ticks };
   };
 
-  const xAxis = cleanAxis(xFinite.length > 0 ? xFinite : [0, 1], 0, 1, 5, 0.08, 1);
-  const yAxis = cleanAxis(yData.length > 0 ? yData : [0, 1], 0, 1, 5, 0.08, 0.05);
+  const computedXAxis = cleanAxis(xFinite.length > 0 ? xFinite : [0, 1], 0, 1, 5, 0.08, 1);
+  const computedYAxis = cleanAxis(yData.length > 0 ? yData : [0, 1], 0, 1, 5, 0.08, 0.05);
+  const xAxis = axisSpec?.x ?? computedXAxis;
+  const yAxis = axisSpec?.y ?? computedYAxis;
   const xToPx = (value: number) => plot.x + ((value - xAxis.min) / (xAxis.max - xAxis.min)) * plot.width;
   const yToPx = (value: number) => plot.y + plot.height - ((value - yAxis.min) / (yAxis.max - yAxis.min)) * plot.height;
-  const isBottomPanel = !pythonFigureStyle || bounds.y > 1000;
+  const isBottomPanel = standaloneAxes || !pythonFigureStyle || bounds.y > 1000;
 
   const drawLine = (x1: number, y1: number, x2: number, y2: number, stroke: string, width: number, dash: number[] = []) => {
     ctx.save();
@@ -7258,6 +7748,11 @@ function drawPythonStyleChannelPanel(
   ctx.strokeStyle = '#000000';
   ctx.lineWidth = pythonFigureStyle ? 0.8 * ptToPx : 1.5;
   ctx.strokeRect(plot.x, plot.y, plot.width, plot.height);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(plot.x, plot.y, plot.width, plot.height);
+  ctx.clip();
 
   if (yAxis.min <= 0 && yAxis.max >= 0) {
     drawLine(plot.x, yToPx(0), plot.x + plot.width, yToPx(0), '#8a8a8a', pythonFigureStyle ? 0.5 * ptToPx : 1);
@@ -7333,6 +7828,8 @@ function drawPythonStyleChannelPanel(
     });
   });
 
+  ctx.restore();
+
   const majorTickLength = pythonFigureStyle ? tickMajorPx : 8;
   const minorTickLength = pythonFigureStyle ? tickMinorPx : 5;
   ctx.strokeStyle = '#000000';
@@ -7370,9 +7867,15 @@ function drawPythonStyleChannelPanel(
 
   ctx.fillStyle = '#000000';
   ctx.font = `${tickFontPx}px ${fontFamily}`;
-  yAxis.ticks.forEach((tick) => {
+  yAxis.ticks.forEach((tick, tickIndex) => {
     const label = tick.toFixed(2);
-    ctx.fillText(label, plot.x - ctx.measureText(label).width - 10, yToPx(tick) + tickFontPx * 0.35);
+    const tickY = yToPx(tick);
+    const labelBaseline = tickIndex === 0
+      ? tickY - 4
+      : tickIndex === yAxis.ticks.length - 1
+        ? tickY + tickFontPx
+        : tickY + tickFontPx * 0.35;
+    ctx.fillText(label, plot.x - ctx.measureText(label).width - 10, labelBaseline);
   });
   if (isBottomPanel) {
     xAxis.ticks.forEach((tick) => {
@@ -7384,7 +7887,7 @@ function drawPythonStyleChannelPanel(
   ctx.font = `700 ${axisFontPx}px ${fontFamily}`;
   ctx.fillStyle = '#000000';
   ctx.save();
-  ctx.translate(bounds.x - 18, plot.y + plot.height / 2 + ctx.measureText(channelDisplayName(channel)).width / 2);
+  ctx.translate(standaloneAxes ? bounds.x + 36 : bounds.x - 18, plot.y + plot.height / 2 + ctx.measureText(channelDisplayName(channel)).width / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.fillText(channelDisplayName(channel), 0, 0);
   ctx.restore();
@@ -7413,23 +7916,61 @@ function drawPythonStyleChannelPanel(
   ctx.fillStyle = '#000000';
   ctx.fillText('calibration', textX, legendY);
 
-  const firstGroup = standardGroups[0];
-  if (firstGroup) {
+  standardGroups.forEach((group) => {
     legendY += legendStep;
-    drawLine(handleX0, legendY - legendFontPx * 0.25, handleX1, legendY - legendFontPx * 0.25, color, lineSolidPx);
-    drawFilledSquare(markerX, legendY - legendFontPx * 0.25, markerPx, color);
-    ctx.fillStyle = '#000000';
-    ctx.fillText(`std add ID=${firstGroup.fit.sampleId}, DF=${formatFigureDilutionFactor(firstGroup.fit.dilutionFactor)}`, textX, legendY);
 
-    const firstRef = expectedRefs.find((ref) => referenceMatchesSample(ref, firstGroup.fit.sampleId)) ?? expectedRefs[0];
-    if (firstRef) {
+    drawLine(
+      handleX0,
+      legendY - legendFontPx * 0.25,
+      handleX1,
+      legendY - legendFontPx * 0.25,
+      color,
+      lineSolidPx,
+    );
+
+    drawFilledSquare(
+      markerX,
+      legendY - legendFontPx * 0.25,
+      markerPx,
+      color,
+    );
+
+    ctx.fillStyle = '#000000';
+
+    ctx.fillText(
+      `std add ID=${group.fit.sampleId}, DF=${formatFigureDilutionFactor(group.fit.dilutionFactor)}`,
+      textX,
+      legendY,
+    );
+
+    const ref = expectedRefs.find((candidate) =>
+      referenceMatchesSample(candidate, group.fit.sampleId)
+    );
+
+    if (ref) {
       legendY += legendStep;
-      drawOpenSquare(markerX, legendY - legendFontPx * 0.25, refMarkerPx, color);
+
+      drawOpenSquare(
+        markerX,
+        legendY - legendFontPx * 0.25,
+        refMarkerPx,
+        color,
+      );
+
       ctx.fillStyle = '#000000';
-      const refLabel = firstRef.label.trim() || firstRef.refId.trim() || 'Reference';
-      ctx.fillText(`${refLabel} (ref ID=${firstGroup.fit.sampleId}, DF=${formatFigureDilutionFactor(firstGroup.fit.dilutionFactor)})`, textX, legendY);
+
+      const refLabel =
+        ref.label.trim()
+        || ref.refId.trim()
+        || 'Reference';
+
+      ctx.fillText(
+        `${refLabel} (ref ID=${group.fit.sampleId}, DF=${formatFigureDilutionFactor(group.fit.dilutionFactor)})`,
+        textX,
+        legendY,
+      );
     }
-  }
+  });
 
   ctx.restore();
 }
@@ -7449,6 +7990,7 @@ function buildPythonStyleFigureRgbCanvas({
   floorGeometryAvailable,
   floorDQualitySummary,
   bestChannel,
+  storedCalibration,
 }: {
   imageBase: string;
   overlayCanvas: HTMLCanvasElement;
@@ -7464,10 +8006,10 @@ function buildPythonStyleFigureRgbCanvas({
   floorGeometryAvailable: boolean;
   floorDQualitySummary?: string;
   bestChannel: FitChannel;
+  storedCalibration?: StoredCalibration | null;
 }): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   const width = 2481;
-  const height = 2038;
   const ctx = canvas.getContext('2d');
   const rankingRows = computePythonResultsChannelRankings(
     calibrationFits,
@@ -7476,17 +8018,22 @@ function buildPythonStyleFigureRgbCanvas({
     plateMap,
   );
   const bestRank = rankingRows.find((row) => row.channel === bestChannel);
-
-  canvas.width = width;
-  canvas.height = height;
+  const channelAxisSpecs = Object.fromEntries(PYTHON_RESULTS_CHANNELS.map((channel) => [
+    channel,
+    computeSharedPythonRgbAxisSpec(
+      calibrationFits,
+      standardAdditionFits,
+      displayMeasurements,
+      plateMap,
+      expectedRefs,
+      storedCalibration,
+      channel,
+    ),
+  ])) as Record<FitChannel, PythonChannelAxisSpec>;
 
   if (!ctx) {
     throw new Error('Could not create Python-style RGB report canvas.');
   }
-
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, width, height);
-  drawImageCover(ctx, overlayCanvas, overlayCanvas.width, overlayCanvas.height, 110, 70, 940, 626);
 
   const calSummary = calibrationFits.length > 0
     ? calibrationFits.map((fit) => `${channelDisplayName(fit.channel)} R2=${formatFitCell(fit.r2)}`).join('; ')
@@ -7516,6 +8063,17 @@ function buildPythonStyleFigureRgbCanvas({
     floorDQualitySummary,
     bestChannel,
   });
+  const scientificLineCount = scientificLines.length;
+  const requiredTextHeight = 760 + scientificLineCount * 38 + 110;
+  const requiredPanelHeight = 70 + PYTHON_RESULTS_CHANNELS.length * 603 + 95;
+  const height = Math.max(2038, requiredTextHeight, requiredPanelHeight);
+
+  canvas.width = width;
+  canvas.height = height;
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+  drawImageCover(ctx, overlayCanvas, overlayCanvas.width, overlayCanvas.height, 110, 70, 940, 626);
 
   ctx.fillStyle = '#253033';
   drawPreformattedLines(
@@ -7541,12 +8099,18 @@ function buildPythonStyleFigureRgbCanvas({
       channel,
       calibrationFits.find((fit) => fit.channel === channel),
       collectStandardAdditionGroupsForChannel(channel, standardAdditionFits, displayMeasurements, plateMap),
-      collectCalibrationPointsForChannel(channel, displayMeasurements, plateMap),
+      collectEffectiveCalibrationPointsForChannel(
+        channel,
+        displayMeasurements,
+        plateMap,
+        storedCalibration,
+      ),
       rankingRows.find((row) => row.channel === channel),
       unitLabel,
       expectedRefs,
       false,
       true,
+      channelAxisSpecs[channel],
     );
   });
 
@@ -7875,21 +8439,55 @@ function drawPythonBestChannelPlot(
   drawOpenCircle(markerX, legendY, markerPx / 2);
   ctx.fillText('calibration', textX, legendY);
 
-  const firstGroup = standardGroups[0];
-  if (firstGroup) {
+  standardGroups.forEach((group) => {
     legendY += legendStep;
-    drawLine(markerX - 10 * ptToPx, legendY, markerX + 10 * ptToPx, legendY, [], 1.4 * ptToPx);
-    drawFilledSquare(markerX, legendY, markerPx);
-    ctx.fillText(`std add ID=${firstGroup.fit.sampleId}, DF=${formatFigureDilutionFactor(firstGroup.fit.dilutionFactor)}`, textX, legendY);
 
-    const firstRef = expectedRefs.find((ref) => referenceMatchesSample(ref, firstGroup.fit.sampleId)) ?? expectedRefs[0];
-    if (firstRef) {
+    drawLine(
+      markerX - 10 * ptToPx,
+      legendY,
+      markerX + 10 * ptToPx,
+      legendY,
+      [],
+      1.4 * ptToPx,
+    );
+
+    drawFilledSquare(
+      markerX,
+      legendY,
+      markerPx,
+    );
+
+    ctx.fillText(
+      `std add ID=${group.fit.sampleId}, DF=${formatFigureDilutionFactor(group.fit.dilutionFactor)}`,
+      textX,
+      legendY,
+    );
+
+    const ref = expectedRefs.find((candidate) =>
+      referenceMatchesSample(candidate, group.fit.sampleId)
+    );
+
+    if (ref) {
       legendY += legendStep;
-      drawOpenSquare(markerX, legendY, refMarkerPx);
-      const refLabel = firstRef.label.trim() || firstRef.refId.trim() || 'Reference';
-      ctx.fillText(`${refLabel} (ref ID=${firstGroup.fit.sampleId}, DF=${formatFigureDilutionFactor(firstGroup.fit.dilutionFactor)})`, textX, legendY);
+
+      drawOpenSquare(
+        markerX,
+        legendY,
+        refMarkerPx,
+      );
+
+      const refLabel =
+        ref.label.trim()
+        || ref.refId.trim()
+        || 'Reference';
+
+      ctx.fillText(
+        `${refLabel} (ref ID=${group.fit.sampleId}, DF=${formatFigureDilutionFactor(group.fit.dilutionFactor)})`,
+        textX,
+        legendY,
+      );
     }
-  }
+  });
 
   ctx.restore();
 }
@@ -7903,6 +8501,7 @@ function buildPythonStyleBestChannelCanvas({
   standardAdditionFits,
   expectedRefs,
   unitLabel,
+  storedCalibration,
 }: {
   bestChannel: FitChannel;
   displayMeasurements: WellMeasurement[];
@@ -7911,10 +8510,11 @@ function buildPythonStyleBestChannelCanvas({
   standardAdditionFits: StandardAdditionFit[];
   expectedRefs: ExpectedRef[];
   unitLabel: string;
+  storedCalibration?: StoredCalibration | null;
 }): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
-  const width = 1062;
-  const height = 708;
+  const width = 1480;
+  const height = 900;
   const ctx = canvas.getContext('2d');
   const rankingRows = computePythonResultsChannelRankings(
     calibrationFits,
@@ -7922,26 +8522,49 @@ function buildPythonStyleBestChannelCanvas({
     displayMeasurements,
     plateMap,
   );
+  const bestRank = rankingRows.find((row) => row.channel === bestChannel);
+  const bestStandardAdditionFit = bestRank?.bestStandardAdditionFit;
+  const bestStandardAdditionGroups = collectStandardAdditionGroupsForChannel(
+    bestChannel,
+    standardAdditionFits,
+    displayMeasurements,
+    plateMap,
+  ).filter((group) => {
+    if (!bestStandardAdditionFit) return false;
+    const groupKey = group.fit.groupKey ?? `${group.fit.sampleId}|DF=${group.fit.dilutionFactor}`;
+    const bestGroupKey = bestStandardAdditionFit.groupKey ?? `${bestStandardAdditionFit.sampleId}|DF=${bestStandardAdditionFit.dilutionFactor}`;
+    return group.fit.channel === bestStandardAdditionFit.channel && groupKey === bestGroupKey;
+  });
+  const selectedAxisSpec = computeSharedPythonRgbAxisSpec(
+    calibrationFits,
+    standardAdditionFits,
+    displayMeasurements,
+    plateMap,
+    expectedRefs,
+    storedCalibration,
+    bestChannel,
+  );
 
   canvas.width = width;
   canvas.height = height;
-
-  if (!ctx) {
-    throw new Error('Could not create Python-style best-channel canvas.');
-  }
-
+  if (!ctx) throw new Error('Could not create Python-style best-channel canvas.');
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
-  void rankingRows;
-  drawPythonBestChannelPlot(
+
+  drawPythonStyleChannelPanel(
     ctx,
-    { x: 0, y: 0, width, height },
+    { x: 30, y: 25, width: 1420, height: 835 },
     bestChannel,
     calibrationFits.find((fit) => fit.channel === bestChannel),
-    collectStandardAdditionGroupsForChannel(bestChannel, standardAdditionFits, displayMeasurements, plateMap),
-    collectCalibrationPointsForChannel(bestChannel, displayMeasurements, plateMap),
+    bestStandardAdditionGroups,
+    collectEffectiveCalibrationPointsForChannel(bestChannel, displayMeasurements, plateMap, storedCalibration),
+    bestRank,
     unitLabel,
     expectedRefs,
+    false,
+    true,
+    selectedAxisSpec,
+    true,
   );
 
   return canvas;
@@ -8462,6 +9085,7 @@ function App() {
   const [manualPoints, setManualPoints] = useState<Point[]>([]);
   const [manualMouthRadiusPx, setManualMouthRadiusPx] = useState(DEFAULT_MANUAL_MOUTH_RADIUS_PX);
   const [manualMouthPreviewPoint, setManualMouthPreviewPoint] = useState<Point | null>(null);
+  const [compactTouchConfirmEnabled, setCompactTouchConfirmEnabled] = useState(false);
   const [floorCirclePickingActive, setFloorCirclePickingActive] = useState(false);
   const [manualFloorCircles, setManualFloorCircles] = useState<FloorCircle[]>([]);
   const [manualFloorCirclePreviewCenter, setManualFloorCirclePreviewCenter] = useState<Point | null>(null);
@@ -8484,6 +9108,14 @@ function App() {
   const [isRunningCompleteAnalysis, setIsRunningCompleteAnalysis] = useState(false);
   const [pendingCompleteAnalysisFitting, setPendingCompleteAnalysisFitting] = useState(false);
   const [pendingCompleteAnalysisPackageExport, setPendingCompleteAnalysisPackageExport] = useState(false);
+
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 900px) and (pointer: coarse)');
+    const update = () => setCompactTouchConfirmEnabled(query.matches);
+    update();
+    query.addEventListener?.('change', update);
+    return () => query.removeEventListener?.('change', update);
+  }, []);
   const isExtractingRef = useRef(false);
   const isFittingRef = useRef(false);
 
@@ -9810,22 +10442,81 @@ function App() {
 
   const handleSaveStoredCalibration = useCallback(() => {
     try {
-      const calibration = createStoredCalibrationFromFits(
+      const calibrationMeasurements = lowSignalCorrectionEffective
+        ? correctedMeasurementSet.measurements
+        : measurements;
+
+      const normalizeStoredCalibrationPoints = (
+        points: PythonResultsPlotPoint[],
+      ) => points.map((point) => ({
+        x: point.x,
+        y: point.y,
+        yerr: point.yerr ?? 0,
+        n: point.n ?? 1,
+      }));
+
+      const calibrationPointsByChannel = {
+        R: normalizeStoredCalibrationPoints(
+          collectCalibrationPointsForChannel(
+            'R',
+            calibrationMeasurements,
+            plateMap,
+          ),
+        ),
+        G: normalizeStoredCalibrationPoints(
+          collectCalibrationPointsForChannel(
+            'G',
+            calibrationMeasurements,
+            plateMap,
+          ),
+        ),
+        B: normalizeStoredCalibrationPoints(
+          collectCalibrationPointsForChannel(
+            'B',
+            calibrationMeasurements,
+            plateMap,
+          ),
+        ),
+      };
+
+      const calibration = completeStoredCalibrationBundle(
+        createStoredCalibrationFromFits(
+          calibrationFits,
+          imageName ?? 'current image',
+          calibrationFits.some((fit) => fit.correctionApplied)
+            ? activeLowSignalCorrections
+            : [],
+          new Date().toISOString(),
+          currentMethodMetadata,
+          calibrationPointsByChannel,
+        ),
+        calibrationMeasurements,
+        plateMap,
         calibrationFits,
-        imageName ?? 'current image',
-        calibrationFits.some((fit) => fit.correctionApplied) ? activeLowSignalCorrections : [],
-        new Date().toISOString(),
-        currentMethodMetadata,
+        standardAdditionFitsWithSlopeContext,
       );
 
       setStoredCalibration(calibration);
       downloadStoredCalibrationJson(calibration);
       setError(null);
     } catch (saveError) {
-      const detail = saveError instanceof Error ? saveError.message : 'Unknown stored calibration error.';
+      const detail = saveError instanceof Error
+        ? saveError.message
+        : 'Unknown stored calibration error.';
+
       setError(detail);
     }
-  }, [activeLowSignalCorrections, calibrationFits, currentMethodMetadata, imageName]);
+  }, [
+    activeLowSignalCorrections,
+    calibrationFits,
+    correctedMeasurementSet.measurements,
+    currentMethodMetadata,
+    imageName,
+    lowSignalCorrectionEffective,
+    measurements,
+    plateMap,
+    standardAdditionFitsWithSlopeContext,
+  ]);
 
   const handleLoadStoredCalibrationClick = useCallback(() => {
     storedCalibrationFileInputRef.current?.click();
@@ -9880,8 +10571,45 @@ function App() {
       const displayMeasurements = lowSignalCorrectionEffective
         ? correctedMeasurementSet.measurements
         : measurements;
-      const effectiveCalibrationFits = storedCalibration
-        ? calibrationFitsFromStoredCalibration(storedCalibration)
+      const generatedStoredCalibration = !storedCalibration && canCreateStoredCalibration(calibrationFits)
+        ? createStoredCalibrationFromFits(
+            calibrationFits,
+            imageName ?? 'current image',
+            calibrationFits.some((fit) => fit.correctionApplied) ? activeLowSignalCorrections : [],
+            new Date().toISOString(),
+            currentMethodMetadata,
+            {
+              R: collectCalibrationPointsForChannel('R', displayMeasurements, plateMap).map((point) => ({
+                x: point.x, y: point.y, yerr: point.yerr ?? 0, n: point.n ?? 1, excluded: false,
+              })),
+              G: collectCalibrationPointsForChannel('G', displayMeasurements, plateMap).map((point) => ({
+                x: point.x, y: point.y, yerr: point.yerr ?? 0, n: point.n ?? 1, excluded: false,
+              })),
+              B: collectCalibrationPointsForChannel('B', displayMeasurements, plateMap).map((point) => ({
+                x: point.x, y: point.y, yerr: point.yerr ?? 0, n: point.n ?? 1, excluded: false,
+              })),
+            },
+          )
+        : null;
+      const completeGeneratedStoredCalibration = generatedStoredCalibration
+        ? completeStoredCalibrationBundle(
+            generatedStoredCalibration,
+            displayMeasurements,
+            plateMap,
+            calibrationFits,
+            standardAdditionFitsWithSlopeContext,
+          )
+        : null;
+      const calibrationForExport = storedCalibration ?? completeGeneratedStoredCalibration;
+      if (calibrationForExport) {
+        addTextFile(
+          'stored_calibration.json',
+          storedCalibrationToJson(calibrationForExport),
+          'application/json;charset=utf-8',
+        );
+      }
+      const effectiveCalibrationFits = calibrationForExport
+        ? calibrationFitsFromStoredCalibration(calibrationForExport)
         : calibrationFits;
       const rankings = computePythonResultsChannelRankings(
         effectiveCalibrationFits,
@@ -9900,11 +10628,15 @@ function App() {
           rankings,
           activeLowSignalCorrections,
         ),
-        ...storedCalibrationDiagnosticFitRows(storedCalibration),
-        ...buildCielabFittingRows(buildCielabDiagnosticPoints(measurements, plateMap, storedCalibration?.cielabReference).points, undefined, storedCalibration),
+        ...storedCalibrationDiagnosticFitRows(calibrationForExport),
+        ...buildCielabFittingRows(buildCielabDiagnosticPoints(measurements, plateMap, calibrationForExport?.cielabReference).points, undefined, calibrationForExport),
       ];
       const methodComparisonRows = buildMethodComparisonRowsFromFitRows(methodComparisonFitRows, expectedRefs, true);
-      const bestChannel = storedCalibration?.selectedChannel ?? rankings[0]?.channel ?? 'R';
+      const bestChannel = calibrationForExport?.selectedChannel ?? rankings[0]?.channel ?? 'R';
+      if (completeGeneratedStoredCalibration) {
+        completeGeneratedStoredCalibration.selectedChannel = bestChannel;
+        setStoredCalibration(completeGeneratedStoredCalibration);
+      }
       let backgroundVisualDiagnostics: BackgroundVisualDiagnostics | null = null;
       let pythonPlateOverlayCanvas: HTMLCanvasElement | null = null;
       let imageQcInfo: PythonImageQcInfo | undefined;
@@ -9954,6 +10686,7 @@ function App() {
           floorGeometryAvailable: exportFloorGeometryAvailable,
           floorDQualitySummary,
           bestChannel,
+          storedCalibration: calibrationForExport,
         });
         const pythonBestChannelCanvas = buildPythonStyleBestChannelCanvas({
           bestChannel,
@@ -9963,6 +10696,7 @@ function App() {
           standardAdditionFits: standardAdditionFitsWithSlopeContext,
           expectedRefs,
           unitLabel: plateMapUnit,
+          storedCalibration: calibrationForExport,
         });
 
         addZipBlob(
@@ -10028,7 +10762,7 @@ function App() {
           lowSignalCorrections: activeLowSignalCorrections,
           correctionApplications: correctedMeasurementSet.applications,
           sharedGeometryOverride,
-          storedCalibration,
+          storedCalibration: calibrationForExport,
         }),
       );
       addZipBlob(
@@ -10064,7 +10798,7 @@ function App() {
           floorCircles: (sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable)
             ? sharedGeometryOverride ? effectiveFloorCircles : floorCircles
             : null,
-          storedCalibration,
+          storedCalibration: calibrationForExport,
         }),
       );
       if (measurements.length > 0 && pythonPlateOverlayCanvas) {
@@ -10078,7 +10812,11 @@ function App() {
             plateMap,
             plateMapUnit,
             expectedRefs,
+            correctedMeasurementSet.measurements,
+            calibrationFits,
+            standardAdditionFits,
             storedCalibration?.cielabReference,
+            calibrationForExport,
             floorDQualitySummary,
           ), { targetWidthPx: PNG_TWO_COLUMN_WIDTH_PX }),
         );
@@ -10125,7 +10863,7 @@ function App() {
         plateMap,
         plateMapUnit,
         expectedRefs,
-        storedCalibration,
+        storedCalibration: calibrationForExport,
         sharedGeometryOverride,
         appVersion: packageJson.version,
         generatedAt: new Date().toISOString(),
@@ -10365,39 +11103,7 @@ function App() {
                         ? 'PICK 4 FLOOR CIRCLES'
                         : 'RUN TIPICA ANALYSIS'}
                   </button>
-                {manualPickingActive ? (
-                  <button
-                    type="button"
-                    className="primary-button"
-                    disabled={!manualMouthPreviewPoint}
-                    onClick={() => {
-                      if (!manualMouthPreviewPoint) {
-                        return;
-                      }
 
-                      handleManualPointPick(manualMouthPreviewPoint);
-                      setManualMouthPreviewPoint(null);
-                    }}
-                  >
-                    CONFIRM MOUTH POINT
-                  </button>
-                ) : null}
-                {floorCirclePickingActive ? (
-                  <button
-                    type="button"
-                    className="primary-button"
-                    disabled={!manualFloorCirclePreviewCenter}
-                    onClick={() => {
-                      if (!manualFloorCirclePreviewCenter) {
-                        return;
-                      }
-
-                      handleFloorCirclePointPick(manualFloorCirclePreviewCenter);
-                    }}
-                  >
-                    CONFIRM FLOOR POINT
-                  </button>
-                ) : null}
                   <button type="button" className="secondary-button" disabled={manualPoints.length === 0} onClick={handleUndoManualPoint}>
                     UNDO MOUTH
                   </button>
@@ -10454,6 +11160,70 @@ function App() {
                   ) : null}
                 </>
               ) : null}            />
+            <section className="control-section configurator-stored-calibration-section" aria-labelledby="stored-calibration-heading-configurator">
+              <h2 id="stored-calibration-heading-configurator" className="configurator-step-heading">Stored calibration</h2>
+              {storedCalibration || canSaveStoredCalibration ? (
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={storedCalibration && calibrationFits.length === 0
+                    ? () => downloadStoredCalibrationJson(storedCalibration)
+                    : handleSaveStoredCalibration}
+                >
+                  {storedCalibration && calibrationFits.length === 0
+                    ? 'Download loaded calibration JSON'
+                    : 'Download current calibration JSON'}
+                </button>
+              ) : null}
+              {!image ? (
+                <>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={handleLoadStoredCalibrationClick}
+                  >
+                    Load stored calibration JSON
+                  </button>
+                  <input
+                    ref={storedCalibrationFileInputRef}
+                    className="visually-hidden"
+                    type="file"
+                    accept="application/json,.json"
+                    onChange={handleStoredCalibrationFileChange}
+                  />
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={!storedCalibration}
+                    onClick={handleClearStoredCalibration}
+                  >
+                    Clear stored calibration
+                  </button>
+                  {storedCalibration ? (
+                    <details className="configurator-result-details">
+                      <summary>Loaded calibration details</summary>
+                      <dl className="status-list compact-status-list">
+                        <div><dt>Source</dt><dd>{storedCalibration.sourceName}</dd></div>
+                        <div><dt>Created</dt><dd>{storedCalibration.createdAt}</dd></div>
+                        <div><dt>Version</dt><dd>{storedCalibration.version}</dd></div>
+                        <div><dt>Channels</dt><dd>{storedCalibrationChannels}</dd></div>
+                        <div><dt>Method metadata</dt><dd>{storedCalibration.methodMetadata ? 'Available' : 'Limited'}</dd></div>
+                      </dl>
+                    </details>
+                  ) : null}
+                  {storedCalibrationMetadataWarning ? <p className="panel-note">{storedCalibrationMetadataWarning}</p> : null}
+                </>
+              ) : null}
+              {image && storedCalibration && calibrationFits.length === 0 ? (
+                <p className="panel-note stored-calibration-active-note">
+                  Stored calibration loaded and applied: {storedCalibration.sourceName}
+                  {storedCalibration.createdAt ? ` | ${storedCalibration.createdAt}` : ''}
+                </p>
+              ) : image && !canSaveStoredCalibration ? (
+                <p className="panel-note">Complete the calibration analysis to enable download.</p>
+              ) : null}
+            </section>
+
               <h2 className="configurator-step-heading">Image</h2>
             <ImageGeometryLoader
               imageName={imageName}
@@ -10522,7 +11292,7 @@ function App() {
                 manualMouthRadiusPx={manualMouthRadiusPx}
                 onManualPointPick={handleManualPointPick}
                 onManualMouthPreviewMove={setManualMouthPreviewPoint}
-                manualMouthConfirmAvailable={Boolean(manualMouthPreviewPoint)}                 onManualMouthConfirm={() => {                   if (!manualMouthPreviewPoint) {                     return;                   }                    handleManualPointPick(manualMouthPreviewPoint);                   setManualMouthPreviewPoint(null);                 }}
+                manualMouthConfirmAvailable={compactTouchConfirmEnabled && Boolean(manualMouthPreviewPoint)}                 onManualMouthConfirm={() => {                   if (!manualMouthPreviewPoint) {                     return;                   }                    handleManualPointPick(manualMouthPreviewPoint);                   setManualMouthPreviewPoint(null);                 }}
                 onManualMouthRadiusAdjust={handleManualMouthRadiusAdjust}
                 floorCirclePickingActive={floorCirclePickingActive}
                 manualFloorCircles={manualFloorCircles}
@@ -10530,7 +11300,7 @@ function App() {
                 referenceFloorCircles={referenceFloorCircles}
                 onFloorCirclePointerMove={handleFloorCirclePointerMove}
                 onFloorCirclePointPick={handleFloorCirclePointPick}
-                floorCircleConfirmAvailable={Boolean(manualFloorCirclePreviewCenter)}                 onFloorCircleConfirm={() => {                   if (!manualFloorCirclePreviewCenter) {                     return;                   }                    handleFloorCirclePointPick(manualFloorCirclePreviewCenter);                 }}
+                floorCircleConfirmAvailable={compactTouchConfirmEnabled && Boolean(manualFloorCirclePreviewCenter)}                 onFloorCircleConfirm={() => {                   if (!manualFloorCirclePreviewCenter) {                     return;                   }                    handleFloorCirclePointPick(manualFloorCirclePreviewCenter);                 }}
                 onFloorCircleRadiusAdjust={handleFloorCircleRadiusAdjust}
                 showMouthGrid={showMouthGrid}
                 showFloorCircles={showFloorCircles}
@@ -10891,6 +11661,7 @@ function App() {
           </button>
         </section>
 
+        {plateConfiguratorDialogOpen ? null : (
         <section className="control-section" aria-labelledby="stored-calibration-heading">
           <h2 id="stored-calibration-heading">Stored calibration</h2>
           <button
@@ -10950,6 +11721,7 @@ function App() {
           </dl>
           {storedCalibrationMetadataWarning ? <p className="panel-note">{storedCalibrationMetadataWarning}</p> : null}
         </section>
+        )}
 
         <details className="control-section compact-status-section">
           <summary id="status-heading">
@@ -10993,7 +11765,7 @@ function App() {
           manualMouthRadiusPx={manualMouthRadiusPx}
           onManualPointPick={handleManualPointPick}
           onManualMouthPreviewMove={setManualMouthPreviewPoint}
-          manualMouthConfirmAvailable={Boolean(manualMouthPreviewPoint)}           onManualMouthConfirm={() => {             if (!manualMouthPreviewPoint) {               return;             }              handleManualPointPick(manualMouthPreviewPoint);             setManualMouthPreviewPoint(null);           }}
+          manualMouthConfirmAvailable={compactTouchConfirmEnabled && Boolean(manualMouthPreviewPoint)}           onManualMouthConfirm={() => {             if (!manualMouthPreviewPoint) {               return;             }              handleManualPointPick(manualMouthPreviewPoint);             setManualMouthPreviewPoint(null);           }}
           onManualMouthRadiusAdjust={handleManualMouthRadiusAdjust}
           floorCirclePickingActive={floorCirclePickingActive}
           manualFloorCircles={manualFloorCircles}
@@ -11001,7 +11773,7 @@ function App() {
           referenceFloorCircles={referenceFloorCircles}
           onFloorCirclePointerMove={handleFloorCirclePointerMove}
           onFloorCirclePointPick={handleFloorCirclePointPick}
-          floorCircleConfirmAvailable={Boolean(manualFloorCirclePreviewCenter)}           onFloorCircleConfirm={() => {             if (!manualFloorCirclePreviewCenter) {               return;             }              handleFloorCirclePointPick(manualFloorCirclePreviewCenter);           }}
+          floorCircleConfirmAvailable={compactTouchConfirmEnabled && Boolean(manualFloorCirclePreviewCenter)}           onFloorCircleConfirm={() => {             if (!manualFloorCirclePreviewCenter) {               return;             }              handleFloorCirclePointPick(manualFloorCirclePreviewCenter);           }}
           onFloorCircleRadiusAdjust={handleFloorCircleRadiusAdjust}
           showMouthGrid={showMouthGrid}
           showFloorCircles={showFloorCircles}

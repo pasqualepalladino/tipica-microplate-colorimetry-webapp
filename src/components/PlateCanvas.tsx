@@ -144,6 +144,7 @@ function drawMouthCircleLabel(
   point: Point,
   label: string,
   radius: number,
+  showCross = false,
 ): void {
   const lineWidth = Math.max(2.5, radius * 0.055);
   const centerRadius = Math.max(3, Math.min(7, radius * 0.16));
@@ -169,6 +170,18 @@ function drawMouthCircleLabel(
   ctx.lineWidth = Math.max(1.5, centerRadius * 0.35);
   ctx.fill();
   ctx.stroke();
+
+  if (showCross) {
+    const crossRadius = Math.max(centerRadius * 2.2, radius * 0.18);
+    ctx.beginPath();
+    ctx.moveTo(point.x - crossRadius, point.y);
+    ctx.lineTo(point.x + crossRadius, point.y);
+    ctx.moveTo(point.x, point.y - crossRadius);
+    ctx.lineTo(point.x, point.y + crossRadius);
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.92)';
+    ctx.lineWidth = Math.max(1.5, centerRadius * 0.28);
+    ctx.stroke();
+  }
 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -204,7 +217,7 @@ function drawManualMouthMarkers(
   if (previewPoint && points.length < MANUAL_MOUTH_REFERENCES.length) {
     const previewIndex = points.length;
     const radius = manualMouthRadiusPx ?? estimateManualMouthRadius(points, wells, radiusFactor, previewIndex, previewPoint);
-    drawMouthCircleLabel(ctx, previewPoint, MANUAL_MOUTH_REFERENCES[previewIndex].label, radius);
+    drawMouthCircleLabel(ctx, previewPoint, MANUAL_MOUTH_REFERENCES[previewIndex].label, radius, true);
   }
 
   ctx.restore();
