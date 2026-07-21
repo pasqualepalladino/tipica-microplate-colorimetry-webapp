@@ -2,7 +2,17 @@
 
 ## Unreleased
 
-- No unreleased changes after preparation of v0.1.53-beta.
+- No unreleased changes after preparation of v0.1.54-beta.
+
+## 0.1.54-beta - 2026-07-21
+
+### Changed
+
+- Replaced the hardcoded GitHub Pages workflow run name with a branch-aware dynamic label.
+- Converted the TypeScript build pipeline to explicit no-emit type checks before the Vite build.
+- Removed generated `vite.config.js` and `vite.config.d.ts` artifacts from the repository.
+- Added ignore rules for generated Vite configuration and TypeScript build-info files.
+- Preserved the validated v0.1.53-beta scientific-output and documentation changes.
 
 ## 0.1.53-beta - 2026-07-21
 
@@ -27,7 +37,7 @@
 - Made method comparison workflow-aware:
   - two panels for external-calibration unknown-only runs;
   - three panels when calibration and standard addition are available.
-- Removed non-applicable slope-agreement, bias, and standard-addition R² claims from unknown-only runs.
+- Removed non-applicable slope-agreement, bias, and standard-addition R-squared claims from unknown-only runs.
 - Preserved full standard-addition comparison for external and internal calibration workflows.
 - Added handling for multiple references with identical labels without column collisions.
 

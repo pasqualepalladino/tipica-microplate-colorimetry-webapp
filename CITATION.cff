@@ -16,7 +16,7 @@ keywords:
   - browser application
   - beta software
 license: AGPL-3.0-only
-version: "0.1.53-beta"
+version: "0.1.54-beta"
 url: "https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/"
 repository-code: "https://github.com/pasqualepalladino/tipica-microplate-colorimetry-webapp"
 date-released: "2026-07-21"
