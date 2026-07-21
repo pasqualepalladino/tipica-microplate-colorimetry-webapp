@@ -1,5 +1,5 @@
 name: Deploy webapp to GitHub Pages
-run-name: Deploy webapp to GitHub Pages v0.1.50-beta
+run-name: Deploy webapp to GitHub Pages from ${{ github.ref_name }}
 
 on:
   push:

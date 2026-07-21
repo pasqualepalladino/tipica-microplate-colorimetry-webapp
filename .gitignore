@@ -12,3 +12,8 @@ test_data/manual_comparison/
 # Local audit artifacts
 audit/
 scripts/auditXlsxParity*.py
+# TypeScript/Vite generated configuration artifacts
+/vite.config.js
+/vite.config.d.ts
+/tsconfig.tsbuildinfo
+/tsconfig.node.tsbuildinfo
