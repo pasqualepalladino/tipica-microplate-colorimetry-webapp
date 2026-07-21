@@ -1665,40 +1665,61 @@ function addZipBlob(
   files.push({ name, blob });
 }
 
-function createPythonResultsCaptionText(imageBase: string, unitLabel: string, expectedRefs: ExpectedRef[]): string {
-  const formatCaptionNumber = (value: number): string => Number(value.toFixed(3)).toString();
+function createPythonResultsCaptionText(
+  imageBase: string,
+  unitLabel: string,
+  expectedRefs: ExpectedRef[],
+  unknownMethodGroupResults: UnknownMethodGroupResult[],
+  selectedChannel: FitChannel,
+  hasStandardAddition: boolean,
+  emptyWellQc: EmptyWellPlateQcSummary,
+): string {
+  const selectedMethod = unknownRgbMethod(selectedChannel);
+  const selectedGroups = unknownMethodGroupResults.filter((group) => group.method === selectedMethod);
+  const unknownLines = selectedGroups.length > 0
+    ? selectedGroups.map((group) => `- ${unknownGroupDisplayLabel(group, unitLabel)}${group.deltaMean !== null ? `; delta=${formatFigureDeltaNumber(group.deltaMean, group.referenceValue ?? Number.NaN)} ${unitLabel}` : ''}; displayStatus=${group.displayStatus}; displayReason=${group.displayReason}`).join('\n')
+    : '- No unknown group concentration result was available.';
+
+
   const referenceLines = expectedRefs.length > 0
-    ? expectedRefs.map((ref, index) => {
-      const label = ref.label || ref.refId || `Reference ${index + 1}`;
-      const sdText = ref.sd !== null && Number.isFinite(ref.sd) ? ` +/- ${formatCaptionNumber(ref.sd)}` : '';
-      return `- ${label}: ${formatCaptionNumber(ref.value)}${sdText} ${unitLabel}`;
-    }).join('\n')
-    : '- No external reference values were configured.';
+    ? expectedRefs.map((ref) => `- ${ref.label || ref.refId || 'Reference'}${ref.refId ? ` (ID=${ref.refId})` : ''}: ${formatFigureReferenceNumber(ref.value)}${ref.sd !== null && Number.isFinite(ref.sd) ? ` +/- ${formatFigureReferenceNumber(ref.sd)}` : ''} ${unitLabel}`).join('\n')
+    : '- No external reference values were supplied.';
+  const quantificationSection = selectedGroups.length > 0 && hasStandardAddition
+    ? `Mixed sample quantification\nThis run contains both standard-addition and unknown-only groups. Standard-addition C0 is computed as DF x q/m for each ID + DF group; unknown-only responses are projected through the matching calibration fit.\n${unknownLines}`
+    : selectedGroups.length > 0
+      ? `Unknown quantification\nThis external/stored-calibration run projects each unknown response through the matching calibration fit. The plotted marker uses the diluted-sample concentration on the calibration x-axis; C0 reports the original-sample concentration after multiplying by DF.\n${unknownLines}`
+      : hasStandardAddition
+        ? 'Standard-addition quantification\nThis run contains standard-addition groups and no unknown-only groups. C0 is obtained as DF x q/m for each standard-addition ID + DF group.'
+        : `Unknown quantification\nNo valid unknown group concentration result was available.\n${unknownLines}`;
 
   return `RESULTS caption - RGB quantitative output
 
 File scope
-This caption applies to the primary RGB outputs in the RESULTS folder for ${imageBase}, especially the *_FIGURE_RGB.png and *_REPORT.xlsx files.
+This caption applies to the primary RGB outputs in the RESULTS folder for ${imageBase}, especially the *_FIGURE_RGB.png, *_BEST_CHANNEL.png and *_REPORT.xlsx files.
 
 Analytical signal
 The primary RGB signal is pseudo-absorbance, reported as PAbs_Red, PAbs_Green and PAbs_Blue:
     PAbs = log10(I_BG / I_well) = -log10(I_well / I_BG)
 where I_well is the linearized median intensity from the well ROI and I_BG is the linearized local inter-well background predicted for that well. This is an image-derived pseudo-absorbance and is not assumed to be a spectrophotometric absorbance.
 
+${quantificationSection}
+
+Reference values and recovery
+External reference values, when provided, are used only for external comparison (delta and recovery). They are not used to choose the ranked RGB method.
+${referenceLines}
+
 Fitting and quantification
-Calibration and standard-addition fits in the primary RGB export path use robust residual-based IRLS linear regression with covariance propagation. For standard addition, the original-sample concentration is C0 = DF x q/m, where y = m x + q and x is the added concentration.
+Calibration and standard-addition fits in the primary RGB export path use robust residual-based IRLS linear regression with covariance propagation. For standard addition, the original-sample concentration is C0 = DF x q/m, where y = m x + q and x is the added concentration. For unknown projection, C0 = DF x (PAbs - q)/m.
 
 Ranking score
 Overall method score: one value per method/channel, computed across all available standard-addition groups. It is used to compare methods, assign Selected and Rank, and choose the method shown in BEST_CHANNEL. Group score: one value for one Sample ID + dilution-factor group. It is used only within the already selected method to choose the ID/DF group shown in BEST_CHANNEL. Expected/reference values, recovery, SNR and clipping are external checks and are not used in either score.
 
-The workbook-level 07_METHOD_COMPARISON sheet reports the cross-method diagnostic score separately, using common comparable factors across RGB/PAbs and CIELAB/DeltaE methods.
-
-Reference values and recovery
-External reference values, when provided, are used only for external comparison (Delta and recovery). They are not used to choose the ranked RGB method.
-${referenceLines}
+${hasStandardAddition
+  ? 'The METHOD_COMPARISON sheet in the primary workbook uses the same group-only method rows as METHOD_COMPARISON.png and reports the full calibration-plus-standard-addition comparison, including slope agreement, bias and both calibration and standard-addition R².'
+  : 'For this external-calibration unknown-only run, METHOD_COMPARISON and the METHOD_COMPARISON sheets in both workbooks use the same group-only RGB and CIELAB projections and are intentionally limited to estimated concentration versus reference and calibration R². Slope agreement, bias index and standard-addition R² are not applicable and are omitted.'}
 
 Quality control
-Image, plate, geometry and floor-QC messages are alerts on data quality. No automatic image correction is applied.
+Image, plate, geometry and floor-QC messages are alerts on data quality. No automatic image correction is applied. Current-image empty-well QC: ${emptyWellQc.status}; n=${emptyWellQc.nEmptyWells}; coverage=${emptyWellQc.distinctRows} row(s) x ${emptyWellQc.distinctColumns} column(s); ${emptyWellQc.spatialAssessment}${emptyWellQc.dominantChannel ? ` ${emptyWellQc.status === 'available_insufficient' ? 'Largest observed trend channel' : 'Dominant channel'}=${emptyWellQc.dominantChannel}.` : ''} ${emptyWellQc.dominantIssue} Channel-level pass values are local screening results and do not imply an overall plate pass when spatial coverage is insufficient. This is a screening assessment of background/illumination uniformity and does not by itself invalidate concentration results.
 
 Geometry and epsilon/path-length quantification
 When epsilon-based unknown quantification is configured, optical path length is estimated from configured liquid volume and nominal flat-bottom well area. This path assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation. This section is informational unless epsilon/path-length mode is configured.
@@ -1708,29 +1729,51 @@ Reported concentrations are expressed in ${unitLabel}.
 `;
 }
 
-function createPythonRawDataDetailsCaptionText(imageBase: string, unitLabel: string): string {
+function createPythonRawDataDetailsCaptionText(
+  imageBase: string,
+  unitLabel: string,
+  unknownMethodGroupResults: UnknownMethodGroupResult[],
+  selectedChannel: FitChannel,
+  hasStandardAddition: boolean,
+  emptyWellQc: EmptyWellPlateQcSummary,
+): string {
+  const selectedUnknownCount = unknownMethodGroupResults.filter((group) => group.method === unknownRgbMethod(selectedChannel)).length;
+  const coverageText = selectedUnknownCount > 0 && hasStandardAddition
+    ? `This run contains ${selectedUnknownCount} unknown group result(s) for the selected primary method ${reportChannelName(selectedChannel)} together with standard-addition groups.`
+    : selectedUnknownCount > 0
+      ? `This run contains ${selectedUnknownCount} unknown group result(s) for the selected primary method ${reportChannelName(selectedChannel)} and no standard-addition groups.`
+      : hasStandardAddition
+        ? 'This run contains standard-addition groups and no unknown-only group results.'
+        : 'This run contains no standard-addition groups and no valid unknown-only group result.';
+  const cielabCoverageText = selectedUnknownCount > 0
+    ? 'For each unknown ID + DF group it reports mean C0, sample SD when n >= 2, n, delta, recovery and display status using the same common model as METHOD_COMPARISON and the workbooks.'
+    : hasStandardAddition
+      ? 'For this standard-addition-only run it reports descriptor fits and standard-addition comparisons; no unknown-only C0 projection is claimed.'
+      : 'No unknown-only C0 projection is reported because no valid unknown group result is available.';
   return `RAW_DATA_DETAILS caption - diagnostics and method-development outputs
 
 File scope
 This caption applies to diagnostic outputs in RAW_DATA_DETAILS for ${imageBase}: BG_STAT_MASK.png, FIGURE_CIELAB_DELTAE.png, METHOD_COMPARISON.png, DIAGNOSTICS.xlsx and analysis_run_config.json.
 
+Sample coverage
+${coverageText} METHOD_COMPARISON and the diagnostic workbooks use the same group-only projections and the same uncertainty-aware display status as the primary report whenever unknown groups are present. Empty wells, when configured, remain QC/background controls and are not counted as unknown-only quantitative groups.
+
 BG_STAT_MASK.png
 The web export shows the inter-well background sampling mask overlaid on the analyzed image for auditability. Blue marks all candidate pixels before robust acceptance; because yellow is drawn on top, blue pixels that remain visible are candidate pixels rejected by the acceptance filter. Yellow marks accepted background pixels. Magenta marks the final sparse samples used by the background model. Accepted pixels are selected from inter-well regions after model-based geometric exclusion, including the projected well volume from mouth to floor when floor geometry is available, followed by robust intensity filtering.
 
 analysis_run_config.json
-Web-specific reproducibility and audit metadata for the exported run. It records the app-side configuration, selected analysis options and geometry/background settings needed to understand or reproduce how this ZIP was generated. It is not a result table and does not change concentration calculations; it is included to help users, reviewers or support personnel verify the analysis context after export.
+Web-specific reproducibility and audit metadata for the exported run. It records the app-side configuration, selected analysis options, geometry/background settings and an unknown-result summary needed to understand or reproduce how this ZIP was generated. It is not a result table and does not change concentration calculations.
 
 FIGURE_CIELAB_DELTAE.png
-CIELAB/DeltaE fitting/report figure with plate preview, descriptor fitting panels, reference values, C0/Score/Delta/Recovery tables, calibration and standard-addition summaries. The exported CIELAB/DeltaE fit rows use the robust IRLS helper; CIELAB/DeltaE descriptors are diagnostic/comparative rather than the primary quantitative RGB/PAbs method.
+CIELAB/DeltaE fitting/report figure with plate preview, descriptor fitting panels, reference values and, when unknown groups are present, group-only quantitative projections for DeltaE_ab, DeltaE_ab_chroma, DeltaL, Deltaa and Deltab. ${cielabCoverageText} These CIELAB/DeltaE outputs are diagnostic/comparative and do not override the selected primary RGB/PAbs quantitative method.
 
 METHOD_COMPARISON.png
-Cross-method diagnostic comparison for currently available webapp methods. Score uses common fit-quality factors; external reference values and recovery checks are displayed as checks and do not affect ranking.
+${hasStandardAddition
+  ? 'Full three-panel cross-method diagnostic comparison: slope agreement/bias, estimated concentration versus reference, and calibration/standard-addition R².'
+  : 'Two-panel external-calibration unknown-only comparison: estimated concentration versus reference and calibration R². Slope agreement, bias index, R² std add and all standard-addition legends are not applicable and are omitted.'} Group-only unknown estimates, SD, reference delta, recovery, display status and display reason are included when available.
 
 DIAGNOSTICS.xlsx
-Diagnostic workbook with available background, ROI, geometry, spatial, method-comparison and CIELAB fitting tables. The web export also includes two web-specific physical-background audit sheets: 13_BG_MODEL_INPUTS, which records the final background samples actually used by the polynomial BG fit, and 14_BG_MODEL_COEFFICIENTS, which records polynomial coefficients and robust residual summaries. These sheets support reproducibility and troubleshooting of the web physical BG model and do not change concentration calculations.
-
-Geometry and epsilon/path-length quantification
-When epsilon-based unknown quantification is configured, optical path length is estimated from configured liquid volume and nominal flat-bottom well area. This path assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation. This section is informational unless epsilon/path-length mode is configured.
+Diagnostic workbook with available background, ROI, geometry, spatial, method-comparison, unknown and CIELAB fitting tables. The EMPTY_WELL_QC sheet reports current-image empty-well illumination/background screening: status=${emptyWellQc.status}, n=${emptyWellQc.nEmptyWells}, coverage=${emptyWellQc.distinctRows} row(s) x ${emptyWellQc.distinctColumns} column(s)${emptyWellQc.dominantChannel ? `, ${emptyWellQc.status === 'available_insufficient' ? 'largest observed trend channel' : 'dominant channel'}=${emptyWellQc.dominantChannel}` : ''}, with coverage sufficiency, per-channel robust spread and row/column correlations. Channel-level pass values are local screening results and do not imply an overall plate pass when spatial coverage is insufficient. The web export also includes the web-specific physical-background audit sheets BG_MODEL_INPUTS and BG_MODEL_COEFFICIENTS. These sheets support reproducibility and troubleshooting and do not change concentration calculations.
 
 Units
 Reported concentrations are expressed in ${unitLabel}.
@@ -1760,6 +1803,12 @@ interface PythonReportWorkbookOptions {
   calibrationFits: CalibrationFit[];
   standardAdditionFits: StandardAdditionFit[];
   unknownResults: UnknownConcentrationResult[];
+  unknownResultsWithReference: UnknownResultWithReference[];
+  unknownGroupSummaries: UnknownGroupSummary[];
+  unknownCielabResults: UnknownCielabResult[];
+  unknownCielabGroupSummaries: UnknownCielabGroupSummary[];
+  unknownMethodGroupResults: UnknownMethodGroupResult[];
+  methodComparisonRows: XlsxRow[];
   expectedRefs: ExpectedRef[];
   rankings: PythonResultsChannelRank[];
   methodMetadata: MethodMetadata;
@@ -2444,6 +2493,577 @@ function referenceMatchesSample(ref: ExpectedRef, sampleId: string): boolean {
   return Boolean(sample && (sample === refId || sample === label));
 }
 
+
+type UnknownReferenceStatus = 'matched' | 'single_reference_fallback' | 'ambiguous' | 'unmatched';
+
+interface UnknownResultWithReference extends UnknownConcentrationResult {
+  referenceStatus: UnknownReferenceStatus;
+  referenceId: string;
+  referenceLabel: string;
+  referenceValue: number | null;
+  referenceSd: number | null;
+  delta: number | null;
+  recoveryPercent: number | null;
+}
+
+interface UnknownNumericSummary {
+  n: number;
+  mean: number | null;
+  sd: number | null;
+}
+
+interface UnknownGroupSummary {
+  groupKey: string;
+  sampleId: string;
+  dilutionFactor: number;
+  wells: string[];
+  nWells: number;
+  channel: FitChannel;
+  pabsRaw: UnknownNumericSummary;
+  pabsCorrected: UnknownNumericSummary;
+  concentrationInDilutedSample: UnknownNumericSummary;
+  concentrationInOriginalSample: UnknownNumericSummary;
+  delta: UnknownNumericSummary;
+  recoveryPercent: UnknownNumericSummary;
+  referenceStatus: UnknownReferenceStatus;
+  referenceId: string;
+  referenceLabel: string;
+  referenceValue: number | null;
+  referenceSd: number | null;
+  warnings: string[];
+}
+
+interface UnknownCielabResult {
+  wellId: string;
+  row: number;
+  col: number;
+  sampleId: string;
+  dilutionFactor: number;
+  l: number;
+  a: number;
+  b: number;
+  deltaL: number;
+  deltaA: number;
+  deltaB: number;
+  deltaE: number;
+  deltaEChroma: number;
+}
+
+interface UnknownCielabGroupSummary {
+  groupKey: string;
+  sampleId: string;
+  dilutionFactor: number;
+  wells: string[];
+  nWells: number;
+  l: UnknownNumericSummary;
+  a: UnknownNumericSummary;
+  b: UnknownNumericSummary;
+  deltaL: UnknownNumericSummary;
+  deltaA: UnknownNumericSummary;
+  deltaB: UnknownNumericSummary;
+  deltaE: UnknownNumericSummary;
+  deltaEChroma: UnknownNumericSummary;
+}
+
+type UnknownQuantitativeMethod =
+  | 'PAbs_Red'
+  | 'PAbs_Green'
+  | 'PAbs_Blue'
+  | 'DeltaE_ab'
+  | 'DeltaE_ab_chroma'
+  | 'DeltaL'
+  | 'Deltaa'
+  | 'Deltab';
+
+type UnknownQuantitativeFamily = 'RGB' | 'CIELAB';
+
+interface UnknownMethodGroupResult {
+  groupKey: string;
+  sampleId: string;
+  dilutionFactor: number;
+  wells: string[];
+  nWells: number;
+  family: UnknownQuantitativeFamily;
+  method: UnknownQuantitativeMethod;
+  signalMean: number | null;
+  signalSd: number | null;
+  concentrationInOriginalSampleMean: number | null;
+  concentrationInOriginalSampleSd: number | null;
+  referenceStatus: UnknownReferenceStatus;
+  referenceId: string;
+  referenceLabel: string;
+  referenceValue: number | null;
+  referenceSd: number | null;
+  deltaMean: number | null;
+  deltaSd: number | null;
+  recoveryPercentMean: number | null;
+  recoveryPercentSd: number | null;
+  displayStatus: 'in_scale' | 'out_of_scale' | 'no_reference' | 'no_estimate';
+  displayReason: string;
+  combinedSd: number | null;
+  zDistance: number | null;
+  recoveryWithinDisplayWindow: boolean | null;
+  warnings: string[];
+}
+
+interface UnknownDisplayClassification {
+  displayStatus: UnknownMethodGroupResult['displayStatus'];
+  displayReason: string;
+  combinedSd: number | null;
+  zDistance: number | null;
+  recoveryWithinDisplayWindow: boolean | null;
+}
+
+function classifyUnknownDisplay(
+  estimate: number | null,
+  estimateSd: number | null,
+  referenceValue: number | null,
+  referenceSd: number | null,
+): UnknownDisplayClassification {
+  if (estimate === null || !Number.isFinite(estimate)) {
+    return { displayStatus: 'no_estimate', displayReason: 'No finite group estimate.', combinedSd: null, zDistance: null, recoveryWithinDisplayWindow: null };
+  }
+  if (referenceValue === null || !Number.isFinite(referenceValue) || Math.abs(referenceValue) <= 1e-15) {
+    return { displayStatus: 'no_reference', displayReason: 'No uniquely matched finite reference.', combinedSd: null, zDistance: null, recoveryWithinDisplayWindow: null };
+  }
+  const groupSd = estimateSd !== null && Number.isFinite(estimateSd) && estimateSd >= 0 ? estimateSd : 0;
+  const refSd = referenceSd !== null && Number.isFinite(referenceSd) && referenceSd >= 0 ? referenceSd : 0;
+  const combinedSdRaw = Math.sqrt(groupSd * groupSd + refSd * refSd);
+  const combinedSd = combinedSdRaw > 1e-15 ? combinedSdRaw : null;
+  const zDistance = combinedSd !== null ? Math.abs(estimate - referenceValue) / combinedSd : null;
+  const recovery = 100 * estimate / referenceValue;
+  const recoveryWithinDisplayWindow = Number.isFinite(recovery) && recovery >= 50 && recovery <= 200;
+  const uncertaintyCompatible = zDistance !== null && Number.isFinite(zDistance) && zDistance <= 3;
+  const inScale = uncertaintyCompatible || recoveryWithinDisplayWindow;
+  return {
+    displayStatus: inScale ? 'in_scale' : 'out_of_scale',
+    displayReason: inScale
+      ? uncertaintyCompatible
+        ? `Included: |estimate-reference| <= 3 combined SD (z=${zDistance?.toFixed(3)}).`
+        : `Included: recovery ${recovery.toFixed(1)}% is within the 50-200% display window.`
+      : `Outside reference-centered display range: recovery ${recovery.toFixed(1)}%${zDistance !== null ? `; z=${zDistance.toFixed(3)}` : ''}.`,
+    combinedSd,
+    zDistance,
+    recoveryWithinDisplayWindow,
+  };
+}
+
+function normalizeUnknownGroupId(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function unknownGroupKey(sampleId: string, dilutionFactor: number): string {
+  const normalizedId = normalizeUnknownGroupId(sampleId) || '(blank)';
+  const normalizedDf = Number.isFinite(dilutionFactor) ? dilutionFactor : 1;
+  return `${normalizedId}|df=${normalizedDf}`;
+}
+
+function summarizeUnknownValues(values: number[]): UnknownNumericSummary {
+  const finite = values.filter(Number.isFinite);
+  return {
+    n: finite.length,
+    mean: finite.length > 0 ? meanFinite(finite) : null,
+    sd: finite.length >= 2 ? sampleStandardDeviation(finite) : null,
+  };
+}
+
+function resolveUnknownReference(sampleId: string, expectedRefs: ExpectedRef[]): {
+  status: UnknownReferenceStatus;
+  ref: ExpectedRef | null;
+} {
+  const exactMatches = expectedRefs.filter((ref) => referenceMatchesSample(ref, sampleId));
+  if (exactMatches.length === 1) {
+    return { status: 'matched', ref: exactMatches[0] };
+  }
+  if (exactMatches.length > 1) {
+    return { status: 'ambiguous', ref: null };
+  }
+  if (expectedRefs.length === 1) {
+    return { status: 'single_reference_fallback', ref: expectedRefs[0] };
+  }
+  return { status: expectedRefs.length > 1 ? 'ambiguous' : 'unmatched', ref: null };
+}
+
+function enrichUnknownResultsWithReferences(
+  unknownResults: UnknownConcentrationResult[],
+  expectedRefs: ExpectedRef[],
+): UnknownResultWithReference[] {
+  return unknownResults.map((result) => {
+    const resolution = resolveUnknownReference(result.sampleId, expectedRefs);
+    const referenceValue = resolution.ref && Number.isFinite(resolution.ref.value)
+      ? resolution.ref.value
+      : null;
+    const referenceSd = resolution.ref && resolution.ref.sd !== null && Number.isFinite(resolution.ref.sd)
+      ? resolution.ref.sd
+      : null;
+    const delta = referenceValue !== null
+      ? result.concentrationInOriginalSample - referenceValue
+      : null;
+    const recoveryPercent = referenceValue !== null && Math.abs(referenceValue) > 1e-15
+      ? 100 * result.concentrationInOriginalSample / referenceValue
+      : null;
+    return {
+      ...result,
+      referenceStatus: resolution.status,
+      referenceId: resolution.ref?.refId ?? '',
+      referenceLabel: resolution.ref?.label || resolution.ref?.refId || '',
+      referenceValue,
+      referenceSd,
+      delta,
+      recoveryPercent,
+    };
+  });
+}
+
+function buildUnknownGroupSummaries(results: UnknownResultWithReference[]): UnknownGroupSummary[] {
+  const groups = new Map<string, UnknownResultWithReference[]>();
+  results.forEach((result) => {
+    const key = `${unknownGroupKey(result.sampleId, result.dilutionFactor)}|${result.channel}`;
+    const group = groups.get(key) ?? [];
+    group.push(result);
+    groups.set(key, group);
+  });
+  return [...groups.entries()].map(([groupKey, group]) => {
+    const first = group[0];
+    return {
+      groupKey,
+      sampleId: first.sampleId,
+      dilutionFactor: first.dilutionFactor,
+      wells: [...new Set(group.map((item) => item.wellId))].sort(),
+      nWells: new Set(group.map((item) => item.wellId)).size,
+      channel: first.channel,
+      pabsRaw: summarizeUnknownValues(group.map((item) => item.pabsRaw)),
+      pabsCorrected: summarizeUnknownValues(group.map((item) => item.pabsCorrected)),
+      concentrationInDilutedSample: summarizeUnknownValues(group.map((item) => item.concentrationInDilutedSample)),
+      concentrationInOriginalSample: summarizeUnknownValues(group.map((item) => item.concentrationInOriginalSample)),
+      delta: summarizeUnknownValues(group.map((item) => item.delta ?? Number.NaN)),
+      recoveryPercent: summarizeUnknownValues(group.map((item) => item.recoveryPercent ?? Number.NaN)),
+      referenceStatus: first.referenceStatus,
+      referenceId: first.referenceId,
+      referenceLabel: first.referenceLabel,
+      referenceValue: first.referenceValue,
+      referenceSd: first.referenceSd,
+      warnings: [...new Set(group.flatMap((item) => item.warnings))],
+    };
+  }).sort((a, b) => a.sampleId.localeCompare(b.sampleId) || a.dilutionFactor - b.dilutionFactor || a.channel.localeCompare(b.channel));
+}
+
+function buildUnknownCielabResults(
+  measurements: WellMeasurement[],
+  plateMap: WellConfig[],
+  storedCielabReference?: StoredCielabReference,
+): UnknownCielabResult[] {
+  const configByWell = new Map(plateMap.map((well) => [well.wellId, well]));
+  const { points } = buildCielabDiagnosticPoints(measurements, plateMap, storedCielabReference);
+  return points.flatMap((point) => {
+    const config = configByWell.get(point.wellId);
+    if (!config || config.role !== 'U') {
+      return [];
+    }
+    const parsed = parseWellPosition(point.wellId);
+    return [{
+      wellId: point.wellId,
+      row: parsed?.row ?? 0,
+      col: parsed?.col ?? 0,
+      sampleId: config.sampleId,
+      dilutionFactor: Number.isFinite(config.dilutionFactor) ? config.dilutionFactor : 1,
+      l: point.l,
+      a: point.a,
+      b: point.b,
+      deltaL: cielabValueAsNumber(point.deltaL),
+      deltaA: cielabValueAsNumber(point.deltaA),
+      deltaB: cielabValueAsNumber(point.deltaB),
+      deltaE: cielabValueAsNumber(point.deltaE),
+      deltaEChroma: cielabValueAsNumber(point.deltaEChroma),
+    }];
+  });
+}
+
+function buildUnknownCielabGroupSummaries(results: UnknownCielabResult[]): UnknownCielabGroupSummary[] {
+  const groups = new Map<string, UnknownCielabResult[]>();
+  results.forEach((result) => {
+    const key = unknownGroupKey(result.sampleId, result.dilutionFactor);
+    const group = groups.get(key) ?? [];
+    group.push(result);
+    groups.set(key, group);
+  });
+  return [...groups.entries()].map(([groupKey, group]) => ({
+    groupKey,
+    sampleId: group[0].sampleId,
+    dilutionFactor: group[0].dilutionFactor,
+    wells: [...new Set(group.map((item) => item.wellId))].sort(),
+    nWells: new Set(group.map((item) => item.wellId)).size,
+    l: summarizeUnknownValues(group.map((item) => item.l)),
+    a: summarizeUnknownValues(group.map((item) => item.a)),
+    b: summarizeUnknownValues(group.map((item) => item.b)),
+    deltaL: summarizeUnknownValues(group.map((item) => item.deltaL)),
+    deltaA: summarizeUnknownValues(group.map((item) => item.deltaA)),
+    deltaB: summarizeUnknownValues(group.map((item) => item.deltaB)),
+    deltaE: summarizeUnknownValues(group.map((item) => item.deltaE)),
+    deltaEChroma: summarizeUnknownValues(group.map((item) => item.deltaEChroma)),
+  })).sort((a, b) => a.sampleId.localeCompare(b.sampleId) || a.dilutionFactor - b.dilutionFactor);
+}
+
+function unknownRgbMethod(channel: FitChannel): UnknownQuantitativeMethod {
+  return channel === 'R' ? 'PAbs_Red' : channel === 'G' ? 'PAbs_Green' : 'PAbs_Blue';
+}
+
+function unknownCielabMethod(channel: CielabCompositeChannel): UnknownQuantitativeMethod {
+  if (channel === 'DeltaE_ab') return 'DeltaE_ab';
+  if (channel === 'DeltaE_ab_chroma') return 'DeltaE_ab_chroma';
+  if (channel === 'DeltaL') return 'DeltaL';
+  if (channel === 'Deltaa') return 'Deltaa';
+  return 'Deltab';
+}
+
+function unknownGroupDisplayLabel(group: UnknownMethodGroupResult, unitLabel: string): string {
+  const c0 = group.concentrationInOriginalSampleMean;
+  const c0Text = c0 !== null && Number.isFinite(c0)
+    ? formatFigureConcentrationNumber(c0, group.referenceValue ?? Number.NaN)
+    : 'NA';
+  const sdText = group.nWells >= 2 && group.concentrationInOriginalSampleSd !== null && Number.isFinite(group.concentrationInOriginalSampleSd)
+    ? ` +/- ${formatFigureConcentrationNumber(group.concentrationInOriginalSampleSd, group.referenceValue ?? Number.NaN)}`
+    : '';
+  const recoveryText = group.recoveryPercentMean !== null && Number.isFinite(group.recoveryPercentMean)
+    ? `; recovery=${group.recoveryPercentMean.toFixed(1)}%`
+    : '';
+  const replicateText = group.nWells >= 2 ? `; n=${group.nWells}` : '';
+  const displayText = group.displayStatus === 'out_of_scale' ? '; display=out of scale' : '';
+  return `ID=${group.sampleId}; DF=${formatFigureDilutionFactor(group.dilutionFactor)}; C0=${c0Text}${sdText} ${unitLabel}${recoveryText}${replicateText}${displayText}`;
+}
+
+function buildUnknownMethodComparisonRows(
+  groups: UnknownMethodGroupResult[],
+  calibrationFits: CalibrationFit[],
+  hasStandardAddition: boolean,
+  storedCalibration?: StoredCalibration | null,
+): XlsxRow[] {
+  return groups.flatMap((group) => {
+    const estimate = group.concentrationInOriginalSampleMean;
+    if (estimate === null || !Number.isFinite(estimate)) return [];
+    const rgbFit = group.family === 'RGB'
+      ? calibrationFits.find((fit) => unknownRgbMethod(fit.channel) === group.method)
+      : undefined;
+    const cielabFit = group.family === 'CIELAB'
+      ? storedCielabChannelForDescriptor(group.method, storedCalibration)
+      : undefined;
+    const r2Cal = rgbFit?.r2 ?? cielabFit?.r2 ?? Number.NaN;
+    return [{
+      Method: group.method,
+      Estimate_source: 'unknown_group',
+      Estimate_value: estimate,
+      Estimate_sd: group.concentrationInOriginalSampleSd,
+      Reference_value: group.referenceValue,
+      Reference_sd: group.referenceSd,
+      Delta: group.deltaMean,
+      Recovery_pct: group.recoveryPercentMean,
+      R2_cal: r2Cal,
+      ...(hasStandardAddition
+        ? {
+            R2_std_mean: null,
+            SlopeAgreement: null,
+            bias_index_mean: null,
+          }
+        : {}),
+      ID: group.sampleId,
+      DF: group.dilutionFactor,
+      N: group.nWells,
+      Wells: group.wells.join(', '),
+      Display_status: group.displayStatus,
+      Display_reason: group.displayReason,
+      MethodComparison_layout: hasStandardAddition ? 'calibration_plus_standard_addition' : 'external_calibration_unknown_only',
+      SlopeAgreement_applicability: hasStandardAddition ? 'applicable' : 'not_applicable_no_standard_addition',
+      BiasIndex_applicability: hasStandardAddition ? 'applicable' : 'not_applicable_no_standard_addition',
+      R2_std_applicability: hasStandardAddition ? 'applicable' : 'not_applicable_no_standard_addition',
+      Combined_sd: group.combinedSd,
+      Z_distance: group.zDistance,
+      Recovery_within_display_window: group.recoveryWithinDisplayWindow,
+    }];
+  });
+}
+
+function resolveUnknownGroupReferenceFields(
+  sampleId: string,
+  expectedRefs: ExpectedRef[],
+): Pick<UnknownMethodGroupResult, 'referenceStatus' | 'referenceId' | 'referenceLabel' | 'referenceValue' | 'referenceSd'> {
+  const resolution = resolveUnknownReference(sampleId, expectedRefs);
+  const referenceValue = resolution.ref && Number.isFinite(resolution.ref.value) ? resolution.ref.value : null;
+  const referenceSd = resolution.ref && resolution.ref.sd !== null && Number.isFinite(resolution.ref.sd)
+    ? resolution.ref.sd
+    : null;
+  return {
+    referenceStatus: resolution.status,
+    referenceId: resolution.ref?.refId ?? '',
+    referenceLabel: resolution.ref?.label || resolution.ref?.refId || '',
+    referenceValue,
+    referenceSd,
+  };
+}
+
+function buildUnknownMethodGroupResults(
+  rgbGroups: UnknownGroupSummary[],
+  cielabGroups: UnknownCielabGroupSummary[],
+  expectedRefs: ExpectedRef[],
+  storedCalibration: StoredCalibration | null | undefined,
+): UnknownMethodGroupResult[] {
+  const results: UnknownMethodGroupResult[] = rgbGroups.map((group) => {
+    const display = classifyUnknownDisplay(
+      group.concentrationInOriginalSample.mean,
+      group.concentrationInOriginalSample.sd,
+      group.referenceValue,
+      group.referenceSd,
+    );
+    return {
+      groupKey: group.groupKey.replace(/\|[RGB]$/, ''),
+      sampleId: group.sampleId,
+      dilutionFactor: group.dilutionFactor,
+      wells: group.wells,
+      nWells: group.nWells,
+      family: 'RGB',
+      method: unknownRgbMethod(group.channel),
+      signalMean: group.pabsCorrected.mean,
+      signalSd: group.pabsCorrected.sd,
+      concentrationInOriginalSampleMean: group.concentrationInOriginalSample.mean,
+      concentrationInOriginalSampleSd: group.concentrationInOriginalSample.sd,
+      referenceStatus: group.referenceStatus,
+      referenceId: group.referenceId,
+      referenceLabel: group.referenceLabel,
+      referenceValue: group.referenceValue,
+      referenceSd: group.referenceSd,
+      deltaMean: group.delta.mean,
+      deltaSd: group.delta.sd,
+      recoveryPercentMean: group.recoveryPercent.mean,
+      recoveryPercentSd: group.recoveryPercent.sd,
+      ...display,
+      warnings: group.warnings,
+    };
+  });
+
+  const cielabDescriptors: Array<{
+    method: Exclude<UnknownQuantitativeMethod, 'PAbs_Red' | 'PAbs_Green' | 'PAbs_Blue'>;
+    summary: (group: UnknownCielabGroupSummary) => UnknownNumericSummary;
+  }> = [
+    { method: 'DeltaE_ab', summary: (group) => group.deltaE },
+    { method: 'DeltaE_ab_chroma', summary: (group) => group.deltaEChroma },
+    { method: 'DeltaL', summary: (group) => group.deltaL },
+    { method: 'Deltaa', summary: (group) => group.deltaA },
+    { method: 'Deltab', summary: (group) => group.deltaB },
+  ];
+
+  cielabGroups.forEach((group) => {
+    const reference = resolveUnknownGroupReferenceFields(group.sampleId, expectedRefs);
+    cielabDescriptors.forEach(({ method, summary }) => {
+      const signal = summary(group);
+      const fit = storedCielabChannelForDescriptor(method, storedCalibration);
+      const validFit = fit && Number.isFinite(fit.slope) && Math.abs(fit.slope) > 1e-15 && Number.isFinite(fit.intercept);
+      const concentrationMean = validFit && signal.mean !== null
+        ? group.dilutionFactor * (signal.mean - fit.intercept) / fit.slope
+        : null;
+      const concentrationSd = validFit && signal.sd !== null
+        ? group.dilutionFactor * signal.sd / Math.abs(fit.slope)
+        : null;
+      const deltaMean = concentrationMean !== null && reference.referenceValue !== null
+        ? concentrationMean - reference.referenceValue
+        : null;
+      const recoveryMean = concentrationMean !== null && reference.referenceValue !== null && Math.abs(reference.referenceValue) > 1e-15
+        ? 100 * concentrationMean / reference.referenceValue
+        : null;
+      const recoverySd = concentrationSd !== null && reference.referenceValue !== null && Math.abs(reference.referenceValue) > 1e-15
+        ? 100 * concentrationSd / Math.abs(reference.referenceValue)
+        : null;
+      const warnings = validFit ? [] : [`No valid stored calibration fit for ${method}.`];
+      const display = classifyUnknownDisplay(concentrationMean, concentrationSd, reference.referenceValue, reference.referenceSd);
+      results.push({
+        groupKey: group.groupKey,
+        sampleId: group.sampleId,
+        dilutionFactor: group.dilutionFactor,
+        wells: group.wells,
+        nWells: group.nWells,
+        family: 'CIELAB',
+        method,
+        signalMean: signal.mean,
+        signalSd: signal.sd,
+        concentrationInOriginalSampleMean: concentrationMean,
+        concentrationInOriginalSampleSd: concentrationSd,
+        ...reference,
+        deltaMean,
+        deltaSd: concentrationSd,
+        recoveryPercentMean: recoveryMean,
+        recoveryPercentSd: recoverySd,
+        ...display,
+        warnings,
+      });
+    });
+  });
+
+  return results.sort((a, b) => (
+    a.sampleId.localeCompare(b.sampleId)
+    || a.dilutionFactor - b.dilutionFactor
+    || a.method.localeCompare(b.method)
+  ));
+}
+
+function unknownIndividualRows(results: UnknownResultWithReference[]): XlsxRow[] {
+  return results.map((result) => {
+    const parsed = parseWellPosition(result.wellId);
+    return {
+      Well: result.wellId,
+      Row: parsed ? rowLabel(parsed.row) : rowLabel(result.row),
+      Col: parsed ? parsed.col + 1 : result.col + 1,
+      ID: result.sampleId,
+      DF: result.dilutionFactor,
+      Channel: reportChannelName(result.channel),
+      PAbs_raw: result.pabsRaw,
+      PAbs_corrected: result.pabsCorrected,
+      C_diluted: result.concentrationInDilutedSample,
+      C0: result.concentrationInOriginalSample,
+      ReferenceStatus: result.referenceStatus,
+      ReferenceID: result.referenceId,
+      ReferenceLabel: result.referenceLabel,
+      ReferenceValue: result.referenceValue ?? '',
+      ReferenceSD: result.referenceSd ?? '',
+      Delta: result.delta ?? '',
+      Recovery_pct: result.recoveryPercent ?? '',
+      Warnings: result.warnings.join('; '),
+    };
+  });
+}
+
+function unknownGroupRows(results: UnknownGroupSummary[]): XlsxRow[] {
+  return results.map((group) => ({
+    GroupKey: group.groupKey, ID: group.sampleId, DF: group.dilutionFactor, Channel: reportChannelName(group.channel),
+    Wells: group.wells.join(','), N_wells: group.nWells,
+    PAbs_raw_mean: group.pabsRaw.mean ?? '', PAbs_raw_sd: group.pabsRaw.sd ?? '',
+    PAbs_corrected_mean: group.pabsCorrected.mean ?? '', PAbs_corrected_sd: group.pabsCorrected.sd ?? '',
+    C_diluted_mean: group.concentrationInDilutedSample.mean ?? '', C_diluted_sd: group.concentrationInDilutedSample.sd ?? '',
+    C0_mean: group.concentrationInOriginalSample.mean ?? '', C0_sd: group.concentrationInOriginalSample.sd ?? '',
+    ReferenceStatus: group.referenceStatus, ReferenceID: group.referenceId, ReferenceLabel: group.referenceLabel,
+    ReferenceValue: group.referenceValue ?? '', ReferenceSD: group.referenceSd ?? '',
+    Delta_mean: group.delta.mean ?? '', Delta_sd: group.delta.sd ?? '',
+    Recovery_mean_pct: group.recoveryPercent.mean ?? '', Recovery_sd_pct: group.recoveryPercent.sd ?? '',
+    Warnings: group.warnings.join('; '),
+  }));
+}
+
+function unknownCielabIndividualRows(results: UnknownCielabResult[]): XlsxRow[] {
+  return results.map((result) => ({
+    Well: result.wellId, Row: rowLabel(result.row), Col: result.col + 1, ID: result.sampleId, DF: result.dilutionFactor,
+    L: result.l, a: result.a, b: result.b, DeltaL: result.deltaL, Deltaa: result.deltaA, Deltab: result.deltaB,
+    DeltaE_ab: result.deltaE, DeltaE_ab_chroma: result.deltaEChroma,
+  }));
+}
+
+function unknownCielabGroupRows(results: UnknownCielabGroupSummary[]): XlsxRow[] {
+  return results.map((group) => ({
+    GroupKey: group.groupKey, ID: group.sampleId, DF: group.dilutionFactor, Wells: group.wells.join(','), N_wells: group.nWells,
+    L_mean: group.l.mean ?? '', L_sd: group.l.sd ?? '', a_mean: group.a.mean ?? '', a_sd: group.a.sd ?? '',
+    b_mean: group.b.mean ?? '', b_sd: group.b.sd ?? '', DeltaL_mean: group.deltaL.mean ?? '', DeltaL_sd: group.deltaL.sd ?? '',
+    Deltaa_mean: group.deltaA.mean ?? '', Deltaa_sd: group.deltaA.sd ?? '', Deltab_mean: group.deltaB.mean ?? '', Deltab_sd: group.deltaB.sd ?? '',
+    DeltaE_ab_mean: group.deltaE.mean ?? '', DeltaE_ab_sd: group.deltaE.sd ?? '',
+    DeltaE_ab_chroma_mean: group.deltaEChroma.mean ?? '', DeltaE_ab_chroma_sd: group.deltaEChroma.sd ?? '',
+  }));
+}
+
 function buildReportRawRows(
   measurements: WellMeasurement[],
   displayMeasurements: WellMeasurement[],
@@ -2647,6 +3267,70 @@ function buildReportReplicateRows(
     });
 }
 
+function buildUnknownGroupFittingRows(
+  groups: UnknownMethodGroupResult[],
+  calibrationFits: CalibrationFit[],
+  storedCalibration?: StoredCalibration | null,
+): XlsxRow[] {
+  return groups.map((group) => {
+    const rgbFit = group.family === 'RGB'
+      ? calibrationFits.find((fit) => unknownRgbMethod(fit.channel) === group.method)
+      : undefined;
+    const cielabFit = group.family === 'CIELAB'
+      ? storedCielabChannelForDescriptor(group.method, storedCalibration)
+      : undefined;
+
+    return {
+      Channel: group.method,
+      FitType: 'UnknownGroupFromCal',
+      n_points: group.nWells,
+      m: rgbFit?.slope ?? cielabFit?.slope ?? '',
+      q: rgbFit?.intercept ?? cielabFit?.intercept ?? '',
+      R2: rgbFit?.r2 ?? cielabFit?.r2 ?? '',
+      RMSE: '',
+      sigma_cal: rgbFit?.sigmaCal ?? '',
+      sigma_source: rgbFit?.sigmaSource ?? (group.family === 'CIELAB' ? 'stored_calibration' : ''),
+      SNR: rgbFit?.snr ?? '',
+      LOD: rgbFit?.lod ?? '',
+      LOQ: rgbFit?.loq ?? '',
+      ID: group.sampleId,
+      DF: group.dilutionFactor,
+      C0: group.concentrationInOriginalSampleMean,
+      C0_sd: group.concentrationInOriginalSampleSd,
+      ReferenceStatus: group.referenceStatus,
+      ReferenceID: group.referenceId,
+      ReferenceLabel: group.referenceLabel,
+      ReferenceValue: group.referenceValue,
+      ReferenceSD: group.referenceSd,
+      Delta: group.deltaMean,
+      Delta_sd: group.deltaSd,
+      Recovery_pct: group.recoveryPercentMean,
+      Recovery_sd_pct: group.recoveryPercentSd,
+      N_wells: group.nWells,
+      Wells: group.wells.join(', '),
+      Display_status: group.displayStatus,
+      Display_reason: group.displayReason,
+      beta_k: '',
+      bias_index_k: '',
+      S0_calibration: '',
+      S0_applied: '',
+      NClipPoints: '',
+      ClipX: '',
+      ClipDelta: '',
+      FitSignalSource: 'group_only_external_calibration_projection',
+      FitX_points: '',
+      FitY_raw_points: '',
+      FitY_input_points: '',
+      FitY_input_delta_points: '',
+      ClipDelta_points: '',
+    };
+  }).sort((a, b) => (
+    stringRowValue(a, 'Channel').localeCompare(stringRowValue(b, 'Channel'))
+    || stringRowValue(a, 'ID').localeCompare(stringRowValue(b, 'ID'))
+    || finiteNumber(a.DF, 0) - finiteNumber(b.DF, 0)
+  ));
+}
+
 function buildReportFitRows(
   measurements: WellMeasurement[],
   calibrationFits: CalibrationFit[],
@@ -2800,8 +3484,12 @@ function buildReportFitRows(
       SNR: '',
       LOD: '',
       LOQ: '',
+      Well: result.wellId,
+      Row: rowLabel(result.row),
+      Col: result.col + 1,
       ID: result.sampleId,
       DF: result.dilutionFactor,
+      C_diluted: result.concentrationInDilutedSample,
       C0: result.concentrationInOriginalSample,
       C0_sd: '',
       beta_k: '',
@@ -2986,7 +3674,7 @@ function buildMethodComparisonRowsFromFitRows(fitRows: XlsxRow[], expectedRefs: 
 
     expectedRefs.forEach((ref, refIndex) => {
       const label = ref.label || ref.refId || `Reference ${refIndex + 1}`;
-      const key = expectedRefKey(label, refIndex + 1);
+      const key = expectedRefKey(`${ref.refId || `ID${refIndex + 1}`}_${label}_${refIndex + 1}`, refIndex + 1);
       const matchedStd = stdRows
         .filter((row) => referenceMatchesSample(ref, stringRowValue(row, 'ID')))
         .map((row) => numericRowValue(row, 'C0'))
@@ -3050,6 +3738,217 @@ function buildMethodComparisonRowsFromFitRows(fitRows: XlsxRow[], expectedRefs: 
   return rows;
 }
 
+
+interface EmptyWellPlateQcChannelSummary {
+  channel: 'Red' | 'Green' | 'Blue';
+  n: number;
+  median: number | null;
+  sampleSd: number | null;
+  robustSd: number | null;
+  p10: number | null;
+  p90: number | null;
+  robustSpan: number | null;
+  corrRow: number | null;
+  corrCol: number | null;
+  status: 'pass' | 'warning' | 'fail' | 'insufficient';
+  reason: string;
+}
+
+interface EmptyWellPlateQcSummary {
+  status: 'not_available' | 'available_insufficient' | 'pass' | 'warning' | 'fail';
+  nEmptyWells: number;
+  distinctRows: number;
+  distinctColumns: number;
+  rowCoverageFraction: number | null;
+  columnCoverageFraction: number | null;
+  spatialAssessment: string;
+  dominantChannel: string | null;
+  dominantIssue: string;
+  thresholds: string;
+  channels: EmptyWellPlateQcChannelSummary[];
+}
+
+function percentileFinite(values: number[], fraction: number): number {
+  const finite = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (finite.length === 0) {
+    return Number.NaN;
+  }
+  if (finite.length === 1) {
+    return finite[0];
+  }
+  const position = Math.min(1, Math.max(0, fraction)) * (finite.length - 1);
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  const weight = position - lower;
+  return finite[lower] * (1 - weight) + finite[upper] * weight;
+}
+
+function buildEmptyWellPlateQcSummary(
+  measurements: WellMeasurement[],
+  displayMeasurements: WellMeasurement[],
+  plateMap: WellConfig[],
+): EmptyWellPlateQcSummary {
+  const configByWell = new Map(plateMap.map((well) => [well.wellId, well]));
+  const displayByWell = new Map(displayMeasurements.map((measurement) => [measurement.wellId, measurement]));
+  const emptyMeasurements = measurements.filter((measurement) => {
+    const role = configByWell.get(measurement.wellId)?.role;
+    return role !== 'C' && role !== 'A' && role !== 'U';
+  });
+
+  const thresholds = 'coverage requirement for pass/warning/fail: at least 8 usable empty wells spanning at least 3 distinct rows and 3 distinct columns; screening thresholds: warning if robust SD > 0.015 PAbs, P90-P10 > 0.030 PAbs, or |spatial correlation| >= 0.45 with span > 0.015; fail if robust SD > 0.030 PAbs, P90-P10 > 0.060 PAbs, or |spatial correlation| >= 0.75 with span > 0.030';
+  if (emptyMeasurements.length === 0) {
+    return {
+      status: 'not_available',
+      nEmptyWells: 0,
+      distinctRows: 0,
+      distinctColumns: 0,
+      rowCoverageFraction: null,
+      columnCoverageFraction: null,
+      spatialAssessment: 'No spatial assessment is available.',
+      dominantChannel: null,
+      dominantIssue: 'No empty wells were available for current-image illumination/background screening.',
+      thresholds,
+      channels: [],
+    };
+  }
+
+  const emptyPositions = emptyMeasurements
+    .map((measurement) => parseWellPosition(measurement.wellId))
+    .filter((position): position is { row: number; col: number } => position !== null);
+  const platePositions = plateMap
+    .map((well) => parseWellPosition(well.wellId))
+    .filter((position): position is { row: number; col: number } => position !== null);
+  const distinctRows = new Set(emptyPositions.map((position) => position.row)).size;
+  const distinctColumns = new Set(emptyPositions.map((position) => position.col)).size;
+  const plateRows = new Set(platePositions.map((position) => position.row)).size;
+  const plateColumns = new Set(platePositions.map((position) => position.col)).size;
+  const rowCoverageFraction = plateRows > 0 ? distinctRows / plateRows : null;
+  const columnCoverageFraction = plateColumns > 0 ? distinctColumns / plateColumns : null;
+  const hasSufficientSpatialCoverage = emptyMeasurements.length >= 8 && distinctRows >= 3 && distinctColumns >= 3;
+  const spatialAssessment = hasSufficientSpatialCoverage
+    ? `Two-dimensional screening available (${distinctRows} distinct rows x ${distinctColumns} distinct columns).`
+    : distinctRows >= 3 && distinctColumns < 3
+      ? `Vertical trend is assessable, but horizontal and two-dimensional uniformity are not (${distinctRows} distinct rows x ${distinctColumns} distinct column${distinctColumns === 1 ? '' : 's'}).`
+      : distinctColumns >= 3 && distinctRows < 3
+        ? `Horizontal trend is assessable, but vertical and two-dimensional uniformity are not (${distinctRows} distinct row${distinctRows === 1 ? '' : 's'} x ${distinctColumns} distinct columns).`
+        : `Spatial coverage is insufficient for two-dimensional illumination assessment (${distinctRows} distinct row${distinctRows === 1 ? '' : 's'} x ${distinctColumns} distinct column${distinctColumns === 1 ? '' : 's'}).`;
+
+  const channelDefs = [
+    { channel: 'Red' as const, value: (measurement: WellMeasurement) => measurement.pabs.r },
+    { channel: 'Green' as const, value: (measurement: WellMeasurement) => measurement.pabs.g },
+    { channel: 'Blue' as const, value: (measurement: WellMeasurement) => measurement.pabs.b },
+  ];
+
+  const channels = channelDefs.map(({ channel, value }) => {
+    const points = emptyMeasurements.map((measurement) => {
+      const display = displayByWell.get(measurement.wellId) ?? measurement;
+      const position = parseWellPosition(measurement.wellId);
+      return {
+        value: value(display),
+        row: position?.row ?? Number.NaN,
+        col: position?.col ?? Number.NaN,
+      };
+    }).filter((point) => Number.isFinite(point.value));
+    const values = points.map((point) => point.value);
+    const center = values.length > 0 ? medianFinite(values) : Number.NaN;
+    const mad = values.length > 0 ? medianFinite(values.map((item) => Math.abs(item - center))) : Number.NaN;
+    const robustSd = Number.isFinite(mad) ? 1.4826 * mad : Number.NaN;
+    const p10 = percentileFinite(values, 0.10);
+    const p90 = percentileFinite(values, 0.90);
+    const span = Number.isFinite(p10) && Number.isFinite(p90) ? p90 - p10 : Number.NaN;
+    const corrRow = points.length >= 3 ? pearsonCorrelation(points.map((point) => point.row), values) : Number.NaN;
+    const corrCol = points.length >= 3 ? pearsonCorrelation(points.map((point) => point.col), values) : Number.NaN;
+    const finiteCorrelations = [corrRow, corrCol].filter(Number.isFinite).map((item) => Math.abs(item));
+    const maxCorr = finiteCorrelations.length > 0 ? Math.max(...finiteCorrelations) : Number.NaN;
+
+    let status: EmptyWellPlateQcChannelSummary['status'] = 'pass';
+    let reason = 'No material robust spread or spatial gradient detected by the screening rules.';
+    if (values.length < 4) {
+      status = 'insufficient';
+      reason = 'Fewer than four usable empty wells; spatial illumination screening is insufficient.';
+    } else if (robustSd > 0.030 || span > 0.060 || (maxCorr >= 0.75 && span > 0.030)) {
+      status = 'fail';
+      reason = maxCorr >= 0.75 && span > 0.030
+        ? `Strong spatial gradient (max |r|=${maxCorr.toFixed(3)}) with robust span ${span.toFixed(4)} PAbs.`
+        : `Excessive empty-well spread (robust SD=${robustSd.toFixed(4)}, P90-P10=${span.toFixed(4)} PAbs).`;
+    } else if (robustSd > 0.015 || span > 0.030 || (maxCorr >= 0.45 && span > 0.015)) {
+      status = 'warning';
+      reason = maxCorr >= 0.45 && span > 0.015
+        ? `Possible spatial gradient (max |r|=${maxCorr.toFixed(3)}) with robust span ${span.toFixed(4)} PAbs.`
+        : `Elevated empty-well spread (robust SD=${robustSd.toFixed(4)}, P90-P10=${span.toFixed(4)} PAbs).`;
+    }
+
+    return {
+      channel,
+      n: values.length,
+      median: Number.isFinite(center) ? center : null,
+      sampleSd: values.length >= 2 ? sampleStandardDeviation(values) : null,
+      robustSd: Number.isFinite(robustSd) ? robustSd : null,
+      p10: Number.isFinite(p10) ? p10 : null,
+      p90: Number.isFinite(p90) ? p90 : null,
+      robustSpan: Number.isFinite(span) ? span : null,
+      corrRow: Number.isFinite(corrRow) ? corrRow : null,
+      corrCol: Number.isFinite(corrCol) ? corrCol : null,
+      status,
+      reason,
+    };
+  });
+
+  const severity = { insufficient: 0, pass: 1, warning: 2, fail: 3 } as const;
+  const dominant = [...channels].sort((a, b) => severity[b.status] - severity[a.status] || (b.robustSpan ?? -1) - (a.robustSpan ?? -1))[0];
+  const status = !hasSufficientSpatialCoverage
+    ? 'available_insufficient'
+    : channels.some((channel) => channel.status === 'fail')
+      ? 'fail'
+      : channels.some((channel) => channel.status === 'warning')
+        ? 'warning'
+        : channels.every((channel) => channel.status === 'insufficient')
+          ? 'available_insufficient'
+          : 'pass';
+  const dominantObservation = dominant?.reason ?? 'No channel-level assessment was available.';
+  const dominantIssue = hasSufficientSpatialCoverage
+    ? dominantObservation
+    : `Additional channel observation: ${dominant?.channel ?? 'none'}: ${dominantObservation}`;
+
+  return {
+    status,
+    nEmptyWells: emptyMeasurements.length,
+    distinctRows,
+    distinctColumns,
+    rowCoverageFraction,
+    columnCoverageFraction,
+    spatialAssessment,
+    dominantChannel: dominant?.channel ?? null,
+    dominantIssue,
+    thresholds,
+    channels,
+  };
+}
+
+function buildEmptyWellPlateQcRows(summary: EmptyWellPlateQcSummary): XlsxRow[] {
+  if (summary.channels.length === 0) {
+    return [{ Scope: 'Overall', Status: summary.status, N_empty_wells: summary.nEmptyWells, Distinct_rows: summary.distinctRows, Distinct_columns: summary.distinctColumns, Row_coverage_fraction: summary.rowCoverageFraction ?? '', Column_coverage_fraction: summary.columnCoverageFraction ?? '', Spatial_assessment: summary.spatialAssessment, Reason: summary.dominantIssue, Thresholds: summary.thresholds }];
+  }
+  return [
+    { Scope: 'Overall', Status: summary.status, N_empty_wells: summary.nEmptyWells, Distinct_rows: summary.distinctRows, Distinct_columns: summary.distinctColumns, Row_coverage_fraction: summary.rowCoverageFraction ?? '', Column_coverage_fraction: summary.columnCoverageFraction ?? '', Spatial_assessment: summary.spatialAssessment, Observed_channel: summary.dominantChannel ?? '', Reason: summary.dominantIssue, Thresholds: summary.thresholds },
+    ...summary.channels.map((channel) => ({
+      Scope: channel.channel,
+      Status: channel.status,
+      N_empty_wells: channel.n,
+      Median_PAbs: channel.median ?? '',
+      Sample_SD_PAbs: channel.sampleSd ?? '',
+      Robust_SD_PAbs: channel.robustSd ?? '',
+      P10_PAbs: channel.p10 ?? '',
+      P90_PAbs: channel.p90 ?? '',
+      P90_minus_P10_PAbs: channel.robustSpan ?? '',
+      Corr_row: channel.corrRow ?? '',
+      Corr_col: channel.corrCol ?? '',
+      Reason: channel.reason,
+      Thresholds: summary.thresholds,
+    })),
+  ];
+}
+
 function buildReportOverviewRows(
   imageBase: string,
   unitLabel: string,
@@ -3062,6 +3961,8 @@ function buildReportOverviewRows(
   storedCalibration: StoredCalibration | null,
   imageQcInfo: PythonImageQcInfo | undefined,
   methodMetadata: MethodMetadata,
+  measurements: WellMeasurement[],
+  displayMeasurements: WellMeasurement[],
 ): XlsxRow[] {
   const rows: XlsxRow[] = [];
   const cmpRows = [...methodComparisonRows];
@@ -3076,6 +3977,7 @@ function buildReportOverviewRows(
 
   const metadataCounts = countPlateMapMetadataTypes(plateMap);
   const emptyQcPayload = computeEmptyWellQcStatus(storedCalibration?.emptyWellPayload);
+  const currentEmptyWellQc = buildEmptyWellPlateQcSummary(measurements, displayMeasurements, plateMap);
   const reliabilityPayload = buildReliabilityPayload(
     metadataCounts,
     fitRows,
@@ -3115,12 +4017,42 @@ function buildReportOverviewRows(
     rows.push({ Field: field, Value: value });
   };
 
-  addRow('Quantification', reliabilityPayload.quantification_status);
+  const hasValidSelectedQuantification = fitRows.some((row) => (
+    stringRowValue(row, 'Channel') === selectedName
+    && ['StdAdd', 'UnknownGroupFromCal', 'UnknownFromEpsilon'].includes(stringRowValue(row, 'FitType'))
+    && Number.isFinite(finiteNumber(row.C0, Number.NaN))
+  ));
+  const reliabilityScore = finiteNumber(reliabilityPayload.reliability_score, Number.NaN);
+  const effectiveConfidenceClass = hasValidSelectedQuantification && reliabilityPayload.confidence_class === 'NOT QUANTIFIABLE'
+    ? (Number.isFinite(reliabilityScore) && reliabilityScore >= 75
+      ? 'HIGH'
+      : Number.isFinite(reliabilityScore) && reliabilityScore >= 45
+        ? 'MEDIUM'
+        : 'LOW')
+    : reliabilityPayload.confidence_class;
+  const effectiveQuantificationStatus = hasValidSelectedQuantification
+    ? 'available'
+    : reliabilityPayload.quantification_status;
+  const effectiveReliabilityReason = hasValidSelectedQuantification && reliabilityPayload.confidence_class === 'NOT QUANTIFIABLE'
+    ? `Valid group-only quantitative estimate available. ${reliabilityPayload.reason}`
+    : reliabilityPayload.reason;
+
+  addRow('Quantification', effectiveQuantificationStatus);
   addRow('Reliability score', reliabilityPayload.reliability_score);
-  addRow('Confidence class', reliabilityPayload.confidence_class);
-  addRow('Reliability note', reliabilityPayload.reason);
-  addRow('Empty-well QC status', reliabilityPayload.empty_qc_status);
-  addRow('Empty drift score', reliabilityPayload.empty_drift_score);
+  addRow('Confidence class', effectiveConfidenceClass);
+  addRow('Reliability note', effectiveReliabilityReason);
+  addRow('Stored-calibration empty-well QC status', reliabilityPayload.empty_qc_status);
+  addRow('Stored-calibration empty drift score', reliabilityPayload.empty_drift_score);
+  addRow('Current-image empty-well QC status', currentEmptyWellQc.status);
+  addRow('Current-image empty wells', currentEmptyWellQc.nEmptyWells);
+  addRow('Current-image empty-well distinct rows', currentEmptyWellQc.distinctRows);
+  addRow('Current-image empty-well distinct columns', currentEmptyWellQc.distinctColumns);
+  addRow('Current-image empty-well row coverage fraction', currentEmptyWellQc.rowCoverageFraction ?? '');
+  addRow('Current-image empty-well column coverage fraction', currentEmptyWellQc.columnCoverageFraction ?? '');
+  addRow('Current-image empty-well spatial assessment', currentEmptyWellQc.spatialAssessment);
+  addRow('Current-image empty-well dominant channel', currentEmptyWellQc.dominantChannel ?? '');
+  addRow('Current-image empty-well QC note', currentEmptyWellQc.dominantIssue);
+  addRow('Current-image empty-well QC thresholds', currentEmptyWellQc.thresholds);
 
   addRow('Configured epsilon (M-1 cm-1)', reliabilityPayload.epsilon);
   addRow('Liquid volume per well (uL)', reliabilityPayload.liquid_volume_ul);
@@ -3153,7 +4085,7 @@ function buildReportOverviewRows(
     .filter((row) => stringRowValue(row, 'Channel') === selectedName)
     .forEach((row) => {
       const fitType = stringRowValue(row, 'FitType');
-      if (!['StdAdd', 'UnknownFromCal', 'UnknownFromEpsilon'].includes(fitType)) {
+      if (!['StdAdd', 'UnknownGroupFromCal', 'UnknownFromEpsilon'].includes(fitType)) {
         return;
       }
 
@@ -3163,8 +4095,10 @@ function buildReportOverviewRows(
       }
 
       const id = stringRowValue(row, 'ID');
+      const well = stringRowValue(row, 'Well');
       const df = formatPythonOverviewDf(row.DF);
-      addRow(`${fitType} ID=${id} DF=${df} C0 (${unitLabel})`, c0);
+      const location = well ? ` Well=${well}` : '';
+      addRow(`${fitType}${location} ID=${id} DF=${df} C0 (${unitLabel})`, c0);
 
       const c0sd = finiteNumber(row.C0_sd, Number.NaN);
       if (Number.isFinite(c0sd)) {
@@ -3264,44 +4198,43 @@ function appendOverviewReferenceRows(
     if (stringRowValue(row, 'Channel') !== selectedName) {
       return false;
     }
-    if (!['StdAdd', 'UnknownFromCal', 'UnknownFromEpsilon'].includes(stringRowValue(row, 'FitType'))) {
+    if (!['StdAdd', 'UnknownGroupFromCal', 'UnknownFromEpsilon'].includes(stringRowValue(row, 'FitType'))) {
       return false;
     }
     return Number.isFinite(finiteNumber(row.C0, Number.NaN));
   });
 
-  selectedRows.forEach((row) => {
-    expectedRefs.forEach((ref, index) => {
-      if (!referenceMatchesSample(ref, stringRowValue(row, 'ID'))) {
-        return;
-      }
+  expectedRefs.forEach((ref, index) => {
+    const label = ref.label?.trim() || ref.refId?.trim() || `Reference ${index + 1}`;
+    const value = typeof ref.value === 'number' ? ref.value : Number.NaN;
 
-      const label = ref.label?.trim() || ref.refId?.trim() || `Reference ${index + 1}`;
-      const value = typeof ref.value === 'number' ? ref.value : Number.NaN;
+    if (!Number.isFinite(value)) {
+      return;
+    }
 
-      if (!Number.isFinite(value)) {
-        return;
-      }
+    const refTag = ref.refId?.trim() || `Reference ${index + 1}`;
+    rows.push({ Field: `Reference ${refTag} label`, Value: label });
+    rows.push({ Field: `Reference ${refTag} value (${unitLabel})`, Value: value });
 
-      const c0 = finiteNumber(row.C0, Number.NaN);
-      if (!Number.isFinite(c0)) {
-        return;
-      }
+    if (typeof ref.sd === 'number' && Number.isFinite(ref.sd)) {
+      rows.push({ Field: `Reference ${refTag} SD (${unitLabel})`, Value: ref.sd });
+    }
 
-      rows.push({ Field: 'Reference label', Value: label });
-      rows.push({ Field: `Reference value (${unitLabel})`, Value: value });
+    selectedRows
+      .filter((row) => referenceMatchesSample(ref, stringRowValue(row, 'ID')))
+      .forEach((row) => {
+        const c0 = finiteNumber(row.C0, Number.NaN);
+        if (!Number.isFinite(c0)) {
+          return;
+        }
 
-      if (typeof ref.sd === 'number' && Number.isFinite(ref.sd)) {
-        rows.push({ Field: `Reference SD (${unitLabel})`, Value: ref.sd });
-      }
-
-      const fitTypeLabel = pythonOverviewFitTypeLabel(stringRowValue(row, 'FitType'), true);
-      const rowTag = `${fitTypeLabel} ID=${stringRowValue(row, 'ID')} DF=${formatPythonOverviewDf(row.DF)}`;
-      rows.push({ Field: `${rowTag} delta (${unitLabel})`, Value: c0 - value });
-      if (Math.abs(value) > 1e-15) {
-        rows.push({ Field: `${rowTag} recovery (%)`, Value: 100 * c0 / value });
-      }
-    });
+        const fitTypeLabel = pythonOverviewFitTypeLabel(stringRowValue(row, 'FitType'), true);
+        const rowTag = `${fitTypeLabel} ID=${stringRowValue(row, 'ID')} DF=${formatPythonOverviewDf(row.DF)}`;
+        rows.push({ Field: `${rowTag} delta vs ${refTag} (${unitLabel})`, Value: c0 - value });
+        if (Math.abs(value) > 1e-15) {
+          rows.push({ Field: `${rowTag} recovery vs ${refTag} (%)`, Value: 100 * c0 / value });
+        }
+      });
   });
 }
 
@@ -3502,17 +4435,54 @@ function uniqueHeaders(preferred: string[], rows: XlsxRow[]): string[] {
   return headers;
 }
 
-async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptions): Promise<Blob> {
+
+interface SequentialWorkbookSheetSpec {
+  title: string;
+  purpose: string;
+  rows: XlsxCellValue[][];
+  include?: boolean;
+}
+
+function createSequentialWorkbookSheets(
+  contentsPurpose: string,
+  specs: SequentialWorkbookSheetSpec[],
+): XlsxSheet[] {
+  const included = specs.filter((spec) => spec.include !== false);
+  const numbered = included.map((spec, index) => ({
+    name: `${String(index + 2).padStart(2, '0')}_${spec.title}`,
+    purpose: spec.purpose,
+    rows: spec.rows,
+  }));
   const contentsRows: XlsxRow[] = [
-    { Sheet: '01_CONTENTS', Purpose: 'Index of primary results workbook sheets.' },
-    { Sheet: '02_METADATA', Purpose: 'Image-level metadata and rule-based image QC used to audit the analysis.' },
-    { Sheet: '03_OVERVIEW', Purpose: 'Final quantitative summary, selected method, reliability and external reference checks when provided.' },
-    { Sheet: '04_RAW', Purpose: 'Well-level analytical values used by the fitting pipeline.' },
-    { Sheet: '05_REPLICATES_MEAN', Purpose: 'Replicate-group medians, robust SDs and group QC flags.' },
-    { Sheet: '06_FITTING', Purpose: 'Calibration, standard-addition and unknown/CRM fit results.' },
-    { Sheet: '07_METHOD_COMPARISON', Purpose: 'Method ranking using only common score factors; expected values are external checks only.' },
-    { Sheet: '08_LEGENDS', Purpose: 'Definitions for all fields reported in this workbook and primary RGB figure.' },
+    { Sheet: '01_CONTENTS', Purpose: contentsPurpose },
+    ...numbered.map((sheet) => ({ Sheet: sheet.name, Purpose: sheet.purpose })),
   ];
+
+  return [
+    { name: '01_CONTENTS', rows: tableRows(['Sheet', 'Purpose'], contentsRows) },
+    ...numbered.map(({ name, rows }) => ({ name, rows })),
+  ];
+}
+
+function deduplicateReportFittingRows(rows: XlsxRow[]): XlsxRow[] {
+  const seenCalibrationChannels = new Set<string>();
+  return rows.filter((row) => {
+    if (stringRowValue(row, 'FitType') !== 'Calibration') {
+      return true;
+    }
+    const channel = stringRowValue(row, 'Channel');
+    if (!channel) {
+      return true;
+    }
+    if (seenCalibrationChannels.has(channel)) {
+      return false;
+    }
+    seenCalibrationChannels.add(channel);
+    return true;
+  });
+}
+
+async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptions): Promise<Blob> {
   const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap, options.storedCalibration?.cielabReference);
   const rawRows = buildReportRawRows(options.measurements, options.displayMeasurements, options.plateMap, options.correctionApplications, options.storedCalibration?.cielabReference);
   const replicateRows = buildReportReplicateRows(options.measurements, options.displayMeasurements, options.plateMap, options.correctionApplications, options.storedCalibration?.cielabReference);
@@ -3526,12 +4496,14 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     options.rankings,
     options.lowSignalCorrections,
   );
-  const fitRows = [
-    ...rgbFitRows,
+  const fitRows = deduplicateReportFittingRows([
+    ...rgbFitRows.filter((row) => stringRowValue(row, 'FitType') !== 'UnknownFromCal'),
     ...storedCalibrationDiagnosticFitRows(options.storedCalibration),
     ...buildCielabFittingRows(cielabPoints, undefined, options.storedCalibration, pythonReportCielabChannelLabel),
-  ];
-  const methodComparisonRows = buildMethodComparisonRowsFromFitRows(fitRows, options.expectedRefs, true);
+    ...buildUnknownGroupFittingRows(options.unknownMethodGroupResults, options.calibrationFits, options.storedCalibration),
+  ]);
+  const hasStandardAddition = options.standardAdditionFits.length > 0;
+  const methodComparisonRows = options.methodComparisonRows;
   const overviewRows = buildReportOverviewRows(
     options.imageBase,
     options.unitLabel,
@@ -3544,6 +4516,8 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     options.storedCalibration,
     options.imageQcInfo,
     options.methodMetadata,
+    options.measurements,
+    options.displayMeasurements,
   );
   const methodComparisonPreferred = [
     'Selected',
@@ -3573,42 +4547,82 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     'Estimate_value',
     'Estimate_sd',
     'Estimate_source',
-  ];
+  ].filter((header) => hasStandardAddition || ![
+    'R2_std_mean',
+    'm_std_mean',
+    'SlopeAgreement',
+    'beta_mean',
+    'bias_index_mean',
+    'n_stdadd',
+  ].includes(header));
+  const unknownGroupDataRows = unknownGroupRows(options.unknownGroupSummaries);
+  const unknownCielabGroupDataRows = unknownCielabGroupRows(options.unknownCielabGroupSummaries);
 
-  return createXlsxWorkbookBlob([
-    { name: '01_CONTENTS', rows: tableRows(['Sheet', 'Purpose'], contentsRows) },
-    { name: '02_METADATA', rows: tableRows(['Field', 'Value', 'Notes'], buildReportMetadataRows(options)) },
-    { name: '03_OVERVIEW', rows: tableRows(['Field', 'Value'], overviewRows) },
-    {
-      name: '04_RAW',
-      rows: tableRows(
-        ['Row', 'Col', 'Well', 'ID', 'Type', 'Conc', 'DF', 'MeanW_Red', 'MeanW_Green', 'MeanW_Blue', 'MeanBG_Red', 'MeanBG_Green', 'MeanBG_Blue', 'SignalT_Red', 'SignalT_Green', 'SignalT_Blue', 'PAbs_Red', 'PAbs_Green', 'PAbs_Blue', 'L', 'a', 'b', 'DeltaL', 'Deltaa', 'Deltab', 'DeltaE_ab', 'DeltaE_ab_chroma', 'CIELAB_ref_source', 'ImageWarning'],
-        rawRows,
-      ),
-    },
-    {
-      name: '05_REPLICATES_MEAN',
-      rows: tableRows(
-        ['ID', 'DF', 'Type', 'Conc', 'PAbs_Red_median', 'PAbs_Red_sd', 'PAbs_Green_median', 'PAbs_Green_sd', 'PAbs_Blue_median', 'PAbs_Blue_sd', 'L_median', 'L_sd', 'a_median', 'a_sd', 'b_median', 'b_sd', 'DeltaL_median', 'DeltaL_sd', 'Deltaa_median', 'Deltaa_sd', 'Deltab_median', 'Deltab_sd', 'DeltaE_ab_median', 'DeltaE_ab_sd', 'DeltaE_ab_chroma_median', 'DeltaE_ab_chroma_sd', 'CIELAB_ref_source', 'NReplicates', 'QCFlagged', 'QCCritical'],
-        replicateRows,
-      ),
-    },
-    {
-      name: '06_FITTING',
-      rows: tableRows(
-        ['Channel', 'FitType', 'n_points', 'm', 'q', 'R2', 'RMSE', 'sigma_cal', 'sigma_source', 'SNR', 'LOD', 'LOQ', 'ID', 'DF', 'C0', 'C0_sd', 'beta_k', 'bias_index_k', 'S0_calibration', 'S0_applied', 'NClipPoints', 'ClipX', 'ClipDelta'],
-        fitRows,
-      ),
-    },
-    {
-      name: '07_METHOD_COMPARISON',
-      rows: tableRows(uniqueHeaders(methodComparisonPreferred, methodComparisonRows), methodComparisonRows),
-    },
-    {
-      name: '08_LEGENDS',
-      rows: tableRows(['Term', 'Meaning', 'Formula', 'Unit', 'Where used', 'Shown when', 'Notes'], buildReportLegendRows(options.unitLabel)),
-    },
-  ]);
+  return createXlsxWorkbookBlob(createSequentialWorkbookSheets(
+    'Index of primary results workbook sheets.',
+    [
+      {
+        title: 'METADATA',
+        purpose: 'Image-level metadata and rule-based image QC used to audit the analysis.',
+        rows: tableRows(['Field', 'Value', 'Notes'], buildReportMetadataRows(options)),
+      },
+      {
+        title: 'OVERVIEW',
+        purpose: 'Final quantitative summary, selected method, reliability and external reference checks when provided.',
+        rows: tableRows(['Field', 'Value'], overviewRows),
+      },
+      {
+        title: 'RAW',
+        purpose: 'Well-level analytical values used by the fitting pipeline.',
+        rows: tableRows(
+          ['Row', 'Col', 'Well', 'ID', 'Type', 'Conc', 'DF', 'MeanW_Red', 'MeanW_Green', 'MeanW_Blue', 'MeanBG_Red', 'MeanBG_Green', 'MeanBG_Blue', 'SignalT_Red', 'SignalT_Green', 'SignalT_Blue', 'PAbs_Red', 'PAbs_Green', 'PAbs_Blue', 'L', 'a', 'b', 'DeltaL', 'Deltaa', 'Deltab', 'DeltaE_ab', 'DeltaE_ab_chroma', 'CIELAB_ref_source', 'ImageWarning'],
+          rawRows,
+        ),
+        include: rawRows.length > 0,
+      },
+      {
+        title: 'REPLICATES_MEAN',
+        purpose: 'Replicate-group medians, robust SDs and group QC flags.',
+        rows: tableRows(
+          ['ID', 'DF', 'Type', 'Conc', 'PAbs_Red_median', 'PAbs_Red_sd', 'PAbs_Green_median', 'PAbs_Green_sd', 'PAbs_Blue_median', 'PAbs_Blue_sd', 'L_median', 'L_sd', 'a_median', 'a_sd', 'b_median', 'b_sd', 'DeltaL_median', 'DeltaL_sd', 'Deltaa_median', 'Deltaa_sd', 'Deltab_median', 'Deltab_sd', 'DeltaE_ab_median', 'DeltaE_ab_sd', 'DeltaE_ab_chroma_median', 'DeltaE_ab_chroma_sd', 'CIELAB_ref_source', 'NReplicates', 'QCFlagged', 'QCCritical'],
+          replicateRows,
+        ),
+        include: replicateRows.length > 0,
+      },
+      {
+        title: 'FITTING',
+        purpose: 'Calibration, standard-addition and unknown/CRM fit results.',
+        rows: tableRows(
+          ['Channel', 'FitType', 'n_points', 'm', 'q', 'R2', 'RMSE', 'sigma_cal', 'sigma_source', 'SNR', 'LOD', 'LOQ', 'ID', 'DF', 'C0', 'C0_sd', 'ReferenceStatus', 'ReferenceID', 'ReferenceLabel', 'ReferenceValue', 'ReferenceSD', 'Delta', 'Delta_sd', 'Recovery_pct', 'Recovery_sd_pct', 'N_wells', 'Wells', 'Display_status', 'Display_reason', 'beta_k', 'bias_index_k', 'S0_calibration', 'S0_applied', 'NClipPoints', 'ClipX', 'ClipDelta'],
+          fitRows,
+        ),
+        include: fitRows.length > 0,
+      },
+      {
+        title: 'METHOD_COMPARISON',
+        purpose: 'Method ranking using only common score factors; expected values are external checks only.',
+        rows: tableRows(uniqueHeaders(methodComparisonPreferred, methodComparisonRows), methodComparisonRows),
+        include: methodComparisonRows.length > 0,
+      },
+      {
+        title: 'LEGENDS',
+        purpose: 'Definitions for all fields reported in this workbook and primary RGB figure.',
+        rows: tableRows(['Term', 'Meaning', 'Formula', 'Unit', 'Where used', 'Shown when', 'Notes'], buildReportLegendRows(options.unitLabel)),
+      },
+      {
+        title: 'UNKNOWN_GROUPS',
+        purpose: 'Primary group-only RGB unknown results: mean, sample SD, n, reference, delta and recovery.',
+        rows: tableRows(['GroupKey', 'ID', 'DF', 'Channel', 'Wells', 'N_wells', 'PAbs_raw_mean', 'PAbs_raw_sd', 'PAbs_corrected_mean', 'PAbs_corrected_sd', 'C_diluted_mean', 'C_diluted_sd', 'C0_mean', 'C0_sd', 'ReferenceStatus', 'ReferenceID', 'ReferenceLabel', 'ReferenceValue', 'ReferenceSD', 'Delta_mean', 'Delta_sd', 'Recovery_mean_pct', 'Recovery_sd_pct', 'Warnings'], unknownGroupDataRows),
+        include: unknownGroupDataRows.length > 0,
+      },
+      {
+        title: 'UNKNOWN_CIELAB_GROUPS',
+        purpose: 'Group-only CIELAB and DeltaE descriptor means, sample SD and n.',
+        rows: tableRows(['GroupKey', 'ID', 'DF', 'Wells', 'N_wells', 'L_mean', 'L_sd', 'a_mean', 'a_sd', 'b_mean', 'b_sd', 'DeltaL_mean', 'DeltaL_sd', 'Deltaa_mean', 'Deltaa_sd', 'Deltab_mean', 'Deltab_sd', 'DeltaE_ab_mean', 'DeltaE_ab_sd', 'DeltaE_ab_chroma_mean', 'DeltaE_ab_chroma_sd'], unknownCielabGroupDataRows),
+        include: unknownCielabGroupDataRows.length > 0,
+      },
+    ],
+  ));
 }
 
 interface PythonDiagnosticsWorkbookOptions extends PythonReportWorkbookOptions {
@@ -3682,12 +4696,13 @@ function buildDiagnosticsContentsRows(): XlsxRow[] {
     { Sheet: '06_WELL_BOTTOM', Purpose: 'Detailed well-bottom and mouth geometry measurements.' },
     { Sheet: '07_PLATE_GEOMETRY', Purpose: 'Nominal plate geometry parameters used by the analyzer.' },
     { Sheet: '08_EMPTY_WELLS', Purpose: 'Empty-well diagnostic values when empty wells are present.' },
+    { Sheet: 'EMPTY_WELL_QC', Purpose: 'Current-image empty-well illumination/background screening summary by RGB channel; the numeric prefix is assigned dynamically.' },
     { Sheet: '09_SPATIAL_DIAGNOSTICS', Purpose: 'Spatial trends across row/column positions.' },
     { Sheet: '10_METHOD_COMPARISON', Purpose: 'Cross-method diagnostic comparison using common score factors.' },
     { Sheet: '11_CIELAB_FITTING', Purpose: 'CIELAB/DeltaE diagnostic fit rows.' },
     { Sheet: '12_LEGENDS', Purpose: 'Definitions for diagnostic workbook fields and figures.' },
-    { Sheet: '13_BG_MODEL_INPUTS', Purpose: 'Web physical-BG polynomial fit inputs actually used after final sampling/filtering.' },
-    { Sheet: '14_BG_MODEL_COEFFICIENTS', Purpose: 'Web physical-BG polynomial coefficients and robust residual summaries.' },
+    { Sheet: 'BG_MODEL_INPUTS', Purpose: 'Web physical-BG polynomial fit inputs actually used after final sampling/filtering; the numeric prefix is assigned dynamically.' },
+    { Sheet: 'BG_MODEL_COEFFICIENTS', Purpose: 'Web physical-BG polynomial coefficients and robust residual summaries; the numeric prefix is assigned dynamically.' },
   ];
 }
 
@@ -4269,7 +5284,6 @@ const CIELAB_DIAGNOSTIC_DESCRIPTOR_SEQUENCE = [
   'Deltab',
   'DeltaE_ab',
   'DeltaE_ab_chroma',
-  'DeltaL',
 ] as const;
 
 const CIELAB_DIAGNOSTIC_DESCRIPTORS = CIELAB_DIAGNOSTIC_DESCRIPTOR_SEQUENCE.map((channel) => {
@@ -4646,11 +5660,11 @@ function completeStoredCalibrationBundle(
 
 function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
   return [
-    { Term: "area", Meaning: "Accepted background-mask area or fit-input sample area, depending on sheet", Formula: "number of accepted pixels represented by the BG cell record", Unit: "pixels", 'Where used': "02_BG_SAMPLES, 13_BG_MODEL_INPUTS", Notes: "In DIAGNOSTICS/02_BG_SAMPLES this is the background-cell diagnostic area; in DIAGNOSTICS/13_BG_MODEL_INPUTS it is the area represented by the actual polynomial fit input sample." },
+    { Term: "area", Meaning: "Accepted background-mask area or fit-input sample area, depending on sheet", Formula: "number of accepted pixels represented by the BG cell record", Unit: "pixels", 'Where used': "BG_SAMPLES, BG_MODEL_INPUTS", Notes: "In the BG_SAMPLES sheet this is the background-cell diagnostic area; in BG_MODEL_INPUTS it is the area represented by the actual polynomial fit input sample." },
     { Term: "Associated_Wells", Meaning: "Four wells surrounding an inter-well background cell", Formula: "well(r,c)-well(r,c+1)-well(r+1,c)-well(r+1,c+1)", Unit: "well labels", 'Where used': "02_BG_SAMPLES", Notes: "Clarifies that BG samples are inter-well regions rather than wells." },
     { Term: "B_*/G_*/R_*", Meaning: "Robust statistics of raw well-channel intensities", Formula: "computed over retained well ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Browser image data are handled and exported in standard RGB order." },
     { Term: "B_bg/G_bg/R_bg", Meaning: "Predicted local raw background at a well", Formula: "2D background surface evaluated at well center", Unit: "raw image intensity", 'Where used': "03_BG_WELL_FIT", Notes: "Browser image data are handled and exported in standard RGB order." },
-    { Term: "B_med/G_med/R_med", Meaning: "Median raw RGB-channel value for a background-cell record", Formula: "median over accepted background pixels represented by the record", Unit: "raw image intensity", 'Where used': "02_BG_SAMPLES, 13_BG_MODEL_INPUTS", Notes: "Browser image data are handled and exported in standard RGB order. DIAGNOSTICS/13_BG_MODEL_INPUTS contains the exact web polynomial fit inputs." },
+    { Term: "B_med/G_med/R_med", Meaning: "Median raw RGB-channel value for a background-cell record", Formula: "median over accepted background pixels represented by the record", Unit: "raw image intensity", 'Where used': "BG_SAMPLES, BG_MODEL_INPUTS", Notes: "Browser image data are handled and exported in standard RGB order. The BG_MODEL_INPUTS sheet contains the exact web polynomial fit inputs." },
     { Term: "coef_0..coef_5", Meaning: "Polynomial coefficients of the web physical background model", Formula: "coefficients for the stated Basis_Order after centering/scaling by x0, y0, sx and sy", Unit: "raw image intensity", 'Where used': "14_BG_MODEL_COEFFICIENTS", Notes: "Used for auditability of the web physical BG model." },
     { Term: "x0/y0/sx/sy", Meaning: "Coordinate centering and scaling parameters for the web BG polynomial model", Formula: "normalized coordinates are derived from image x/y using these center and scale values", Unit: "pixels", 'Where used': "14_BG_MODEL_COEFFICIENTS", Notes: "Needed to interpret coef_0..coef_5." },
     { Term: "samples_total/samples_retained/samples_rejected", Meaning: "Input-sample counts for the robust web BG polynomial fit", Formula: "total fit-input samples, retained samples and rejected samples after robust filtering", Unit: "count", 'Where used': "14_BG_MODEL_COEFFICIENTS", Notes: "Supports audit of BG model robustness." },
@@ -4744,6 +5758,7 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
 }
 
 async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWorkbookOptions): Promise<Blob> {
+  const currentEmptyWellQc = buildEmptyWellPlateQcSummary(options.measurements, options.displayMeasurements, options.plateMap);
   const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap, options.storedCalibration?.cielabReference);
   const rgbFitRows = buildReportFitRows(
     options.measurements,
@@ -4755,11 +5770,8 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
     options.rankings,
     options.lowSignalCorrections,
   );
-  const methodComparisonRows = buildMethodComparisonRowsFromFitRows([
-    ...rgbFitRows,
-    ...storedCalibrationDiagnosticFitRows(options.storedCalibration),
-    ...buildCielabFittingRows(cielabPoints, undefined, options.storedCalibration),
-  ], options.expectedRefs, false);
+  const hasStandardAddition = options.standardAdditionFits.length > 0;
+  const methodComparisonRows = options.methodComparisonRows;
   const methodComparisonPreferred = [
     'Method',
     'Family',
@@ -4786,100 +5798,144 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
     'n_stdadd',
     'n_unknown',
     'C0_mean',
-  ];
+  ].filter((header) => hasStandardAddition || ![
+    'R2_std_mean',
+    'm_std_mean',
+    'SlopeAgreement',
+    'beta_mean',
+    'bias_index_mean',
+    'n_stdadd',
+  ].includes(header));
 
-  return createXlsxWorkbookBlob([
-    { name: '01_CONTENTS', rows: tableRows(['Sheet', 'Purpose'], buildDiagnosticsContentsRows()) },
-    {
-      name: '02_BG_SAMPLES',
-      rows: tableRows(
-        [
-          'BG_Cell_Row',
-          'BG_Cell_Col',
-          'Associated_Wells',
-          'x',
-          'y',
-          'area',
-          'Red_median_raw',
-          'Green_median_raw',
-          'Blue_median_raw',
-        ],
-        buildDiagnosticsBackgroundSampleRows(options),
-      ),
-    },
-    {
-      name: '03_BG_WELL_FIT',
-      rows: tableRows(
-        ['Row', 'Col', 'Well', 'x', 'y', 'BG_Red_raw', 'BG_Green_raw', 'BG_Blue_raw'],
-        buildDiagnosticsBackgroundWellFitRows(options),
-      ),
-    },
-    {
-      name: '04_WELL_ROBUST_STATS',
-      rows: tableRows(
-        ['Row', 'Col', 'Well', 'n_roi', 'n_core', 'n_used', 'used_fraction', 'highlight_fraction_roi', 'highlight_fraction_core', 'Gray_mean', 'Gray_median', 'Gray_sd', 'Gray_p10', 'Gray_p25', 'Gray_p50', 'Gray_p75', 'Gray_p90', 'Gray_iqr', 'Purple_mean', 'Purple_median', 'Purple_sd', 'Purple_p10', 'Purple_p25', 'Purple_p50', 'Purple_p75', 'Purple_p90', 'Purple_iqr', 'L_mean', 'L_median', 'L_sd', 'L_p10', 'L_p25', 'L_p50', 'L_p75', 'L_p90', 'L_iqr', 'a_mean', 'a_median', 'a_sd', 'a_p10', 'a_p25', 'a_p50', 'a_p75', 'a_p90', 'a_iqr', 'b_mean', 'b_median', 'b_sd', 'b_p10', 'b_p25', 'b_p50', 'b_p75', 'b_p90', 'b_iqr', 'BrightExcludedFraction', 'BrightExcludedMeanGray', 'BrightExcessMeanGray', 'HighlightIndex', 'is_image_quality_warning', 'warning_reason', 'Red_mean', 'Green_mean', 'Blue_mean', 'Red_median', 'Green_median', 'Blue_median', 'Red_sd', 'Green_sd', 'Blue_sd', 'Red_p10', 'Green_p10', 'Blue_p10', 'Red_p25', 'Green_p25', 'Blue_p25', 'Red_p50', 'Green_p50', 'Blue_p50', 'Red_p75', 'Green_p75', 'Blue_p75', 'Red_p90', 'Green_p90', 'Blue_p90', 'Red_iqr', 'Green_iqr', 'Blue_iqr'],
-        buildDiagnosticsWellRobustStatsRows(options, cielabPoints),
-      ),
-    },
-    {
-      name: '05_GEOMETRY_QC',
-      rows: tableRows(
-        ['Row', 'Col', 'Well', 'floor_source', 'local_pitch_px', 'mouth_r', 'floor_r', 'shift_px', 'shift_frac_of_mouth_r', 'floor_to_mouth_r_ratio', 'floor_to_mouth_area_ratio', 'D_warning', 'D_critical'],
-        buildDiagnosticsGeometryQcRows(options),
-      ),
-    },
-    {
-      name: '06_WELL_BOTTOM',
-      rows: tableRows(
-        ['Row', 'Col', 'Well', 'cx', 'cy', 'local_pitch_px', 'px_per_mm', 'cyl_r_bg', 'mouth_r_geom', 'floor_r_geom', 'mouth_cx', 'mouth_cy', 'mouth_r', 'mouth_score', 'floor_cx', 'floor_cy', 'floor_r', 'floor_score', 'shift_px'],
-        buildDiagnosticsWellBottomRows(options),
-      ),
-    },
-    { name: '07_PLATE_GEOMETRY', rows: tableRows(['key', 'value'], buildDiagnosticsPlateGeometryRows(options)) },
-    {
-      name: '08_EMPTY_WELLS',
-      rows: tableRows(
-        ['Row', 'Col', 'Well', 'MeanW_Red', 'MeanBG_Red', 'PAbs_Red', 'MeanW_Green', 'MeanBG_Green', 'PAbs_Green', 'MeanW_Blue', 'MeanBG_Blue', 'PAbs_Blue', 'L', 'a', 'b', 'UsedFraction', 'BrightExcludedFraction', 'HighlightIndex'],
-        buildDiagnosticsEmptyWellRows(options, cielabPoints),
-      ),
-    },
-    {
-      name: '09_SPATIAL_DIAGNOSTICS',
-      rows: tableRows(
-        ['Dataset', 'Status', 'Applicability', 'Reason', 'n', 'intercept', 'slope_col', 'slope_row', 'R2', 'corr_col', 'corr_row'],
-        buildDiagnosticsSpatialRows(options),
-      ),
-    },
-    {
-      name: '10_METHOD_COMPARISON',
-      rows: tableRows(uniqueHeaders(methodComparisonPreferred, methodComparisonRows), methodComparisonRows),
-    },
-    {
-      name: '11_CIELAB_FITTING',
-      rows: tableRows(
-        ['Channel', 'FitType', 'ID', 'DF', 'n_points', 'm', 'q', 'R2', 'RMSE', 'LOD', 'LOQ', 'C0', 'C0_sd', 'sigma_cal', 'sigma_source', 'SNR', 'beta_k', 'bias_index_k'],
-        buildCielabFittingRows(cielabPoints, CIELAB_DIAGNOSTIC_DESCRIPTORS, options.storedCalibration),
-      ),
-    },
-    {
-      name: '12_LEGENDS',
-      rows: tableRows(['Term', 'Meaning', 'Formula', 'Unit', 'Where used', 'Notes'], buildDiagnosticsLegendRows(options.unitLabel)),
-    },
-    {
-      name: '13_BG_MODEL_INPUTS',
-      rows: tableRows(
-        ['BG_Cell_Row', 'BG_Cell_Col', 'Associated_Wells', 'x', 'y', 'area', 'Red_median_raw', 'Green_median_raw', 'Blue_median_raw'],
-        buildDiagnosticsBgModelInputRows(options),
-      ),
-    },
-    {
-      name: '14_BG_MODEL_COEFFICIENTS',
-      rows: tableRows(
-        ['Channel', 'Basis_Order', 'x0', 'y0', 'sx', 'sy', 'coef_0', 'coef_1', 'coef_2', 'coef_3', 'coef_4', 'coef_5', 'samples_total', 'samples_retained', 'samples_rejected', 'residual_median', 'residual_mad', 'residual_sigma', 'residual_max_abs'],
-        buildDiagnosticsBgModelCoefficientRows(options),
-      ),
-    },
-  ]);
+  const backgroundSampleRows = buildDiagnosticsBackgroundSampleRows(options);
+  const backgroundWellFitRows = buildDiagnosticsBackgroundWellFitRows(options);
+  const wellRobustStatsRows = buildDiagnosticsWellRobustStatsRows(options, cielabPoints);
+  const geometryQcRows = buildDiagnosticsGeometryQcRows(options);
+  const wellBottomRows = buildDiagnosticsWellBottomRows(options);
+  const plateGeometryRows = buildDiagnosticsPlateGeometryRows(options);
+  const emptyWellRows = buildDiagnosticsEmptyWellRows(options, cielabPoints);
+  const emptyWellQcRows = buildEmptyWellPlateQcRows(currentEmptyWellQc);
+  const spatialRows = buildDiagnosticsSpatialRows(options);
+  const cielabFittingRows = buildCielabFittingRows(cielabPoints, CIELAB_DIAGNOSTIC_DESCRIPTORS, options.storedCalibration);
+  const bgModelInputRows = buildDiagnosticsBgModelInputRows(options);
+  const bgModelCoefficientRows = buildDiagnosticsBgModelCoefficientRows(options);
+  const unknownIndividualDataRows = unknownIndividualRows(options.unknownResultsWithReference);
+  const unknownGroupDataRows = unknownGroupRows(options.unknownGroupSummaries);
+  const unknownCielabIndividualDataRows = unknownCielabIndividualRows(options.unknownCielabResults);
+  const unknownCielabGroupDataRows = unknownCielabGroupRows(options.unknownCielabGroupSummaries);
+
+  return createXlsxWorkbookBlob(createSequentialWorkbookSheets(
+    'Index of diagnostic sheets included for this run.',
+    [
+      {
+        title: 'BG_SAMPLES',
+        purpose: 'Accepted inter-well background-cell diagnostics.',
+        rows: tableRows(['BG_Cell_Row', 'BG_Cell_Col', 'Associated_Wells', 'x', 'y', 'area', 'Red_median_raw', 'Green_median_raw', 'Blue_median_raw'], backgroundSampleRows),
+        include: backgroundSampleRows.length > 0,
+      },
+      {
+        title: 'BG_WELL_FIT',
+        purpose: 'Predicted local background at each well.',
+        rows: tableRows(['Row', 'Col', 'Well', 'x', 'y', 'BG_Red_raw', 'BG_Green_raw', 'BG_Blue_raw'], backgroundWellFitRows),
+        include: backgroundWellFitRows.length > 0,
+      },
+      {
+        title: 'WELL_ROBUST_STATS',
+        purpose: 'Well-level robust pixel statistics and optical QC.',
+        rows: tableRows(['Row', 'Col', 'Well', 'n_roi', 'n_core', 'n_used', 'used_fraction', 'highlight_fraction_roi', 'highlight_fraction_core', 'Gray_mean', 'Gray_median', 'Gray_sd', 'Gray_p10', 'Gray_p25', 'Gray_p50', 'Gray_p75', 'Gray_p90', 'Gray_iqr', 'Purple_mean', 'Purple_median', 'Purple_sd', 'Purple_p10', 'Purple_p25', 'Purple_p50', 'Purple_p75', 'Purple_p90', 'Purple_iqr', 'L_mean', 'L_median', 'L_sd', 'L_p10', 'L_p25', 'L_p50', 'L_p75', 'L_p90', 'L_iqr', 'a_mean', 'a_median', 'a_sd', 'a_p10', 'a_p25', 'a_p50', 'a_p75', 'a_p90', 'a_iqr', 'b_mean', 'b_median', 'b_sd', 'b_p10', 'b_p25', 'b_p50', 'b_p75', 'b_p90', 'b_iqr', 'BrightExcludedFraction', 'BrightExcludedMeanGray', 'BrightExcessMeanGray', 'HighlightIndex', 'is_image_quality_warning', 'warning_reason', 'Red_mean', 'Green_mean', 'Blue_mean', 'Red_median', 'Green_median', 'Blue_median', 'Red_sd', 'Green_sd', 'Blue_sd', 'Red_p10', 'Green_p10', 'Blue_p10', 'Red_p25', 'Green_p25', 'Blue_p25', 'Red_p50', 'Green_p50', 'Blue_p50', 'Red_p75', 'Green_p75', 'Blue_p75', 'Red_p90', 'Green_p90', 'Blue_p90', 'Red_iqr', 'Green_iqr', 'Blue_iqr'], wellRobustStatsRows),
+        include: wellRobustStatsRows.length > 0,
+      },
+      {
+        title: 'GEOMETRY_QC',
+        purpose: 'Floor/mouth geometry quality-control descriptors.',
+        rows: tableRows(['Row', 'Col', 'Well', 'floor_source', 'local_pitch_px', 'mouth_r', 'floor_r', 'shift_px', 'shift_frac_of_mouth_r', 'floor_to_mouth_r_ratio', 'floor_to_mouth_area_ratio', 'D_warning', 'D_critical'], geometryQcRows),
+        include: geometryQcRows.length > 0,
+      },
+      {
+        title: 'WELL_BOTTOM',
+        purpose: 'Detailed well-bottom and mouth geometry measurements.',
+        rows: tableRows(['Row', 'Col', 'Well', 'cx', 'cy', 'local_pitch_px', 'px_per_mm', 'cyl_r_bg', 'mouth_r_geom', 'floor_r_geom', 'mouth_cx', 'mouth_cy', 'mouth_r', 'mouth_score', 'floor_cx', 'floor_cy', 'floor_r', 'floor_score', 'shift_px'], wellBottomRows),
+        include: wellBottomRows.length > 0,
+      },
+      {
+        title: 'PLATE_GEOMETRY',
+        purpose: 'Nominal plate geometry parameters used by the analyzer.',
+        rows: tableRows(['key', 'value'], plateGeometryRows),
+        include: plateGeometryRows.length > 0,
+      },
+      {
+        title: 'EMPTY_WELLS',
+        purpose: 'Empty-well diagnostic values when empty wells are present.',
+        rows: tableRows(['Row', 'Col', 'Well', 'MeanW_Red', 'MeanBG_Red', 'PAbs_Red', 'MeanW_Green', 'MeanBG_Green', 'PAbs_Green', 'MeanW_Blue', 'MeanBG_Blue', 'PAbs_Blue', 'L', 'a', 'b', 'UsedFraction', 'BrightExcludedFraction', 'HighlightIndex'], emptyWellRows),
+        include: emptyWellRows.length > 0,
+      },
+      {
+        title: 'EMPTY_WELL_QC',
+        purpose: 'Current-image empty-well illumination/background screening summary by RGB channel.',
+        rows: tableRows(['Scope', 'Status', 'N_empty_wells', 'Observed_channel', 'Median_PAbs', 'Sample_SD_PAbs', 'Robust_SD_PAbs', 'P10_PAbs', 'P90_PAbs', 'P90_minus_P10_PAbs', 'Corr_row', 'Corr_col', 'Reason', 'Thresholds'], emptyWellQcRows),
+        include: emptyWellQcRows.length > 0,
+      },
+      {
+        title: 'SPATIAL_DIAGNOSTICS',
+        purpose: 'Spatial trends across row/column positions.',
+        rows: tableRows(['Dataset', 'Status', 'Applicability', 'Reason', 'n', 'intercept', 'slope_col', 'slope_row', 'R2', 'corr_col', 'corr_row'], spatialRows),
+        include: spatialRows.length > 0,
+      },
+      {
+        title: 'METHOD_COMPARISON',
+        purpose: 'Cross-method diagnostic comparison using common score factors.',
+        rows: tableRows(uniqueHeaders(methodComparisonPreferred, methodComparisonRows), methodComparisonRows),
+        include: methodComparisonRows.length > 0,
+      },
+      {
+        title: 'CIELAB_FITTING',
+        purpose: 'CIELAB/DeltaE diagnostic fit rows.',
+        rows: tableRows(['Channel', 'FitType', 'ID', 'DF', 'n_points', 'm', 'q', 'R2', 'RMSE', 'LOD', 'LOQ', 'C0', 'C0_sd', 'sigma_cal', 'sigma_source', 'SNR', 'beta_k', 'bias_index_k'], cielabFittingRows),
+        include: cielabFittingRows.length > 0,
+      },
+      {
+        title: 'LEGENDS',
+        purpose: 'Definitions for diagnostic workbook fields and figures.',
+        rows: tableRows(['Term', 'Meaning', 'Formula', 'Unit', 'Where used', 'Notes'], buildDiagnosticsLegendRows(options.unitLabel)),
+      },
+      {
+        title: 'BG_MODEL_INPUTS',
+        purpose: 'Web physical-BG polynomial fit inputs actually used after final sampling/filtering.',
+        rows: tableRows(['BG_Cell_Row', 'BG_Cell_Col', 'Associated_Wells', 'x', 'y', 'area', 'Red_median_raw', 'Green_median_raw', 'Blue_median_raw'], bgModelInputRows),
+        include: bgModelInputRows.length > 0,
+      },
+      {
+        title: 'BG_MODEL_COEFFICIENTS',
+        purpose: 'Web physical-BG polynomial coefficients and robust residual summaries.',
+        rows: tableRows(['Channel', 'Basis_Order', 'x0', 'y0', 'sx', 'sy', 'coef_0', 'coef_1', 'coef_2', 'coef_3', 'coef_4', 'coef_5', 'samples_total', 'samples_retained', 'samples_rejected', 'residual_median', 'residual_mad', 'residual_sigma', 'residual_max_abs'], bgModelCoefficientRows),
+        include: bgModelCoefficientRows.length > 0,
+      },
+      {
+        title: 'UNKNOWN_INDIVIDUAL',
+        purpose: 'Well-level RGB unknown results retained for diagnostic traceability.',
+        rows: tableRows(['Well', 'Row', 'Col', 'ID', 'DF', 'Channel', 'PAbs_raw', 'PAbs_corrected', 'C_diluted', 'C0', 'ReferenceStatus', 'ReferenceID', 'ReferenceLabel', 'ReferenceValue', 'ReferenceSD', 'Delta', 'Recovery_pct', 'Warnings'], unknownIndividualDataRows),
+        include: unknownIndividualDataRows.length > 0,
+      },
+      {
+        title: 'UNKNOWN_GROUPS',
+        purpose: 'Group-only RGB unknown results used by primary summaries.',
+        rows: tableRows(['GroupKey', 'ID', 'DF', 'Channel', 'Wells', 'N_wells', 'PAbs_raw_mean', 'PAbs_raw_sd', 'PAbs_corrected_mean', 'PAbs_corrected_sd', 'C_diluted_mean', 'C_diluted_sd', 'C0_mean', 'C0_sd', 'ReferenceStatus', 'ReferenceID', 'ReferenceLabel', 'ReferenceValue', 'ReferenceSD', 'Delta_mean', 'Delta_sd', 'Recovery_mean_pct', 'Recovery_sd_pct', 'Warnings'], unknownGroupDataRows),
+        include: unknownGroupDataRows.length > 0,
+      },
+      {
+        title: 'UNKNOWN_CIELAB',
+        purpose: 'Well-level CIELAB unknown descriptors retained for diagnostic traceability.',
+        rows: tableRows(['Well', 'Row', 'Col', 'ID', 'DF', 'L', 'a', 'b', 'DeltaL', 'Deltaa', 'Deltab', 'DeltaE_ab', 'DeltaE_ab_chroma'], unknownCielabIndividualDataRows),
+        include: unknownCielabIndividualDataRows.length > 0,
+      },
+      {
+        title: 'UNKNOWN_CIELAB_GROUPS',
+        purpose: 'Group-only CIELAB and DeltaE unknown descriptor summaries.',
+        rows: tableRows(['GroupKey', 'ID', 'DF', 'Wells', 'N_wells', 'L_mean', 'L_sd', 'a_mean', 'a_sd', 'b_mean', 'b_sd', 'DeltaL_mean', 'DeltaL_sd', 'Deltaa_mean', 'Deltaa_sd', 'Deltab_mean', 'Deltab_sd', 'DeltaE_ab_mean', 'DeltaE_ab_sd', 'DeltaE_ab_chroma_mean', 'DeltaE_ab_chroma_sd'], unknownCielabGroupDataRows),
+        include: unknownCielabGroupDataRows.length > 0,
+      },
+    ],
+  ));
 }
 
 function pointColorForRole(role: string): string {
@@ -5060,6 +6116,9 @@ function buildCielabCompositeScientificLines({
   comparisonRows,
   selectedDescriptor,
   floorDQualitySummary,
+  unknownMethodGroupResults,
+  cielabPoints,
+  selectedChannel,
 }: {
   unitLabel: string;
   measurements: WellMeasurement[];
@@ -5069,6 +6128,9 @@ function buildCielabCompositeScientificLines({
   comparisonRows: XlsxRow[];
   selectedDescriptor: string;
   floorDQualitySummary?: string;
+  unknownMethodGroupResults: UnknownMethodGroupResult[];
+  cielabPoints: CielabDiagnosticPoint[];
+  selectedChannel: FitChannel;
 }): Array<{ text: string; emphasize?: boolean }> {
   const lines: Array<{ text: string; emphasize?: boolean }> = [];
   const comparisonByMethod = new Map(comparisonRows.map((row) => [String(row.Method ?? ''), row]));
@@ -5087,13 +6149,15 @@ function buildCielabCompositeScientificLines({
   const calRows = fitRows.filter((row) => row.FitType === 'Calibration');
   const hasStd = stdRows.length > 0;
   const hasCal = calRows.length > 0;
-  const modeLabel = hasCal && hasStd
-    ? 'calibration + standard addition'
-    : hasCal
-      ? 'calibration only'
-      : hasStd
-        ? 'standard addition only'
-        : 'no valid analytical fit available';
+  const modeLabel = unknownMethodGroupResults.length > 0 && hasCal
+    ? 'external calibration + unknown'
+    : hasCal && hasStd
+      ? 'calibration + standard addition'
+      : hasCal
+        ? 'calibration only'
+        : hasStd
+          ? 'standard addition only'
+          : 'no valid analytical fit available';
   const flagged = measurements.filter((measurement) => measurement.warnings.length > 0 || Boolean(measurement.roiStatisticsWarning || measurement.geometryAlignmentWarning)).length;
   const critical = measurements.filter((measurement) => (
     [...measurement.warnings, measurement.roiStatisticsWarning ?? '', measurement.geometryAlignmentWarning ?? '']
@@ -5209,6 +6273,55 @@ function buildCielabCompositeScientificLines({
     pushTable(formatFigureRgbTable(['Channel', 'Slope', 'Intercept', 'R2'], stdFitRows));
   }
 
+
+  if (hasCal && groups.size === 0) {
+    pushText('');
+    pushText('CALIBRATION', true);
+    const calibrationRows = CIELAB_COMPOSITE_CHANNELS.map((channel) => {
+      const calRow = calRows.find((row) => String(row.Channel) === channel);
+      const methodRow = comparisonByMethod.get(channel);
+      return [
+        cielabCompositeDisplayName(channel),
+        formatFigureFitCoefficient(numericRowValue(calRow, 'm')),
+        formatFigureFitCoefficient(numericRowValue(calRow, 'q')),
+        formatFigureR2(numericRowValue(calRow, 'R2')),
+        formatFigureLimitNumber(numericRowValue(methodRow, 'LOD')),
+        formatFigureLimitNumber(numericRowValue(methodRow, 'LOQ')),
+      ];
+    });
+    pushTable(formatFigureRgbTable(
+      ['Method', 'Slope', 'Intercept', 'R2', `LOD (${unitLabel})`, `LOQ (${unitLabel})`],
+      calibrationRows,
+    ));
+  }
+
+  if (unknownMethodGroupResults.length > 0) {
+    pushText('');
+    pushText('UNKNOWN GROUP QUANTITATIVE RESULTS', true);
+    const groupKeys = [...new Set(unknownMethodGroupResults.map((group) => unknownGroupKey(group.sampleId, group.dilutionFactor)))];
+    groupKeys.forEach((key) => {
+      const groups = unknownMethodGroupResults.filter((group) => unknownGroupKey(group.sampleId, group.dilutionFactor) === key);
+      const first = groups[0];
+      const refText = first.referenceValue !== null
+        ? `${first.referenceLabel || first.referenceId || 'Reference'}=${formatFigureReferenceNumber(first.referenceValue)}${first.referenceSd !== null ? ` +/- ${formatFigureReferenceNumber(first.referenceSd)}` : ''} ${unitLabel}`
+        : 'Reference=NA';
+      pushText(`ID=${first.sampleId} | DF=${formatFigureDilutionFactor(first.dilutionFactor)} | n=${first.nWells} | ${refText}`, true);
+      const rows = CIELAB_COMPOSITE_CHANNELS.map((channel) => {
+        const group = groups.find((item) => item.method === unknownCielabMethod(channel));
+        const c0 = group?.concentrationInOriginalSampleMean ?? Number.NaN;
+        const c0Sd = group?.concentrationInOriginalSampleSd ?? Number.NaN;
+        return [
+          cielabCompositeDisplayName(channel),
+          Number.isFinite(c0) ? `${formatFigureConcentrationNumber(c0, group?.referenceValue ?? Number.NaN)}${group && group.nWells >= 2 && Number.isFinite(c0Sd) ? ` +/- ${formatFigureConcentrationNumber(c0Sd, group.referenceValue ?? Number.NaN)}` : ''}` : 'NA',
+          formatFigureDeltaNumber(group?.deltaMean ?? Number.NaN, group?.referenceValue ?? Number.NaN),
+          group?.recoveryPercentMean !== null && Number.isFinite(group?.recoveryPercentMean ?? Number.NaN) ? (group?.recoveryPercentMean as number).toFixed(1) : 'NA',
+        ];
+      });
+      pushTable(formatFigureRgbTable(['Method', `C0 (${unitLabel})`, `Delta (${unitLabel})`, 'Recovery (%)'], rows));
+    });
+  }
+
+
   return lines;
 }
 
@@ -5225,6 +6338,7 @@ function drawPythonStyleCielabCompositePanel(
   pythonFigureStyle = false,
   showXAxis = true,
   xAxisOverride?: { min: number; max: number; ticks: number[] },
+  unknownMethodGroupResults: UnknownMethodGroupResult[] = [],
 ): void {
   const color = cielabCompositeColor(channel);
   const ptToPx = 300 / 72;
@@ -5260,6 +6374,23 @@ function drawPythonStyleCielabCompositePanel(
 
   const stdFits = standardGroups.map((group) => group.fit).filter((fit): fit is XlsxRow => Boolean(fit));
   const stdPoints = standardGroups.flatMap((group) => group.points);
+  const channelUnknownGroups = unknownMethodGroupResults.filter((group) => group.method === unknownCielabMethod(channel));
+  const groupXValues = channelUnknownGroups.flatMap((group) => {
+    const values: number[] = [];
+    if (group.concentrationInOriginalSampleMean !== null && Number.isFinite(group.concentrationInOriginalSampleMean)) {
+      const df = Math.max(group.dilutionFactor, 1e-12);
+      const center = group.concentrationInOriginalSampleMean / df;
+      const sd = group.concentrationInOriginalSampleSd !== null && Number.isFinite(group.concentrationInOriginalSampleSd) ? Math.abs(group.concentrationInOriginalSampleSd / df) : 0;
+      values.push(center - sd, center, center + sd);
+    }
+    if (group.referenceValue !== null && Number.isFinite(group.referenceValue)) {
+      const df = Math.max(group.dilutionFactor, 1e-12);
+      const center = group.referenceValue / df;
+      const sd = group.referenceSd !== null && Number.isFinite(group.referenceSd) ? Math.abs(group.referenceSd / df) : 0;
+      values.push(center - sd, center, center + sd);
+    }
+    return values;
+  });
   const refXValues = standardGroups.flatMap((group) => expectedRefs.flatMap((ref) => {
     if (!referenceMatchesSample(ref, group.sampleId)) {
       return [];
@@ -5280,6 +6411,7 @@ function drawPythonStyleCielabCompositePanel(
     ...calibrationPoints.map((point) => point.x),
     ...stdPoints.map((point) => point.x),
     ...refXValues,
+    ...groupXValues,
     ...stdFits.flatMap((fit) => {
       const slope = numericRowValue(fit, 'm');
       const intercept = numericRowValue(fit, 'q');
@@ -5294,6 +6426,7 @@ function drawPythonStyleCielabCompositePanel(
     0,
     ...calibrationPoints.flatMap((point) => [point.y, point.y - (point.yerr ?? 0), point.y + (point.yerr ?? 0)]),
     ...stdPoints.flatMap((point) => [point.y, point.y - (point.yerr ?? 0), point.y + (point.yerr ?? 0)]),
+    ...channelUnknownGroups.flatMap((group) => group.signalMean !== null && Number.isFinite(group.signalMean) ? [group.signalMean, group.signalMean - (group.signalSd ?? 0), group.signalMean + (group.signalSd ?? 0)] : []),
   ].filter(Number.isFinite);
   const yAxis = buildFourTickPlotAxis(yValues, 0.06, 0.10, 1);
   const xToPx = (value: number) => plot.x + ((value - xAxis.min) / (xAxis.max - xAxis.min)) * plot.width;
@@ -5391,7 +6524,7 @@ function drawPythonStyleCielabCompositePanel(
     ctx.fillText(`Added concentration (${unitLabel})`, plot.x + plot.width / 2, plot.y + plot.height + 26 * ptToPx);
   }
   ctx.save();
-  ctx.translate(bounds.x + 36, plot.y + plot.height / 2);
+  ctx.translate(plot.x - 82, plot.y + plot.height / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.fillText(cielabCompositeDisplayName(channel), 0, 0);
   ctx.restore();
@@ -5485,10 +6618,60 @@ function drawPythonStyleCielabCompositePanel(
     });
   });
 
+  channelUnknownGroups.forEach((group) => {
+    const df = Math.max(group.dilutionFactor, 1e-12);
+    if (group.referenceValue !== null && Number.isFinite(group.referenceValue)) {
+      const refX = group.referenceValue / df;
+      const refSd = group.referenceSd !== null && Number.isFinite(group.referenceSd) ? Math.abs(group.referenceSd / df) : 0;
+      if (refSd > 0) {
+        drawVisibleReferenceBandCue(ctx, plot, xToPx(refX), xToPx(refX - refSd), xToPx(refX + refSd), ptToPx);
+      }
+      ctx.save();
+      ctx.setLineDash([8 * ptToPx, 5 * ptToPx]);
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 0.8 * ptToPx;
+      ctx.beginPath();
+      ctx.moveTo(xToPx(refX), plot.y);
+      ctx.lineTo(xToPx(refX), plot.y + plot.height);
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (group.concentrationInOriginalSampleMean === null || group.signalMean === null) return;
+    const x = group.concentrationInOriginalSampleMean / df;
+    const xSd = group.nWells >= 2 && group.concentrationInOriginalSampleSd !== null ? Math.abs(group.concentrationInOriginalSampleSd / df) : 0;
+    const y = group.signalMean;
+    const ySd = group.nWells >= 2 && group.signalSd !== null ? Math.abs(group.signalSd) : 0;
+    const px = xToPx(Math.max(xAxis.min, Math.min(xAxis.max, x)));
+    const py = yToPx(Math.max(yAxis.min, Math.min(yAxis.max, y)));
+    if (xSd > 0) drawHorizontalErrorBar(ctx, xToPx(x - xSd), xToPx(x + xSd), py, markerPx * 0.65, '#111111');
+    if (ySd > 0) drawVerticalErrorBar(ctx, px, yToPx(y - ySd), yToPx(y + ySd), markerPx * 0.65, '#111111');
+    ctx.fillStyle = color;
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = markerEdgePx;
+    ctx.beginPath();
+    ctx.moveTo(px, py - markerPx * 1.2);
+    ctx.lineTo(px + markerPx * 1.2, py);
+    ctx.lineTo(px, py + markerPx * 1.2);
+    ctx.lineTo(px - markerPx * 1.2, py);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  });
+
   ctx.restore();
 
   const legendItems = [
     'o calibration',
+    ...channelUnknownGroups.flatMap((group) => {
+      const c0 = group.concentrationInOriginalSampleMean;
+      const c0Sd = group.concentrationInOriginalSampleSd;
+      return [
+        `${group.referenceLabel || group.referenceId || 'Reference'}=${group.referenceValue !== null ? formatFigureReferenceNumber(group.referenceValue) : 'NA'}${group.referenceSd !== null ? ` +/- ${formatFigureReferenceNumber(group.referenceSd)}` : ''} ${unitLabel}`,
+        `ID=${group.sampleId}; DF=${formatFigureDilutionFactor(group.dilutionFactor)}${group.nWells >= 2 ? `; n=${group.nWells}` : ''}`,
+        `C0=${c0 !== null ? formatFigureConcentrationNumber(c0, group.referenceValue ?? Number.NaN) : 'NA'}${group.nWells >= 2 && c0Sd !== null ? ` +/- ${formatFigureConcentrationNumber(c0Sd, group.referenceValue ?? Number.NaN)}` : ''} ${unitLabel}`,
+        `Recovery=${group.recoveryPercentMean !== null ? group.recoveryPercentMean.toFixed(1) : 'NA'}%; display=${group.displayStatus}`,
+      ];
+    }),
     ...standardGroups.map((group) =>
       `s std add ID=${group.sampleId}, DF=${formatFigureDilutionFactor(group.dilutionFactor)}`
     ),
@@ -5522,6 +6705,51 @@ function drawPythonStyleCielabCompositePanel(
   ctx.restore();
 }
 
+function wrapAllScientificLines(
+  input: Array<{ text: string; emphasize?: boolean }>,
+  maxChars: number,
+): Array<{ text: string; emphasize?: boolean }> {
+  const isPreformattedTableLine = (text: string) => (
+    /^-+(?:\s{2,}-+)+\s*$/.test(text)
+    || /\S\s{2,}\S/.test(text)
+  );
+
+  const wrapOne = (line: { text: string; emphasize?: boolean }) => {
+    const text = line.text;
+    if (text.trim().length === 0 || isPreformattedTableLine(text)) return [line];
+
+    const formulaSeparator = text.indexOf(' = ');
+    if (formulaSeparator >= 0 && text.length > maxChars) {
+      const left = `${text.slice(0, formulaSeparator).trimEnd()} =`;
+      const right = text.slice(formulaSeparator + 3).trimStart();
+      return [
+        { text: left, emphasize: line.emphasize },
+        { text: `  ${right}`, emphasize: line.emphasize },
+      ];
+    }
+
+    if (text.length <= maxChars) return [line];
+
+    const preferredParts = text.includes(' | ')
+      ? text.split(' | ').map((part, index) => index === 0 ? part : `| ${part}`)
+      : text.split(/\s+/).filter(Boolean);
+    const wrapped: Array<{ text: string; emphasize?: boolean }> = [];
+    let current = '';
+    preferredParts.forEach((part) => {
+      const candidate = current ? `${current} ${part}` : part;
+      if (candidate.length > maxChars && current) {
+        wrapped.push({ text: current, emphasize: line.emphasize });
+        current = part;
+      } else {
+        current = candidate;
+      }
+    });
+    if (current) wrapped.push({ text: current, emphasize: line.emphasize });
+    return wrapped.length > 0 ? wrapped : [line];
+  };
+  return input.flatMap(wrapOne);
+}
+
 function buildPythonStyleCielabDeltaECanvas(
   imageBase: string,
   overlayCanvas: HTMLCanvasElement,
@@ -5535,6 +6763,8 @@ function buildPythonStyleCielabDeltaECanvas(
   storedCielabReference?: StoredCielabReference,
   storedCalibration?: StoredCalibration | null,
   floorDQualitySummary?: string,
+  unknownMethodGroupResults: UnknownMethodGroupResult[] = [],
+  selectedChannel: FitChannel = 'R',
 ): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   const width = 2481;
@@ -5560,9 +6790,13 @@ function buildPythonStyleCielabDeltaECanvas(
     comparisonRows,
     selectedDescriptor,
     floorDQualitySummary,
+    unknownMethodGroupResults,
+    cielabPoints: points,
+    selectedChannel,
   });
-  const scientificLineCount = scientificLines.length;
-  const requiredTextHeight = 760 + scientificLineCount * 38 + 110;
+  const wrappedScientificLines = wrapAllScientificLines(scientificLines, 64);
+  const scientificLineCount = wrappedScientificLines.length;
+  const requiredTextHeight = 760 + scientificLineCount * 34 + 110;
   const minimumPanelHeight = 360;
   const requiredPanelHeight = 140 + CIELAB_COMPOSITE_CHANNELS.length * minimumPanelHeight;
   const height = Math.max(3021, requiredTextHeight, requiredPanelHeight);
@@ -5573,23 +6807,28 @@ function buildPythonStyleCielabDeltaECanvas(
   void imageBase;
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
-  drawImageCover(ctx, overlayCanvas, overlayCanvas.width, overlayCanvas.height, 110, 70, 940, 626);
+  drawImageCover(ctx, overlayCanvas, overlayCanvas.width, overlayCanvas.height, 25, 70, 875, 575);
 
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(20, 675, 1080, height - 725);
+  ctx.clip();
   ctx.fillStyle = '#253033';
   drawPreformattedLines(
     ctx,
-    scientificLines,
-    110,
-    760,
-    38,
-    height - 95,
-    '32px "Cascadia Mono", Consolas, "Courier New", monospace',
-    '700 32px "Cascadia Mono", Consolas, "Courier New", monospace',
+    wrappedScientificLines,
+    30,
+    705,
+    31,
+    height - 80,
+    '25px "Cascadia Mono", Consolas, "Courier New", monospace',
+    '700 25px "Cascadia Mono", Consolas, "Courier New", monospace',
   );
+  ctx.restore();
 
   const comparisonByMethod = new Map(comparisonRows.map((row) => [String(row.Method ?? ''), row]));
-  const panelX = 1190;
-  const panelWidth = 1160;
+  const panelX = 1120;
+  const panelWidth = 1320;
   const panelTop = 70;
   const panelHeight = (height - 140) / CIELAB_COMPOSITE_CHANNELS.length;
   const panelData = CIELAB_COMPOSITE_CHANNELS.map((channel) => {
@@ -5624,6 +6863,7 @@ function buildPythonStyleCielabDeltaECanvas(
       true,
       index === CIELAB_COMPOSITE_CHANNELS.length - 1,
       commonXAxis,
+      unknownMethodGroupResults,
     );
   });
 
@@ -5722,6 +6962,7 @@ function buildPythonStyleMethodComparisonCanvas(
   comparisonRows: XlsxRow[],
   expectedRefs: ExpectedRef[],
   unitLabel: string,
+  hasStandardAddition: boolean,
 ): HTMLCanvasElement {
   void imageBase;
 
@@ -5759,8 +7000,8 @@ function buildPythonStyleMethodComparisonCanvas(
   const dpi = 300;
   const width = Math.round(11.5 * dpi);
   const panelSpecs = [
-    { name: 'agreement_bias', weight: 1.0 },
-    { name: 'reference_values', weight: expectedRefs.length > 0 ? 1.05 : 0 },
+    { name: 'agreement_bias', weight: hasStandardAddition ? 1.0 : 0 },
+    { name: 'reference_values', weight: expectedRefs.length > 0 ? 1.18 : 0 },
     { name: 'r2', weight: 1.0 },
   ].filter((spec) => spec.weight > 0);
   const figHeightIn = 2.15 * panelSpecs.reduce((acc, spec) => acc + spec.weight, 0) + 0.55;
@@ -5788,12 +7029,23 @@ function buildPythonStyleMethodComparisonCanvas(
   const markerRadius = 3.9 * ptToPx;
   const markerSize = 7.8 * ptToPx;
 
-  const methods = rows.map((row) => String(row.Method ?? '').replace('Signal_', 'PAbs_'));
+  const methodDisplayLabel = (method: string): string => {
+    const normalized = method.replace('Signal_', 'PAbs_').replace(/^DeltaE$/, 'DeltaE_ab');
+    const labels: Record<string, string> = {
+      DeltaL: 'ΔL',
+      Deltaa: 'Δa',
+      Deltab: 'Δb',
+      DeltaE_ab: 'ΔE_ab',
+      DeltaE_ab_chroma: 'ΔE_ab_chroma',
+    };
+    return labels[normalized] ?? normalized;
+  };
+  const methods = rows.map((row) => methodDisplayLabel(String(row.Method ?? '')));
   const xRange = { min: -0.5, max: Math.max(rows.length - 0.5, 0.5) };
   const plotLeft = Math.round(0.105 * width);
   const plotRight = Math.round(0.975 * width);
   const plotTop = Math.round(0.065 * height);
-  const bottomReserved = Math.round(0.185 * height);
+  const bottomReserved = Math.round(0.205 * height);
   const plotWidth = plotRight - plotLeft;
   const panelTotalHeight = height - plotTop - bottomReserved;
   const totalWeight = panelSpecs.reduce((acc, spec) => acc + spec.weight, 0);
@@ -5926,7 +7178,7 @@ function buildPythonStyleMethodComparisonCanvas(
       methods.forEach((method, index) => {
         const x = xToPx(plot, index);
         ctx.save();
-        ctx.translate(x - 5 * ptToPx, plot.y + plot.height + 21 * ptToPx);
+        ctx.translate(x - 4 * ptToPx, plot.y + plot.height + 16 * ptToPx);
         ctx.rotate(-40 * Math.PI / 180);
         ctx.fillText(method, 0, 0);
         ctx.restore();
@@ -5934,7 +7186,7 @@ function buildPythonStyleMethodComparisonCanvas(
       ctx.font = `bold ${labelFontPx}px ${fontFamily}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      ctx.fillText('Method', plot.x + plot.width / 2, height - 8 * ptToPx);
+      ctx.fillText('Method', plot.x + plot.width / 2, height - 5 * ptToPx);
       ctx.restore();
     }
   };
@@ -6115,7 +7367,11 @@ function buildPythonStyleMethodComparisonCanvas(
     dashed: boolean,
     marker: 'circle' | 'square',
   ): void => {
+    const clippedValue = (value: number): number => Math.max(range.min, Math.min(range.max, value));
     ctx.save();
+    ctx.beginPath();
+    ctx.rect(plot.x, plot.y, plot.width, plot.height);
+    ctx.clip();
     ctx.strokeStyle = color;
     ctx.lineWidth = 1.35 * ptToPx;
     ctx.setLineDash(dashed ? [6 * ptToPx, 4 * ptToPx] : []);
@@ -6126,7 +7382,7 @@ function buildPythonStyleMethodComparisonCanvas(
         return;
       }
       const x = xToPx(plot, index);
-      const y = yToPx(plot, range, value);
+      const y = yToPx(plot, range, clippedValue(value));
       if (!started) {
         ctx.moveTo(x, y);
         started = true;
@@ -6143,7 +7399,7 @@ function buildPythonStyleMethodComparisonCanvas(
         return;
       }
       const x = xToPx(plot, index);
-      const y = yToPx(plot, range, value);
+      const y = yToPx(plot, range, clippedValue(value));
       ctx.fillStyle = color;
       if (marker === 'circle') {
         ctx.beginPath();
@@ -6169,15 +7425,18 @@ function buildPythonStyleMethodComparisonCanvas(
     return Number.isFinite(sd) ? sd : xlsxNumber(row, 'C0_sd_median');
   });
 
-  if (panels.agreement_bias) {
+  if (hasStandardAddition && panels.agreement_bias) {
     const plot = panels.agreement_bias;
-    const range = { min: 0, max: 1 };
-    const agreementTicks = [0, 0.2, 0.4, 0.6, 0.8, 1];
+    const range = { min: 0, max: 1.06 };
+    const agreementTicks = [0, 0.25, 0.5, 0.75, 1];
     drawPanelFrame(plot, panelSpecs[panelSpecs.length - 1].name === 'agreement_bias');
-    drawYTicksAndGrid(plot, range, 6, agreementTicks);
+    drawYTicksAndGrid(plot, range, 5, agreementTicks);
     drawYLabel(plot, 'agreement / bias');
 
     ctx.save();
+    ctx.beginPath();
+    ctx.rect(plot.x, plot.y, plot.width, plot.height);
+    ctx.clip();
     ctx.setLineDash([6 * ptToPx, 4 * ptToPx]);
     ctx.strokeStyle = '#1f77b4';
     ctx.lineWidth = 1.0 * ptToPx;
@@ -6228,10 +7487,15 @@ function buildPythonStyleMethodComparisonCanvas(
       rows.forEach((row, index) => {
         const estimate = estimateValues[index];
         const estimateSd = estimateSdValues[index];
-        if (!Number.isFinite(estimate) || isLowReliabilityMethodComparisonRow(row, expectedRefs)) {
+        const displayStatus = xlsxString(row, 'Display_status');
+        if (!Number.isFinite(estimate)) {
           return;
         }
-        if (Math.abs(estimate - refCenter) <= nearbyReliableWindow) {
+        const includeBySharedDisplayModel = displayStatus === 'in_scale';
+        const includeLegacyNearbyReliable = !displayStatus
+          && !isLowReliabilityMethodComparisonRow(row, expectedRefs)
+          && Math.abs(estimate - refCenter) <= nearbyReliableWindow;
+        if (includeBySharedDisplayModel || includeLegacyNearbyReliable) {
           const sd = Number.isFinite(estimateSd) ? Math.max(estimateSd, 0) : 0;
           axisValues.push(estimate - sd, estimate, estimate + sd);
         }
@@ -6256,6 +7520,9 @@ function buildPythonStyleMethodComparisonCanvas(
     }
 
     const range = { min: yLo, max: yHi };
+    const referenceCenterForDisplay = refPayloads.length > 0
+      ? medianFinite(refPayloads.map((payload) => payload.value))
+      : 0.5 * (yLo + yHi);
     drawPanelFrame(plot, panelSpecs[panelSpecs.length - 1].name === 'reference_values');
     drawYTicksAndGrid(plot, range, 6, referenceTicks, true);
     drawYLabel(plot, `Reference value(s) (${unitLabel})`);
@@ -6264,13 +7531,13 @@ function buildPythonStyleMethodComparisonCanvas(
     const referenceOccupiedPoints: { x: number; y: number }[] = [];
 
     refPayloads.forEach((payload, index) => {
-      const color = index === 0 ? '#9467bd' : '#17becf';
+      const color = '#000000';
       const y = yToPx(plot, range, payload.value);
       ctx.save();
       if (Number.isFinite(payload.sd) && payload.sd > 0) {
         const yTop = yToPx(plot, range, payload.value + payload.sd);
         const yBottom = yToPx(plot, range, payload.value - payload.sd);
-        ctx.fillStyle = index === 0 ? 'rgba(148,103,189,0.10)' : 'rgba(23,190,207,0.10)';
+        ctx.fillStyle = 'rgba(127,127,127,0.18)';
         ctx.fillRect(plot.x, Math.min(yTop, yBottom), plot.width, Math.abs(yBottom - yTop));
       }
       ctx.setLineDash([6 * ptToPx, 4 * ptToPx]);
@@ -6281,7 +7548,7 @@ function buildPythonStyleMethodComparisonCanvas(
       ctx.lineTo(plot.x + plot.width, y);
       ctx.stroke();
       ctx.restore();
-      legendItems.push({ label: `${payload.label} = ${fmtG(payload.value, 3)}`, color, marker: 'band' });
+      legendItems.push({ label: `${payload.label} = ${formatFigureReferenceNumber(payload.value)}${Number.isFinite(payload.sd) ? ` +/- ${formatFigureReferenceNumber(payload.sd)}` : ''}`, color, marker: 'band' });
     });
 
     let shownReliable = false;
@@ -6300,9 +7567,10 @@ function buildPythonStyleMethodComparisonCanvas(
       const isReliable = !isLowReliabilityMethodComparisonRow(row, expectedRefs);
       const color = isReliable ? '#1f77b4' : '#d62728';
       const x = xToPx(plot, index);
-      const clippedHigh = estimate > yHi;
-      const clippedLow = estimate < yLo;
-      const clipped = clippedHigh || clippedLow;
+      const forcedOutOfScale = xlsxString(row, 'Display_status') === 'out_of_scale';
+      const clippedHigh = forcedOutOfScale ? estimate >= referenceCenterForDisplay : estimate > yHi;
+      const clippedLow = forcedOutOfScale ? estimate < referenceCenterForDisplay : estimate < yLo;
+      const clipped = forcedOutOfScale || clippedHigh || clippedLow;
       const yPlotValue = Math.min(Math.max(estimate, yLo), yHi);
       const y = clippedHigh
         ? plot.y + edgeInsetPx
@@ -6431,16 +7699,20 @@ function buildPythonStyleMethodComparisonCanvas(
         ctx.arc(x - 3.2 * ptToPx, yToPx(plot, range, r2Cal), markerRadius, 0, Math.PI * 2);
         ctx.fill();
       }
-      if (Number.isFinite(r2Std)) {
+      if (hasStandardAddition && Number.isFinite(r2Std)) {
         ctx.fillStyle = '#2ca02c';
         ctx.fillRect(x + 1.0 * ptToPx - markerSize / 2, yToPx(plot, range, r2Std) - markerSize / 2, markerSize, markerSize);
       }
     });
 
-    drawLegend(plot, [
-      { label: 'R² calibration', color: '#1f77b4', marker: 'circle' },
-      { label: 'R² std add', color: '#2ca02c', marker: 'square' },
-    ], 'lower-left');
+    drawLegend(plot, hasStandardAddition
+      ? [
+          { label: 'R² calibration', color: '#1f77b4', marker: 'circle' },
+          { label: 'R² std add', color: '#2ca02c', marker: 'square' },
+        ]
+      : [
+          { label: 'R² calibration', color: '#1f77b4', marker: 'circle' },
+        ], 'lower-left');
   }
 
   return canvas;
@@ -7118,7 +8390,14 @@ function formatFigureReferenceNumber(value: number, fallback = 'NA'): string {
   if (!Number.isFinite(value)) {
     return fallback;
   }
-  return Math.abs(value - Math.round(value)) < 1e-9 ? String(Math.round(value)) : formatFigureScientificNumber(value, fallback);
+  if (Math.abs(value - Math.round(value)) < 1e-9) {
+    return String(Math.round(value));
+  }
+  const absValue = Math.abs(value);
+  if (absValue >= 1e6 || (absValue > 0 && absValue < 1e-6)) {
+    return value.toPrecision(3);
+  }
+  return value.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 function formatFigureReferenceDecimals(referenceValue: number): number {
@@ -7208,6 +8487,7 @@ function buildFigureRgbScientificLines({
   floorGeometryAvailable,
   floorDQualitySummary,
   bestChannel,
+  unknownMethodGroupResults,
 }: {
   unitLabel: string;
   measurements: WellMeasurement[];
@@ -7221,6 +8501,7 @@ function buildFigureRgbScientificLines({
   floorGeometryAvailable: boolean;
   floorDQualitySummary?: string;
   bestChannel: FitChannel;
+  unknownMethodGroupResults: UnknownMethodGroupResult[];
 }): Array<{ text: string; emphasize?: boolean }> {
   const lines: Array<{ text: string; emphasize?: boolean }> = [];
   const selectedLabel = figureRgbChannelShort(bestChannel);
@@ -7242,13 +8523,15 @@ function buildFigureRgbScientificLines({
   )).length;
   const total = measurements.length;
   const plateStatus = critical === 0 && flagged <= Math.max(1, Math.floor(total * 0.2)) ? 'Passed' : 'Warning';
-  const modeLabel = calibrationFits.length > 0 && standardAdditionFits.length > 0
-    ? 'calibration + standard addition'
-    : calibrationFits.length > 0
-      ? 'calibration only'
-      : standardAdditionFits.length > 0
-        ? 'standard addition only'
-        : 'no valid analytical fit available';
+  const modeLabel = unknownMethodGroupResults.length > 0 && calibrationFits.length > 0
+    ? 'external calibration + unknown'
+    : calibrationFits.length > 0 && standardAdditionFits.length > 0
+      ? 'calibration + standard addition'
+      : calibrationFits.length > 0
+        ? 'calibration only'
+        : standardAdditionFits.length > 0
+          ? 'standard addition only'
+          : 'no valid analytical fit available';
 
   pushText('PAbs = log₁₀(I_BG / I_well)');
   pushText('');
@@ -7367,6 +8650,44 @@ function buildFigureRgbScientificLines({
       ['Channel', 'Slope', 'Intercept', 'R2'],
       stdFitRows,
     ));
+  }
+
+
+
+  if (unknownMethodGroupResults.length > 0) {
+    pushText('');
+    pushText('Unknown groups from external calibration', true);
+    const groupsBySample = new Map<string, UnknownMethodGroupResult[]>();
+    unknownMethodGroupResults.filter((group) => group.family === 'RGB').forEach((group) => {
+      const key = unknownGroupKey(group.sampleId, group.dilutionFactor);
+      const items = groupsBySample.get(key) ?? [];
+      items.push(group);
+      groupsBySample.set(key, items);
+    });
+    for (const groups of groupsBySample.values()) {
+      const first = groups[0];
+      const refText = first.referenceValue !== null
+        ? `${first.referenceLabel || first.referenceId || 'Reference'}=${formatFigureReferenceNumber(first.referenceValue)}${first.referenceSd !== null ? ` +/- ${formatFigureReferenceNumber(first.referenceSd)}` : ''} ${unitLabel}`
+        : 'Reference=NA';
+      pushText(`ID: ${first.sampleId} | DF=${formatFigureDilutionFactor(first.dilutionFactor)} | n=${first.nWells} | ${refText}`, true);
+      const resultRows = PYTHON_RESULTS_CHANNELS.map((channel) => {
+        const group = groups.find((item) => item.method === unknownRgbMethod(channel));
+        const c0 = group?.concentrationInOriginalSampleMean ?? Number.NaN;
+        const c0Sd = group?.concentrationInOriginalSampleSd ?? Number.NaN;
+        const delta = group?.deltaMean ?? Number.NaN;
+        const recovery = group?.recoveryPercentMean ?? Number.NaN;
+        return [
+          figureRgbChannelShort(channel),
+          Number.isFinite(c0) ? `${formatFigureConcentrationNumber(c0, group?.referenceValue ?? Number.NaN)}${group && group.nWells >= 2 && Number.isFinite(c0Sd) ? ` +/- ${formatFigureConcentrationNumber(c0Sd, group.referenceValue ?? Number.NaN)}` : ''}` : 'NA',
+          formatFigureDeltaNumber(delta, group?.referenceValue ?? Number.NaN),
+          Number.isFinite(recovery) ? recovery.toFixed(1) : 'NA',
+        ];
+      });
+      pushTable(formatFigureRgbTable(
+        ['Channel', `C0 (${unitLabel})`, `Delta (${unitLabel})`, 'Recovery (%)'],
+        resultRows,
+      ));
+    }
   }
 
   pushText('');
@@ -7556,6 +8877,24 @@ function computeSharedPythonRgbAxisSpec(
   };
 }
 
+function drawVisibleReferenceBandCue(
+  ctx: CanvasRenderingContext2D,
+  plot: { x: number; y: number; width: number; height: number },
+  _centerPx: number,
+  lowPx: number,
+  highPx: number,
+  _ptToPx: number,
+): void {
+  const actualLeft = Math.min(lowPx, highPx);
+  const actualRight = Math.max(lowPx, highPx);
+  const visibleLeft = Math.max(plot.x, actualLeft);
+  const visibleRight = Math.min(plot.x + plot.width, actualRight);
+  if (visibleRight > visibleLeft) {
+    ctx.fillStyle = 'rgba(127,127,127,0.22)';
+    ctx.fillRect(visibleLeft, plot.y, visibleRight - visibleLeft, plot.height);
+  }
+}
+
 function drawPythonStyleChannelPanel(
   ctx: CanvasRenderingContext2D,
   bounds: { x: number; y: number; width: number; height: number },
@@ -7570,6 +8909,7 @@ function drawPythonStyleChannelPanel(
   pythonFigureStyle = false,
   axisSpec?: PythonChannelAxisSpec,
   standaloneAxes = false,
+  unknownMethodGroupResults: UnknownMethodGroupResult[] = [],
 ): void {
   void rankInfo;
 
@@ -7602,6 +8942,21 @@ function drawPythonStyleChannelPanel(
 
   const standardFits = standardGroups.map((group) => group.fit);
   const stdPoints = standardGroups.flatMap((group) => group.points);
+  const channelUnknownGroups = unknownMethodGroupResults.filter((group) => group.method === unknownRgbMethod(channel));
+  const unknownReferenceX = channelUnknownGroups.flatMap((group) => {
+    if (group.referenceValue === null || !Number.isFinite(group.referenceValue)) return [];
+    const df = Math.max(group.dilutionFactor, 1e-12);
+    const center = group.referenceValue / df;
+    const sd = group.referenceSd !== null && Number.isFinite(group.referenceSd) ? Math.abs(group.referenceSd / df) : 0;
+    return [center - sd, center, center + sd];
+  });
+  const unknownConcentrationX = channelUnknownGroups.flatMap((group) => {
+    if (group.concentrationInOriginalSampleMean === null || !Number.isFinite(group.concentrationInOriginalSampleMean)) return [];
+    const df = Math.max(group.dilutionFactor, 1e-12);
+    const center = group.concentrationInOriginalSampleMean / df;
+    const sd = group.concentrationInOriginalSampleSd !== null && Number.isFinite(group.concentrationInOriginalSampleSd) ? Math.abs(group.concentrationInOriginalSampleSd / df) : 0;
+    return [center - sd, center, center + sd];
+  });
   const referenceX = standardGroups.flatMap(({ fit }) =>
     expectedRefs.flatMap((ref) => {
       if (!referenceMatchesSample(ref, fit.sampleId)) {
@@ -7621,6 +8976,8 @@ function drawPythonStyleChannelPanel(
     ...calibrationPoints.map((point) => point.x),
     ...stdPoints.map((point) => point.x),
     ...referenceX,
+    ...unknownReferenceX,
+    ...unknownConcentrationX,
     ...standardFits.flatMap((fit) => {
       if (!Number.isFinite(fit.slope) || Math.abs(fit.slope) <= 1e-15 || !Number.isFinite(fit.intercept)) {
         return [];
@@ -7638,6 +8995,7 @@ function drawPythonStyleChannelPanel(
       typeof point.yerr === 'number' && Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []
     )),
     ...stdPoints.map((point) => point.y),
+    ...channelUnknownGroups.flatMap((group) => group.signalMean !== null && Number.isFinite(group.signalMean) ? [group.signalMean, group.signalMean - (group.signalSd ?? 0), group.signalMean + (group.signalSd ?? 0)] : []),
     ...stdPoints.flatMap((point) => (
       typeof point.yerr === 'number' && Number.isFinite(point.yerr) && point.yerr > 0 ? [point.y - point.yerr, point.y + point.yerr] : []
     )),
@@ -7972,8 +9330,103 @@ function drawPythonStyleChannelPanel(
     }
   });
 
+
+  channelUnknownGroups.forEach((group) => {
+    if (group.referenceValue !== null && Number.isFinite(group.referenceValue)) {
+      const df = Math.max(group.dilutionFactor, 1e-12);
+      const refX = group.referenceValue / df;
+      const refSd = group.referenceSd !== null && Number.isFinite(group.referenceSd) ? Math.abs(group.referenceSd / df) : 0;
+      const x0 = xToPx(Math.max(xAxis.min, refX - refSd));
+      const x1 = xToPx(Math.min(xAxis.max, refX + refSd));
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(plot.x, plot.y, plot.width, plot.height);
+      ctx.clip();
+      if (refSd > 0) {
+        drawVisibleReferenceBandCue(ctx, plot, xToPx(refX), x0, x1, ptToPx);
+      }
+      drawLine(xToPx(refX), plot.y, xToPx(refX), plot.y + plot.height, '#000000', pythonFigureStyle ? 0.8 * ptToPx : 1.5, pythonFigureStyle ? [8, 5] : [5, 4]);
+      ctx.restore();
+    }
+  });
+
+  channelUnknownGroups.forEach((group) => {
+    const c0 = group.concentrationInOriginalSampleMean;
+    const signal = group.signalMean;
+    if (c0 === null || signal === null || !Number.isFinite(c0) || !Number.isFinite(signal)) return;
+    const df = Math.max(group.dilutionFactor, 1e-12);
+    const xValue = c0 / df;
+    const xSd = group.nWells >= 2 && group.concentrationInOriginalSampleSd !== null && Number.isFinite(group.concentrationInOriginalSampleSd)
+      ? Math.abs(group.concentrationInOriginalSampleSd / df)
+      : 0;
+    const ySd = group.nWells >= 2 && group.signalSd !== null && Number.isFinite(group.signalSd) ? Math.abs(group.signalSd) : 0;
+    const clippedLow = xValue < xAxis.min;
+    const clippedHigh = xValue > xAxis.max;
+    const px = clippedLow ? plot.x + 8 : clippedHigh ? plot.x + plot.width - 8 : xToPx(xValue);
+    const py = yToPx(Math.max(yAxis.min, Math.min(yAxis.max, signal)));
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(plot.x, plot.y, plot.width, plot.height);
+    ctx.clip();
+    if (!clippedLow && !clippedHigh && xSd > 0) drawHorizontalErrorBar(ctx, xToPx(xValue - xSd), xToPx(xValue + xSd), py, markerPx * 0.65, '#111111');
+    if (ySd > 0) drawVerticalErrorBar(ctx, px, yToPx(signal - ySd), yToPx(signal + ySd), markerPx * 0.65, '#111111');
+    ctx.fillStyle = color;
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = markerEdgePx;
+    ctx.beginPath();
+    if (clippedLow || clippedHigh) {
+      const direction = clippedLow ? -1 : 1;
+      ctx.moveTo(px + direction * markerPx * 0.8, py);
+      ctx.lineTo(px - direction * markerPx * 0.6, py - markerPx * 0.7);
+      ctx.lineTo(px - direction * markerPx * 0.6, py + markerPx * 0.7);
+    } else {
+      ctx.moveTo(px, py - markerPx * 0.8);
+      ctx.lineTo(px + markerPx * 0.8, py);
+      ctx.lineTo(px, py + markerPx * 0.8);
+      ctx.lineTo(px - markerPx * 0.8, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  });
+
+  const uniqueReferenceLabels = new Set<string>();
+  channelUnknownGroups.forEach((group) => {
+    if (group.referenceValue !== null && Number.isFinite(group.referenceValue)) {
+      const label = `${group.referenceLabel || group.referenceId || 'Reference'} = ${formatFigureReferenceNumber(group.referenceValue)}${group.referenceSd !== null ? ` +/- ${formatFigureReferenceNumber(group.referenceSd)}` : ''} ${unitLabel}`;
+      if (!uniqueReferenceLabels.has(label)) {
+        uniqueReferenceLabels.add(label);
+        legendY += legendStep;
+        ctx.fillStyle = 'rgba(127,127,127,0.35)';
+        ctx.fillRect(handleX0, legendY - legendFontPx * 0.5, handleX1 - handleX0, legendFontPx * 0.45);
+        drawLine(handleX0, legendY - legendFontPx * 0.27, handleX1, legendY - legendFontPx * 0.27, '#000000', pythonFigureStyle ? 0.8 * ptToPx : 1.3, pythonFigureStyle ? [8, 5] : [5, 4]);
+        ctx.fillStyle = '#000000';
+        ctx.fillText(label, textX, legendY);
+      }
+    }
+  });
+  channelUnknownGroups.forEach((group) => {
+    legendY += legendStep;
+    ctx.fillStyle = color;
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = markerEdgePx;
+    ctx.beginPath();
+    ctx.moveTo(markerX, legendY - legendFontPx * 0.25 - markerPx * 0.7);
+    ctx.lineTo(markerX + markerPx * 0.7, legendY - legendFontPx * 0.25);
+    ctx.lineTo(markerX, legendY - legendFontPx * 0.25 + markerPx * 0.7);
+    ctx.lineTo(markerX - markerPx * 0.7, legendY - legendFontPx * 0.25);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#000000';
+    ctx.fillText(unknownGroupDisplayLabel(group, unitLabel), textX, legendY);
+  });
+
+
   ctx.restore();
 }
+
 
 function buildPythonStyleFigureRgbCanvas({
   imageBase,
@@ -7991,6 +9444,7 @@ function buildPythonStyleFigureRgbCanvas({
   floorDQualitySummary,
   bestChannel,
   storedCalibration,
+  unknownMethodGroupResults,
 }: {
   imageBase: string;
   overlayCanvas: HTMLCanvasElement;
@@ -8007,6 +9461,7 @@ function buildPythonStyleFigureRgbCanvas({
   floorDQualitySummary?: string;
   bestChannel: FitChannel;
   storedCalibration?: StoredCalibration | null;
+  unknownMethodGroupResults: UnknownMethodGroupResult[];
 }): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   const width = 2481;
@@ -8062,9 +9517,11 @@ function buildPythonStyleFigureRgbCanvas({
     floorGeometryAvailable,
     floorDQualitySummary,
     bestChannel,
+    unknownMethodGroupResults,
   });
-  const scientificLineCount = scientificLines.length;
-  const requiredTextHeight = 760 + scientificLineCount * 38 + 110;
+  const wrappedScientificLines = wrapAllScientificLines(scientificLines, 64);
+  const scientificLineCount = wrappedScientificLines.length;
+  const requiredTextHeight = 760 + scientificLineCount * 34 + 110;
   const requiredPanelHeight = 70 + PYTHON_RESULTS_CHANNELS.length * 603 + 95;
   const height = Math.max(2038, requiredTextHeight, requiredPanelHeight);
 
@@ -8073,22 +9530,27 @@ function buildPythonStyleFigureRgbCanvas({
 
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
-  drawImageCover(ctx, overlayCanvas, overlayCanvas.width, overlayCanvas.height, 110, 70, 940, 626);
+  drawImageCover(ctx, overlayCanvas, overlayCanvas.width, overlayCanvas.height, 25, 70, 875, 575);
 
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(20, 675, 1080, height - 725);
+  ctx.clip();
   ctx.fillStyle = '#253033';
   drawPreformattedLines(
     ctx,
-    scientificLines,
-    110,
-    760,
-    38,
-    height - 95,
-    '32px "Cascadia Mono", Consolas, "Courier New", monospace',
-    '700 32px "Cascadia Mono", Consolas, "Courier New", monospace',
+    wrappedScientificLines,
+    30,
+    705,
+    31,
+    height - 80,
+    '25px "Cascadia Mono", Consolas, "Courier New", monospace',
+    '700 25px "Cascadia Mono", Consolas, "Courier New", monospace',
   );
+  ctx.restore();
 
-  const panelX = 1190;
-  const panelWidth = 1160;
+  const panelX = 1120;
+  const panelWidth = 1320;
   const panelTop = 70;
   const panelHeight = 603;
 
@@ -8111,6 +9573,8 @@ function buildPythonStyleFigureRgbCanvas({
       false,
       true,
       channelAxisSpecs[channel],
+      false,
+      unknownMethodGroupResults,
     );
   });
 
@@ -8502,6 +9966,7 @@ function buildPythonStyleBestChannelCanvas({
   expectedRefs,
   unitLabel,
   storedCalibration,
+  unknownMethodGroupResults,
 }: {
   bestChannel: FitChannel;
   displayMeasurements: WellMeasurement[];
@@ -8511,6 +9976,7 @@ function buildPythonStyleBestChannelCanvas({
   expectedRefs: ExpectedRef[];
   unitLabel: string;
   storedCalibration?: StoredCalibration | null;
+  unknownMethodGroupResults: UnknownMethodGroupResult[];
 }): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   const width = 1480;
@@ -8565,6 +10031,7 @@ function buildPythonStyleBestChannelCanvas({
     true,
     selectedAxisSpec,
     true,
+    unknownMethodGroupResults,
   );
 
   return canvas;
@@ -9332,6 +10799,31 @@ function App() {
     ),
     [measurements, plateMap, storedCalibration, useLowSignalCorrection],
   );
+  const unknownResultsWithReference = useMemo(
+    () => enrichUnknownResultsWithReferences(unknownResults, expectedRefs),
+    [expectedRefs, unknownResults],
+  );
+  const unknownGroupSummaries = useMemo(
+    () => buildUnknownGroupSummaries(unknownResultsWithReference),
+    [unknownResultsWithReference],
+  );
+  const unknownCielabResults = useMemo(
+    () => buildUnknownCielabResults(correctedMeasurementSet.measurements, plateMap, storedCalibration?.cielabReference),
+    [correctedMeasurementSet.measurements, plateMap, storedCalibration?.cielabReference],
+  );
+  const unknownCielabGroupSummaries = useMemo(
+    () => buildUnknownCielabGroupSummaries(unknownCielabResults),
+    [unknownCielabResults],
+  );
+  const unknownMethodGroupResults = useMemo(
+    () => buildUnknownMethodGroupResults(
+      unknownGroupSummaries,
+      unknownCielabGroupSummaries,
+      expectedRefs,
+      storedCalibration,
+    ),
+    [expectedRefs, storedCalibration, unknownCielabGroupSummaries, unknownGroupSummaries],
+  );
   const canSaveStoredCalibration = useMemo(
     () => canCreateStoredCalibration(calibrationFits),
     [calibrationFits],
@@ -9549,7 +11041,8 @@ function App() {
   }, []);
 
   const handleSharedGeometryOverrideFileChange = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0];
+    const input = event.currentTarget;
+    const file = input.files?.[0];
 
     if (!file) {
       return;
@@ -9579,7 +11072,7 @@ function App() {
       clearMeasurementsAndFits();
       setError(`Could not load shared geometry override: ${file.name}. ${detail}`);
     } finally {
-      event.currentTarget.value = '';
+      input.value = '';
     }
   }, [clearFits, clearMeasurementsAndFits, clearSharedGeometryOverrideState, sharedGeometryOverride, wells]);
 
@@ -9877,7 +11370,8 @@ function App() {
   }, []);
 
   const handleProjectFileChange = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0];
+    const input = event.currentTarget;
+    const file = input.files?.[0];
 
     if (!file) {
       return;
@@ -9965,7 +11459,7 @@ function App() {
       const detail = loadError instanceof Error ? loadError.message : 'Unknown project load error.';
       setError(`Could not load project JSON: ${file.name}. ${detail}`);
     } finally {
-      event.currentTarget.value = '';
+      input.value = '';
     }
   }, [
     backgroundModel,
@@ -10523,7 +12017,8 @@ function App() {
   }, []);
 
   const handleStoredCalibrationFileChange = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0];
+    const input = event.currentTarget;
+    const file = input.files?.[0];
 
     if (!file) {
       return;
@@ -10540,7 +12035,7 @@ function App() {
       const detail = loadError instanceof Error ? loadError.message : 'Unknown stored calibration parse error.';
       setError(`Could not load stored calibration JSON: ${file.name}. ${detail}`);
     } finally {
-      event.currentTarget.value = '';
+      input.value = '';
     }
   }, [clearFits]);
 
@@ -10631,7 +12126,13 @@ function App() {
         ...storedCalibrationDiagnosticFitRows(calibrationForExport),
         ...buildCielabFittingRows(buildCielabDiagnosticPoints(measurements, plateMap, calibrationForExport?.cielabReference).points, undefined, calibrationForExport),
       ];
-      const methodComparisonRows = buildMethodComparisonRowsFromFitRows(methodComparisonFitRows, expectedRefs, true);
+      const legacyMethodComparisonRows = buildMethodComparisonRowsFromFitRows(methodComparisonFitRows, expectedRefs, true)
+        .filter((row) => xlsxString(row, 'Estimate_source') !== 'unknown_from_calibration');
+      const hasStandardAdditionForExport = standardAdditionFitsWithSlopeContext.length > 0;
+      const methodComparisonRows = [
+        ...legacyMethodComparisonRows,
+        ...buildUnknownMethodComparisonRows(unknownMethodGroupResults, effectiveCalibrationFits, hasStandardAdditionForExport, calibrationForExport),
+      ];
       const bestChannel = calibrationForExport?.selectedChannel ?? rankings[0]?.channel ?? 'R';
       if (completeGeneratedStoredCalibration) {
         completeGeneratedStoredCalibration.selectedChannel = bestChannel;
@@ -10687,6 +12188,7 @@ function App() {
           floorDQualitySummary,
           bestChannel,
           storedCalibration: calibrationForExport,
+          unknownMethodGroupResults,
         });
         const pythonBestChannelCanvas = buildPythonStyleBestChannelCanvas({
           bestChannel,
@@ -10697,6 +12199,7 @@ function App() {
           expectedRefs,
           unitLabel: plateMapUnit,
           storedCalibration: calibrationForExport,
+          unknownMethodGroupResults,
         });
 
         addZipBlob(
@@ -10752,6 +12255,12 @@ function App() {
           calibrationFits: effectiveCalibrationFits,
           standardAdditionFits: standardAdditionFitsWithSlopeContext,
           unknownResults,
+          unknownResultsWithReference,
+          unknownGroupSummaries,
+          unknownCielabResults,
+          unknownCielabGroupSummaries,
+          unknownMethodGroupResults,
+          methodComparisonRows,
           expectedRefs,
           rankings,
           methodMetadata: currentMethodMetadata,
@@ -10780,6 +12289,12 @@ function App() {
           calibrationFits: effectiveCalibrationFits,
           standardAdditionFits: standardAdditionFitsWithSlopeContext,
           unknownResults,
+          unknownResultsWithReference,
+          unknownGroupSummaries,
+          unknownCielabResults,
+          unknownCielabGroupSummaries,
+          unknownMethodGroupResults,
+          methodComparisonRows,
           expectedRefs,
           rankings,
           methodMetadata: currentMethodMetadata,
@@ -10818,6 +12333,8 @@ function App() {
             storedCalibration?.cielabReference,
             calibrationForExport,
             floorDQualitySummary,
+            unknownMethodGroupResults,
+            bestChannel,
           ), { targetWidthPx: PNG_TWO_COLUMN_WIDTH_PX }),
         );
       }
@@ -10830,18 +12347,21 @@ function App() {
             methodComparisonRows,
             expectedRefs,
             plateMapUnit,
+            hasStandardAdditionForExport,
           ), { targetWidthPx: PNG_TWO_COLUMN_WIDTH_PX }),
         );
       }
 
+      const currentEmptyWellQc = buildEmptyWellPlateQcSummary(measurements, displayMeasurements, plateMap);
+
       addTextFile(
         `${pythonResultsPrefix}_RESULTS_CAPTION.txt`,
-        createPythonResultsCaptionText(pythonResultsBase, plateMapUnit, expectedRefs),
+        createPythonResultsCaptionText(pythonResultsBase, plateMapUnit, expectedRefs, unknownMethodGroupResults, bestChannel, hasStandardAdditionForExport, currentEmptyWellQc),
         'text/plain;charset=utf-8',
       );
       addTextFile(
         `${pythonRawDataDetailsPrefix}_RAW_DATA_DETAILS_CAPTION.txt`,
-        createPythonRawDataDetailsCaptionText(pythonResultsBase, plateMapUnit),
+        createPythonRawDataDetailsCaptionText(pythonResultsBase, plateMapUnit, unknownMethodGroupResults, bestChannel, hasStandardAdditionForExport, currentEmptyWellQc),
         'text/plain;charset=utf-8',
       );
 
@@ -10868,9 +12388,26 @@ function App() {
         appVersion: packageJson.version,
         generatedAt: new Date().toISOString(),
       });
+      const analysisRunConfigWithUnknowns = {
+        ...analysisRunConfigMetadata,
+        selectedQuantitativeChannel: bestChannel,
+        unknownResults: unknownResultsWithReference,
+        unknownGroupSummaries,
+        unknownCielabResults,
+        unknownCielabGroupSummaries,
+        unknownMethodGroupResults,
+        emptyWellQc: currentEmptyWellQc,
+        methodComparisonApplicability: {
+          layout: hasStandardAdditionForExport ? 'three_panel_calibration_plus_standard_addition' : 'two_panel_external_calibration_unknown_only',
+          slopeAgreement: hasStandardAdditionForExport ? 'applicable' : 'not_applicable_no_standard_addition',
+          biasIndex: hasStandardAdditionForExport ? 'applicable' : 'not_applicable_no_standard_addition',
+          r2Calibration: 'applicable',
+          r2StandardAddition: hasStandardAdditionForExport ? 'applicable' : 'not_applicable_no_standard_addition',
+        },
+      };
       addTextFile(
         `${pythonRawDataDetailsPrefix}_analysis_run_config.json`,
-        JSON.stringify(analysisRunConfigMetadata, null, 2),
+        JSON.stringify(analysisRunConfigWithUnknowns, null, 2),
         'application/json;charset=utf-8',
       );
 
@@ -10910,6 +12447,10 @@ function App() {
     storedCalibration,
     standardAdditionFitsWithSlopeContext,
     unknownResults,
+    unknownResultsWithReference,
+    unknownGroupSummaries,
+    unknownCielabResults,
+    unknownCielabGroupSummaries,
     wells,
   ]);
 
@@ -11016,7 +12557,11 @@ function App() {
       return;
     }
 
-    if (calibrationFits.length === 0 && standardAdditionFitsWithSlopeContext.length === 0) {
+    if (
+      calibrationFits.length === 0 &&
+      standardAdditionFitsWithSlopeContext.length === 0 &&
+      unknownResults.length === 0
+    ) {
       return;
     }
 
@@ -11031,6 +12576,7 @@ function App() {
     handleExportCompleteAnalysisPackage,
     pendingCompleteAnalysisPackageExport,
     standardAdditionFitsWithSlopeContext.length,
+    unknownResults.length,
   ]);
   const [plateConfiguratorDialogDismissed, setPlateConfiguratorDialogDismissed] = useState(false);
   const [configuratorMediaActive, setConfiguratorMediaActive] = useState(false);
