@@ -1,55 +1,80 @@
 # Python Parity Checklist
 
-This checklist tracks practical comparison work between TIPICA Webapp and the archived Python desktop implementation. The Python desktop implementation remains the reference implementation for the manuscript results.
+This checklist supports continued comparison between TIPICA Webapp and the archived Python desktop implementation. Python remains the reference for manuscript results and unaudited workflows.
 
-## Reference files
+## Establish a matched case
 
-- Use the Python package source under `tipica-microplate-colorimetry/src/tipica/tipica_core/analyzer.py` as the local source reference.
-- Use the archived Python output package, including `RUN_20260529_122854/`, when available.
-- Compare against a freshly generated web ZIP from the same image, geometry, plate map, and analysis settings.
-- Record any intentional browser differences separately from unresolved parity differences.
+- Use the same plate image, geometry, plate map, calibration configuration, units, references, and analysis settings.
+- Record whether the case is unknown-only, standard-addition-only, mixed, external calibration, or internal calibration.
+- Record the expected empty-well distribution and whether it supports two-dimensional QC.
+- Export a fresh complete package from both implementations where direct parity is being claimed.
 
-## Output structure checks
+## Package structure
 
-- Confirm the ZIP contains only the intended `RESULTS/` and `RAW_DATA_DETAILS/` files.
-- Confirm no legacy lowercase folders or debug/developer files are present.
-- Confirm PNG filenames and workbook filenames match the Python-style package structure.
-- Confirm workbook sheet names and sheet order.
+- Confirm only intended `RESULTS/` and `RAW_DATA_DETAILS/` artifacts are present.
+- Confirm workflow-inapplicable workbook sheets are omitted.
+- Confirm all workbook prefixes are consecutive without gaps.
+- Confirm `01_CONTENTS` exactly matches the actual sheet list.
+- Confirm no temporary, developer, or legacy files are present.
 
-## Workbook checks
+## Shared result model
 
-- Check `RESULTS/<base>_REPORT.xlsx` sheet order, headers, row counts, and cell values.
-- Check `RAW_DATA_DETAILS/<base>_DIAGNOSTICS.xlsx` sheet order, headers, row counts, and cell values.
-- Verify blank or `NA` cells are used only where the Python output does the same or where the webapp does not yet compute the quantity.
-- Confirm explanatory legend rows describe only quantities actually exported by the webapp.
+- Confirm primary outputs use group-level `ID + DF + method` results.
+- Confirm individual wells appear only in raw/diagnostic contexts.
+- Confirm `n = 1` has no artificial SD.
+- Confirm `n >= 2` uses the sample SD.
+- Confirm PNG, XLSX, TXT, and JSON use the same mean, SD, `n`, reference, delta, recovery, and display status.
 
-## Numerical checks
+## Calibration and standard addition
 
-- Compare RGB pseudo-absorbance values on common wells.
-- Compare replicate aggregation and `n_points` values.
-- Compare calibration and standard-addition fitting inputs. Primary RGB calibration and standard-addition fit rows now use the TypeScript port of the Python robust IRLS helper, but full fitting parity still requires every Python fit path and input aggregation path to be covered.
-- Compare standard-addition C0 and C0_sd outputs and marker semantics. C0_sd is covariance-propagated only for rewired standard-addition fit rows.
-- Compare configurator/project persistence for concentration, type, ID, DF, expected references, unit labels, and row/column priority. Current webapp persistence guards are improved, but full configurator parity remains unclaimed.
-- Compare CIELAB/DeltaE descriptors where computed by both implementations.
-- Compare background sampling, ROI/core/used-pixel counts, and geometry diagnostics.
+- Compare fit inputs, slope, intercept, covariance, R², LOD, and LOQ where applicable.
+- Verify `C0 = DF × q / m` for standard-addition groups.
+- Verify propagated C0 SD.
+- Verify `beta = m_stdadd / m_cal` and the exported bias definition.
+- Verify method ranking uses only applicable metrics.
+- Verify unknown-only runs do not display slope agreement, bias, or standard-addition R².
+- Verify calibration-plus-standard-addition runs retain the full three-panel comparison.
+
+## References
+
+- Verify each reference ID, label, value, SD, unit, delta, and recovery.
+- Test repeated reference labels with different IDs.
+- Confirm no dynamic-column collision or silent overwrite occurs.
+- Confirm out-of-scale display status does not replace the underlying numerical result or reliability assessment.
+
+## CIELAB-derived outputs
+
+- Compare `L`, `a`, `b`, `DeltaL`, `Deltaa`, `Deltab`, `DeltaE_ab`, and `DeltaE_ab_chroma` where supported by both paths.
+- Confirm quantitative CIELAB-derived group rows are present in all applicable outputs.
+- Confirm diagnostic fitting rows contain no duplicate descriptor/type pair.
+
+## Empty-well QC
+
+- Confirm empty wells are not counted as unknowns.
+- Verify count, distinct rows, distinct columns, coverage fractions, robust SD, P10/P90 span, and spatial correlations.
+- Verify sparse one-dimensional coverage produces `available_insufficient` rather than a global `pass`.
+- Verify channel-level screening wording is not confused with the overall plate-QC state.
+- Confirm QC remains separate from concentration calculations and ranking unless a future validated integration is introduced.
+
+## Workbook and text integrity
+
+- Search for Excel errors such as `#REF!`, `#DIV/0!`, `#VALUE!`, `#NAME?`, and `#N/A`.
+- Check sheet headers, row counts, and duplicate rows.
+- Confirm captions describe only artifacts and metrics actually present in the run.
+- Avoid fixed sheet-number references in text because sheet numbering is dynamic.
 
 ## Figure checks
 
-- Confirm each figure consumes the same corrected data structures used by the workbooks.
-- Compare figure dimensions and panel structure.
-- Compare plotted points, fitted lines, method rows, labels, and captions.
-- Document any visual-style differences that are intentionally retained during beta validation.
+- Confirm each figure consumes the same structured values used by the workbooks and JSON.
+- Verify panel applicability, clipping, reference bands, error bars, out-of-scale markers, labels, legends, and margins.
+- Verify no individual-well result is promoted into a group-only primary figure.
 
-## Known priority fixes
+## Remaining broader audit areas
 
-- `REPORT.xlsx / 04_RAW` row and column parity
-- Add Python RAW columns `L`, `a`, `b`, `DeltaL`, `Deltaa`, `Deltab`, `DeltaE_ab`, `DeltaE_ab_chroma`, `ImageWarning` where computed
-- Exclude/include wells exactly as Python does
-- Full fitting parity across every Python path; Python uses replicate means in calibration where applicable
-- Method-comparison row parity including `DeltaE_chroma`, `DeltaE_ab`, `DeltaL`, `Deltaa`, `Deltab`
-- Background sample centroid/RGB median/area parity
-- ROI/core/used-pixel statistics parity
-- Geometry QC and well-bottom diagnostic parity
-- Spatial diagnostics `applied` / `not_applied` conditions
-- Caption parity
-- Figure visual/data parity
+- Additional Python workflows and edge cases not yet tested with matched packages
+- Image input and QC across additional devices and acquisition conditions
+- Automatic/assisted geometry detection across non-8×12 configured grids
+- Background-model and ROI behavior across additional plates
+- Configurator behavior outside the audited persistence paths
+- Epsilon/path-length quantification, which is not yet implemented in the browser configurator
+- Exact historical figure-style and workbook-layout identity where that level of parity is required

@@ -1,24 +1,29 @@
 cff-version: 1.2.0
-message: "If you use this beta browser companion, please cite this webapp release. For the webapp as a whole, use the Zenodo concept DOI 10.5281/zenodo.21218967. Also cite the archived Python reference package/manuscript when using or comparing scientific results."
+message: "If you use this beta browser companion, cite the version-specific webapp archive when available and the Zenodo concept DOI 10.5281/zenodo.21218967 for the software as a whole. Also cite the archived Python reference package/manuscript when using or comparing scientific results."
 title: "TIPICA Webapp Beta: Browser companion for image-based plate colorimetry"
 type: software
 authors:
   - family-names: Palladino
     given-names: Pasquale
     orcid: "https://orcid.org/0000-0002-3869-5085"
-abstract: "Beta browser-based companion implementation for local exploration of TIPICA-style image-based plate colorimetry workflows. The public browser webapp is available through GitHub Pages and archived separately from the Python desktop reference implementation. The archived Python desktop implementation remains the reference implementation for manuscript results."
+abstract: "Beta browser-based companion implementation for local TIPICA-style image-based plate colorimetry. It supports calibration, standard addition, unknown-group quantification, workflow-aware method comparison, structured PNG/XLSX/TXT/JSON exports, and empty-well plate QC. The archived Python desktop implementation remains the reference implementation for manuscript results and unaudited workflows."
 keywords:
   - digital quantitative colorimetry
   - microplate analysis
   - pseudo-absorbance
+  - standard addition
+  - CIELAB
   - browser application
   - beta software
 license: AGPL-3.0-only
-version: "0.1.32-beta"
-doi: "10.5281/zenodo.21398838"
+version: "0.1.53-beta"
 url: "https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/"
 repository-code: "https://github.com/pasqualepalladino/tipica-microplate-colorimetry-webapp"
-date-released: "2026-07-16"
+date-released: "2026-07-21"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.21218967"
+    description: "Zenodo concept DOI for all versions of TIPICA Webapp"
 references:
   - type: software
     title: "TIPICA: Tool for Image-based Plate-Integrated Colorimetric Analysis"

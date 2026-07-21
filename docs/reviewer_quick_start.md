@@ -2,41 +2,40 @@
 
 ## Purpose
 
-TIPICA Webapp is a beta browser-based companion interface for evaluating the browser workflow for image-based plate colorimetric analysis. It currently reproduces the Python-style output package structure and supports local, client-side exploration of the workflow.
+TIPICA Webapp is a beta, client-side browser companion for image-based plate colorimetry. It supports complete browser workflows and structured exports while keeping uploaded data local to the browser.
 
-## Important limitation
+The webapp was not used to generate the submitted manuscript results. The archived Python desktop implementation remains the reference for those results.
 
-The current webapp is intended for preliminary evaluation of the browser workflow. It should not be used as the authoritative source for the manuscript numerical results unless validation against the Python source and outputs is completed for that specific use.
+## Public browser version
 
-The webapp was not used to generate the submitted manuscript results.
+https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/
 
 ## Local setup
 
-Install dependencies and run the local development server:
-
 ```bash
 npm install
+npm run build
 npm run dev
 ```
 
-For validation-oriented local checks:
+Optional regression checks:
 
 ```bash
-npm run build
 npm run smoke:fitting-parity
 npm run smoke:plate-configurator
 npm run smoke:configurator-persistence
 ```
 
-## Generate an output package
+## Generate an analysis package
 
-1. Load a plate image.
-2. Load the matching geometry/project inputs.
+1. Load or acquire a plate image.
+2. Load or define the matching geometry.
 3. Configure or load the plate map.
-4. Run extraction and fitting.
-5. Export the complete analysis package.
+4. Load an external calibration or configure internal calibration when required.
+5. Run extraction and fitting.
+6. Export the complete analysis package.
 
-The intended default package contains:
+Typical artifacts are:
 
 ```text
 RESULTS/
@@ -52,18 +51,30 @@ RAW_DATA_DETAILS/
   <base>_FIGURE_CIELAB_DELTAE.png
   <base>_METHOD_COMPARISON.png
   <base>_RAW_DATA_DETAILS_CAPTION.txt
+  <base>_analysis_run_config.json
 ```
 
-## Interpreting outputs
+Workbook sheets are workflow-dependent, consecutively numbered, and listed in `01_CONTENTS`. Non-applicable empty sheets are omitted.
 
-The exported files are useful for reviewing the browser workflow and the current state of Python-style package generation. Full parity remains unclaimed; validation is still ongoing for numerical values, workbook content, CIELAB/DeltaE diagnostics, fitting inputs beyond the rewired robust IRLS rows, background and ROI diagnostics, geometry diagnostics, captions, XLSX/TXT content, and figure formatting.
+## Interpretation
 
-Treat the output as beta validation material rather than manuscript-source numerical evidence.
+Primary results are group-level summaries. Individual wells are retained in diagnostic/raw sheets.
 
-## Reference implementation
+`METHOD_COMPARISON` is workflow-aware:
 
-The archived Python desktop implementation remains the reference implementation for the manuscript results.
+- unknown-only with external calibration: concentration/reference and calibration-quality panels;
+- calibration plus standard addition: agreement/bias, concentration/reference, and calibration/standard-addition R² panels.
+
+Empty wells can support plate background and illumination screening. They are not quantitative unknowns. Sparse spatial coverage may yield `available_insufficient` even when channel-level spread checks are acceptable.
+
+## Validation scope
+
+Representative output packages have been audited for external-calibration unknown-only, external-calibration standard-addition, internal-calibration standard-addition, and sparse/extensive empty-well cases. The audit checked internal consistency among PNG, XLSX, TXT, and JSON artifacts.
+
+Do not interpret this as universal equivalence with every Python workflow, historical workbook, image-input condition, or configurator path.
 
 ## Citation
 
-Use the webapp citation metadata in `CITATION.cff` only for this beta browser companion. Cite the archived Python reference package/manuscript when using or comparing scientific results. The webapp beta release must not be treated as equivalent to the Python reference deposit.
+Use the webapp citation metadata in `CITATION.cff` for this browser software. For scientific comparison or manuscript-related use, also cite the archived Python reference package/manuscript:
+
+https://doi.org/10.5281/zenodo.20553451

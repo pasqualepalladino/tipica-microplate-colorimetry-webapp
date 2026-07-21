@@ -1,79 +1,89 @@
 # TIPICA Webapp
 
-TIPICA Webapp is a beta browser-based companion implementation of TIPICA, designed to improve accessibility of image-based plate colorimetric analysis workflows.
+TIPICA Webapp is the beta browser-based companion implementation of TIPICA, designed to make image-based plate colorimetry workflows accessible through a local, client-side web interface.
 
-## Public webapp, source code, and archive
+## Public webapp, source code, and archives
 
 - Public webapp: https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/
 - Source repository: https://github.com/pasqualepalladino/tipica-microplate-colorimetry-webapp
-- Webapp archive / Zenodo concept DOI: https://doi.org/10.5281/zenodo.21218967
-- Archived webapp version v0.1.32-beta DOI: https://doi.org/10.5281/zenodo.21398838
-- Python reference archive / Zenodo DOI: https://doi.org/10.5281/zenodo.20553451
+- Webapp Zenodo concept DOI: https://doi.org/10.5281/zenodo.21218967
+- Latest currently archived webapp version before this release: v0.1.32-beta, https://doi.org/10.5281/zenodo.21398838
+- Python reference archive DOI: https://doi.org/10.5281/zenodo.20553451
 
-The browser webapp is archived separately from the Python desktop reference implementation. The public webapp is the operational browser interface; the GitHub repository contains the source code; the Zenodo webapp DOI provides the citable archived software record.
+The browser webapp is archived separately from the Python desktop reference implementation. The public GitHub Pages site is the operational browser interface; the repository contains the source code; Zenodo provides citable, versioned software archives.
 
 ## Beta status and relationship to the Python reference
 
-This beta release is a browser-based companion implementation for TIPICA-style plate colorimetry workflows. It produces Python-style outputs and reproducibility metadata for local review and comparison, but it is not yet validated as a full equivalent to the archived Python reference implementation. Numerical results, XLSX/TXT content, figure formatting, and several diagnostics remain under active parity validation; Python remains the reference for exact artifact structure and scientific outputs.
+The webapp is a browser-based companion implementation for TIPICA-style plate colorimetry workflows. It was not used to generate the submitted manuscript results. The archived Python desktop implementation remains the reference implementation for those results and for exact comparison where a workflow has not yet been audited.
 
-TIPICA Webapp is currently a beta companion interface under active parity validation. The archived Python desktop implementation remains the reference implementation for the manuscript results.
+The current beta has undergone a detailed output-consistency audit covering representative workflows with:
 
-The webapp was not used to generate the submitted manuscript results. Users should not interpret the current webapp as a validated substitute for the archived Python desktop release.
+- external calibration and unknown-only samples;
+- external calibration and standard addition;
+- internal calibration and internal standard addition;
+- sparse and extensive empty-well coverage.
 
-## Current status
+For the audited browser workflows, the exported PNG, XLSX, TXT, and JSON artifacts now share the same group-level result model, reference metadata, uncertainty values, recovery values, method applicability, and workflow-dependent method-comparison logic. This does not establish universal, file-for-file equivalence with every Python path, input mode, or historical artifact.
 
-The webapp currently provides a Python-style output package structure and a browser-based workflow for plate colorimetry. Full parity validation remains open for numerical outputs, diagnostic workbook content, CIELAB/DeltaE inputs and outputs, background and ROI diagnostics, configurator behavior, image input/QC, XLSX/TXT contents, and figure formatting. Primary RGB calibration and standard-addition fit rows now use a TypeScript port of the Python robust IRLS fit with covariance propagation.
-
-## What is currently implemented
+## Current capabilities
 
 - Project-based plate colorimetry workflow
-- Plate configurator
+- Plate configurator and project persistence
 - RGB pseudo-absorbance analysis
-- Calibration and standard addition workflows
-- Reference-value comparison
+- Quantitative RGB calibration
+- External and internal calibration workflows
+- Standard-addition workflows
+- Unknown-only group quantification from calibration
+- Quantitative CIELAB-derived projections where supported
+- Multiple reference values with uncertainty, delta, and recovery reporting
+- Workflow-aware method comparison
+- Empty-well background and illumination-uniformity screening
 - Python-style `RESULTS/` and `RAW_DATA_DETAILS/` output package
-- PNG figure export
-- `RESULTS` report workbook
-- `RAW_DATA_DETAILS` diagnostics workbook
+- PNG figures, XLSX workbooks, TXT captions, and JSON reproducibility metadata
+- Dynamic, consecutive workbook sheet numbering with non-applicable empty sheets omitted
 
-## Known validation limitations
+## Output model
 
-- Numerical parity with the Python desktop implementation
-- Full fitting parity across every Python path
-- Robust fitting input parity outside the rewired primary RGB and exported CIELAB/DeltaE fit rows
-- Image input/QC parity
-- Configurator parity
-- XLSX/TXT content parity
-- Replicate aggregation and `n_points` parity
-- CIELAB/DeltaE diagnostic parity
-- Diagnostic workbook content parity
-- Background sampling and ROI/core/used-pixel parity
-- Geometry diagnostic parity
-- Figure-level formatting parity
+Primary scientific summaries are group-based:
 
-Safety flags for the beta release:
+- for `n = 1`, one group result is reported without an artificial SD;
+- for `n >= 2`, the group mean, sample SD, and `n` are reported;
+- individual wells are retained in diagnostic/raw outputs rather than promoted as primary results.
 
-- SAFE_TO_CLAIM_FULL_WORKFLOW_PARITY = no
-- SAFE_TO_CLAIM_FULL_FITTING_PARITY = no
-- SAFE_TO_CLAIM_FULL_CONFIGURATOR_PARITY = no
-- SAFE_TO_CLAIM_FULL_IMAGE_INPUT_PARITY = no
-- SAFE_TO_CLAIM_FULL_XLSX_TXT_PARITY = no
-- SAFE_TO_CLAIM_WEBAPP_DEPOSIT_EQUIVALENT_TO_PYTHON_DEPOSIT = no
+`METHOD_COMPARISON` adapts to the available workflow:
 
-## Reference implementation
+- calibration plus standard addition: full comparison with slope agreement, bias, calibration R², and standard-addition R²;
+- external-calibration unknown-only: concentration-versus-reference and calibration-quality panels only;
+- metrics that are not applicable are omitted or explicitly marked as not applicable rather than represented as zero.
 
-The archived Python desktop implementation remains the reference implementation for the manuscript results. The browser implementation is being checked against that reference output before any broader parity claim should be made.
+Empty wells may be used for background and illumination screening, but they are not counted as quantitative unknowns. The QC summary distinguishes unavailable, insufficient-coverage, pass, warning, and fail states and records spatial coverage and channel-specific screening statistics.
+
+## Remaining validation boundaries
+
+The following broader claims remain intentionally unmade:
+
+- full equivalence across every Python workflow and fitting path;
+- exact equality of every historical Python workbook, caption, and figure layout;
+- complete image-input, geometry, ROI, background-model, and configurator parity for every supported plate design;
+- complete parity for workflows not yet audited with matched inputs and outputs;
+- equivalence between the webapp Zenodo deposit and the Python reference deposit.
+
+The Python implementation remains the source of truth for manuscript results and for any unaudited scientific path.
+
+Safety flags:
+
+- `SAFE_TO_CLAIM_FULL_WORKFLOW_PARITY = no`
+- `SAFE_TO_CLAIM_FULL_FITTING_PARITY = no`
+- `SAFE_TO_CLAIM_FULL_CONFIGURATOR_PARITY = no`
+- `SAFE_TO_CLAIM_FULL_IMAGE_INPUT_PARITY = no`
+- `SAFE_TO_CLAIM_UNIVERSAL_XLSX_TXT_PARITY = no`
+- `SAFE_TO_CLAIM_WEBAPP_DEPOSIT_EQUIVALENT_TO_PYTHON_DEPOSIT = no`
 
 ## Exported artifacts
 
-The webapp exports a complete-analysis package as a ZIP archive containing Python-style RESULTS and RAW_DATA_DETAILS folders. Typical contents include:
+The webapp exports a complete-analysis ZIP with `RESULTS/` and `RAW_DATA_DETAILS/` folders. The exact files and workbook sheets are workflow-dependent; non-applicable empty sheets are omitted.
 
-- XLSX workbooks for the RESULTS report and RAW_DATA_DETAILS diagnostics
-- TXT caption files for the report and raw-data details outputs
-- PNG figures for plate ROI overlays, RGB views, CIELAB/DeltaE diagnostics, and method-comparison views
-- Reproducibility metadata in RAW_DATA_DETAILS with analysis_run_config.json
-
-The current intended default ZIP structure is:
+Typical contents are:
 
 ```text
 RESULTS/
@@ -94,11 +104,11 @@ RAW_DATA_DETAILS/
 
 ## How to use the public webapp
 
-Open the public browser version:
+Open:
 
 https://pasqualepalladino.github.io/tipica-microplate-colorimetry-webapp/
 
-All processing is performed locally in the browser. Uploaded images, geometry files, plate maps, and results are not sent to any server by this beta application.
+All processing is performed locally in the browser. Uploaded images, geometry files, plate maps, and results are not sent to a server by the application.
 
 ## How to run locally
 
@@ -109,9 +119,9 @@ npm run smoke:plate-configurator
 npm run dev
 ```
 
-Open the local Vite URL shown in the terminal after `npm run dev`.
+Open the local Vite URL shown after `npm run dev`.
 
-## How to validate locally
+## Local regression checks
 
 ```bash
 npm run build
@@ -120,26 +130,26 @@ npm run smoke:plate-configurator
 npm run smoke:configurator-persistence
 ```
 
-These checks are regression guards for the beta browser implementation. Passing them does not establish full Python workflow or output parity.
+These checks are regression guards. Passing them does not, by itself, establish universal Python equivalence.
 
-## Citation and relationship to Python reference
+## Citation
 
-This repository is the TIPICA Webapp beta browser companion. It is not the archived Python reference implementation and was not used to generate the submitted manuscript results.
+For the webapp as a whole, cite the Zenodo concept DOI: https://doi.org/10.5281/zenodo.21218967.
 
-If citing this beta webapp in general, use the webapp Zenodo concept DOI: https://doi.org/10.5281/zenodo.21218967. The archived version DOI for v0.1.32-beta is https://doi.org/10.5281/zenodo.21398838.
+For scientific comparison or manuscript-related use, also cite the archived Python reference package/manuscript as appropriate: https://doi.org/10.5281/zenodo.20553451.
 
-When using, validating, or comparing scientific results, also cite the archived Python reference package/manuscript as appropriate. The Python reference package DOI is https://doi.org/10.5281/zenodo.20553451.
+The version-specific DOI for the next webapp archive will be added after Zenodo completes the release deposition.
 
 ## Validation documents
 
 - [Validation status](VALIDATION_STATUS.md)
 - [Python parity checklist](docs/python_parity_checklist.md)
 - [Reviewer quick start](docs/reviewer_quick_start.md)
-- [Release checklist v0.1.0-beta](docs/release_checklist_v0.1.0-beta.md)
+- [Release checklist](docs/release_checklist.md)
 
 ## Privacy
 
-All processing is performed locally in the browser. Uploaded images, geometry files, plate maps, and results are not sent to any server by this beta application.
+All processing is performed locally in the browser. Uploaded images, geometry files, plate maps, and results are not sent to any server by the application.
 
 ## About
 

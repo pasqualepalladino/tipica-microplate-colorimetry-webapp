@@ -1,0 +1,17 @@
+# Normalize repository text files to LF on every platform.
+* text=auto eol=lf
+
+# Keep binary files binary.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.xlsx binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
