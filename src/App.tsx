@@ -5,7 +5,7 @@ import { ImageGeometryLoader } from './components/ImageGeometryLoader';
 import { PlateCanvas } from './components/PlateCanvas';
 import { PlateMapEditor } from './components/PlateMapEditor';
 import packageJson from '../package.json';
-import { fitCalibration, fitLineWithCovariance, fitLinearRegression, fitStandardAddition, stdAddC0SdFromFit } from './core/fitting';
+import { collectMethodComparisonIdDfGroups, fitCalibration, fitLineWithCovariance, fitLinearRegression, fitStandardAddition, stdAddC0SdFromFit, type MethodComparisonIdDfGroup } from './core/fitting';
 import { computePythonImageQcInfo, type PythonImageQcInfo } from './core/imageQc';
 import { buildPythonReportOverviewRows } from './core/reportOverview';
 import {
@@ -45,7 +45,11 @@ import {
 import {
   createEmptyPlateMap,
 } from './core/plateMap';
-import type { ExpectedRef, PlateEditorSnapshot } from './core/plateConfigurator';
+import {
+  normalizeSnapshotPlateRegion,
+  type ExpectedRef,
+  type PlateEditorSnapshot,
+} from './core/plateConfigurator';
 import { estimateLocalBackground, sampleCircularRoi, sampleCircleIntersectionRoi } from './core/sampling';
 import { buildWellBottomGradientImage, refineCircleFast } from './core/wellBottomScoring';
 import {
@@ -980,6 +984,21 @@ function parseProjectPlateEditorSnapshot(raw: unknown): PlateEditorSnapshot | nu
   }
 
   const defaultPayload = defaults as Record<string, unknown>;
+  const plateRegionRaw = payload.plateRegion;
+
+  if (plateRegionRaw !== undefined && (
+    plateRegionRaw === null
+    || typeof plateRegionRaw !== 'object'
+    || Array.isArray(plateRegionRaw)
+  )) {
+    throw new Error('Invalid plateConfigurator plateRegion in project JSON.');
+  }
+
+  const plateRegion = normalizeSnapshotPlateRegion(
+    nrow,
+    ncol,
+    plateRegionRaw as PlateEditorSnapshot['plateRegion'],
+  );
 
   return {
     grid: parseProjectStringRecord(payload.grid, 'plateConfigurator grid'),
@@ -993,6 +1012,7 @@ function parseProjectPlateEditorSnapshot(raw: unknown): PlateEditorSnapshot | nu
     ncol,
     idDfPriority: priority,
     extendedView: typeof payload.extendedView === 'boolean' ? payload.extendedView : undefined,
+    plateRegion,
   };
 }
 
@@ -1673,17 +1693,19 @@ function createPythonResultsCaptionText(
   selectedChannel: FitChannel,
   hasStandardAddition: boolean,
   emptyWellQc: EmptyWellPlateQcSummary,
+  methodComparisonFileNames: string[],
 ): string {
   const selectedMethod = unknownRgbMethod(selectedChannel);
   const selectedGroups = unknownMethodGroupResults.filter((group) => group.method === selectedMethod);
   const unknownLines = selectedGroups.length > 0
     ? selectedGroups.map((group) => `- ${unknownGroupDisplayLabel(group, unitLabel)}${group.deltaMean !== null ? `; delta=${formatFigureDeltaNumber(group.deltaMean, group.referenceValue ?? Number.NaN)} ${unitLabel}` : ''}; displayStatus=${group.displayStatus}; displayReason=${group.displayReason}`).join('\n')
     : '- No unknown group concentration result was available.';
-
-
   const referenceLines = expectedRefs.length > 0
     ? expectedRefs.map((ref) => `- ${ref.label || ref.refId || 'Reference'}${ref.refId ? ` (ID=${ref.refId})` : ''}: ${formatFigureReferenceNumber(ref.value)}${ref.sd !== null && Number.isFinite(ref.sd) ? ` +/- ${formatFigureReferenceNumber(ref.sd)}` : ''} ${unitLabel}`).join('\n')
     : '- No external reference values were supplied.';
+  const methodComparisonLines = methodComparisonFileNames.length > 0
+    ? methodComparisonFileNames.map((name) => `- ${name}`).join('\n')
+    : '- No METHOD_COMPARISON PNG was generated.';
   const quantificationSection = selectedGroups.length > 0 && hasStandardAddition
     ? `Mixed sample quantification\nThis run contains both standard-addition and unknown-only groups. Standard-addition C0 is computed as DF x q/m for each ID + DF group; unknown-only responses are projected through the matching calibration fit.\n${unknownLines}`
     : selectedGroups.length > 0
@@ -1692,10 +1714,14 @@ function createPythonResultsCaptionText(
         ? 'Standard-addition quantification\nThis run contains standard-addition groups and no unknown-only groups. C0 is obtained as DF x q/m for each standard-addition ID + DF group.'
         : `Unknown quantification\nNo valid unknown group concentration result was available.\n${unknownLines}`;
 
+  void imageBase;
   return `RESULTS caption - RGB quantitative output
 
-File scope
-This caption applies to the primary RGB outputs in the RESULTS folder for ${imageBase}, especially the *_FIGURE_RGB.png, *_BEST_CHANNEL.png and *_REPORT.xlsx files.
+METHOD_COMPARISON PNG files
+${methodComparisonLines}
+${hasStandardAddition
+  ? 'One three-panel METHOD_COMPARISON figure is generated for each distinct standard-addition ID + DF pair. The calibration fit is the common external calibration used by the run.'
+  : 'When no standard-addition ID + DF pair is present, the single METHOD_COMPARISON figure follows the existing unknown-only comparison path.'}
 
 Analytical signal
 The primary RGB signal is pseudo-absorbance, reported as PAbs_Red, PAbs_Green and PAbs_Blue:
@@ -1712,23 +1738,15 @@ Fitting and quantification
 Calibration and standard-addition fits in the primary RGB export path use robust residual-based IRLS linear regression with covariance propagation. For standard addition, the original-sample concentration is C0 = DF x q/m, where y = m x + q and x is the added concentration. For unknown projection, C0 = DF x (PAbs - q)/m.
 
 Ranking score
-Overall method score: one value per method/channel, computed across all available standard-addition groups. It is used to compare methods, assign Selected and Rank, and choose the method shown in BEST_CHANNEL. Group score: one value for one Sample ID + dilution-factor group. It is used only within the already selected method to choose the ID/DF group shown in BEST_CHANNEL. Expected/reference values, recovery, SNR and clipping are external checks and are not used in either score.
-
-${hasStandardAddition
-  ? 'The METHOD_COMPARISON sheet in the primary workbook uses the same group-only method rows as METHOD_COMPARISON.png and reports the full calibration-plus-standard-addition comparison, including slope agreement, bias and both calibration and standard-addition R².'
-  : 'For this external-calibration unknown-only run, METHOD_COMPARISON and the METHOD_COMPARISON sheets in both workbooks use the same group-only RGB and CIELAB projections and are intentionally limited to estimated concentration versus reference and calibration R². Slope agreement, bias index and standard-addition R² are not applicable and are omitted.'}
+Each ID + DF METHOD_COMPARISON reports Score, Rank and Selected using only the standard-addition fit for that pair together with the common calibration fit. Expected/reference values, recovery, SNR and clipping are external checks and are not used in the score.
 
 Quality control
 Image, plate, geometry and floor-QC messages are alerts on data quality. No automatic image correction is applied. Current-image empty-well QC: ${emptyWellQc.status}; n=${emptyWellQc.nEmptyWells}; coverage=${emptyWellQc.distinctRows} row(s) x ${emptyWellQc.distinctColumns} column(s); ${emptyWellQc.spatialAssessment}${emptyWellQc.dominantChannel ? ` ${emptyWellQc.status === 'available_insufficient' ? 'Largest observed trend channel' : 'Dominant channel'}=${emptyWellQc.dominantChannel}.` : ''} ${emptyWellQc.dominantIssue} Channel-level pass values are local screening results and do not imply an overall plate pass when spatial coverage is insufficient. This is a screening assessment of background/illumination uniformity and does not by itself invalidate concentration results.
 
 Geometry and epsilon/path-length quantification
 When epsilon-based unknown quantification is configured, optical path length is estimated from configured liquid volume and nominal flat-bottom well area. This path assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation. This section is informational unless epsilon/path-length mode is configured.
-
-Units
-Reported concentrations are expressed in ${unitLabel}.
 `;
 }
-
 function createPythonRawDataDetailsCaptionText(
   imageBase: string,
   unitLabel: string,
@@ -1746,40 +1764,30 @@ function createPythonRawDataDetailsCaptionText(
         ? 'This run contains standard-addition groups and no unknown-only group results.'
         : 'This run contains no standard-addition groups and no valid unknown-only group result.';
   const cielabCoverageText = selectedUnknownCount > 0
-    ? 'For each unknown ID + DF group it reports mean C0, sample SD when n >= 2, n, delta, recovery and display status using the same common model as METHOD_COMPARISON and the workbooks.'
+    ? 'For each unknown ID + DF group it reports mean C0, sample SD when n >= 2, n, delta, recovery and display status using the same quantitative model as the primary report.'
     : hasStandardAddition
       ? 'For this standard-addition-only run it reports descriptor fits and standard-addition comparisons; no unknown-only C0 projection is claimed.'
       : 'No unknown-only C0 projection is reported because no valid unknown group result is available.';
-  return `RAW_DATA_DETAILS caption - diagnostics and method-development outputs
-
-File scope
-This caption applies to diagnostic outputs in RAW_DATA_DETAILS for ${imageBase}: BG_STAT_MASK.png, FIGURE_CIELAB_DELTAE.png, METHOD_COMPARISON.png, DIAGNOSTICS.xlsx and analysis_run_config.json.
+  void imageBase;
+  void unitLabel;
+  return `RAW_DATA_DETAILS caption - diagnostic outputs
 
 Sample coverage
-${coverageText} METHOD_COMPARISON and the diagnostic workbooks use the same group-only projections and the same uncertainty-aware display status as the primary report whenever unknown groups are present. Empty wells, when configured, remain QC/background controls and are not counted as unknown-only quantitative groups.
+${coverageText} Empty wells, when configured, remain QC/background controls and are not counted as unknown-only quantitative groups.
 
 BG_STAT_MASK.png
 The web export shows the inter-well background sampling mask overlaid on the analyzed image for auditability. Blue marks all candidate pixels before robust acceptance; because yellow is drawn on top, blue pixels that remain visible are candidate pixels rejected by the acceptance filter. Yellow marks accepted background pixels. Magenta marks the final sparse samples used by the background model. Accepted pixels are selected from inter-well regions after model-based geometric exclusion, including the projected well volume from mouth to floor when floor geometry is available, followed by robust intensity filtering.
 
 analysis_run_config.json
-Web-specific reproducibility and audit metadata for the exported run. It records the app-side configuration, selected analysis options, geometry/background settings and an unknown-result summary needed to understand or reproduce how this ZIP was generated. It is not a result table and does not change concentration calculations.
+Web-specific reproducibility and audit metadata for the exported run. It records the app-side configuration, selected analysis options and geometry/background settings needed to understand or reproduce how this ZIP was generated. It is not a result table and does not change concentration calculations.
 
 FIGURE_CIELAB_DELTAE.png
-CIELAB/DeltaE fitting/report figure with plate preview, descriptor fitting panels, reference values and, when unknown groups are present, group-only quantitative projections for DeltaE_ab, DeltaE_ab_chroma, DeltaL, Deltaa and Deltab. ${cielabCoverageText} These CIELAB/DeltaE outputs are diagnostic/comparative and do not override the selected primary RGB/PAbs quantitative method.
-
-METHOD_COMPARISON.png
-${hasStandardAddition
-  ? 'Full three-panel cross-method diagnostic comparison: slope agreement/bias, estimated concentration versus reference, and calibration/standard-addition R².'
-  : 'Two-panel external-calibration unknown-only comparison: estimated concentration versus reference and calibration R². Slope agreement, bias index, R² std add and all standard-addition legends are not applicable and are omitted.'} Group-only unknown estimates, SD, reference delta, recovery, display status and display reason are included when available.
+CIELAB/DeltaE diagnostic figure with plate preview and descriptor fitting panels. ${cielabCoverageText} These CIELAB/DeltaE outputs are diagnostic/comparative and do not override the selected primary RGB/PAbs quantitative method.
 
 DIAGNOSTICS.xlsx
-Diagnostic workbook with available background, ROI, geometry, spatial, method-comparison, unknown and CIELAB fitting tables. The EMPTY_WELL_QC sheet reports current-image empty-well illumination/background screening: status=${emptyWellQc.status}, n=${emptyWellQc.nEmptyWells}, coverage=${emptyWellQc.distinctRows} row(s) x ${emptyWellQc.distinctColumns} column(s)${emptyWellQc.dominantChannel ? `, ${emptyWellQc.status === 'available_insufficient' ? 'largest observed trend channel' : 'dominant channel'}=${emptyWellQc.dominantChannel}` : ''}, with coverage sufficiency, per-channel robust spread and row/column correlations. Channel-level pass values are local screening results and do not imply an overall plate pass when spatial coverage is insufficient. The web export also includes the web-specific physical-background audit sheets BG_MODEL_INPUTS and BG_MODEL_COEFFICIENTS. These sheets support reproducibility and troubleshooting and do not change concentration calculations.
-
-Units
-Reported concentrations are expressed in ${unitLabel}.
+Diagnostic workbook containing only background, ROI, geometry, empty-well, spatial, CIELAB-fitting and physical-background-model audit sheets. The EMPTY_WELL_QC sheet reports current-image empty-well illumination/background screening: status=${emptyWellQc.status}, n=${emptyWellQc.nEmptyWells}, coverage=${emptyWellQc.distinctRows} row(s) x ${emptyWellQc.distinctColumns} column(s)${emptyWellQc.dominantChannel ? `, ${emptyWellQc.status === 'available_insufficient' ? 'largest observed trend channel' : 'dominant channel'}=${emptyWellQc.dominantChannel}` : ''}. Channel-level pass values are local screening results and do not imply an overall plate pass when spatial coverage is insufficient. BG_MODEL_INPUTS and BG_MODEL_COEFFICIENTS support reproducibility and troubleshooting and do not change concentration calculations.
 `;
 }
-
 type XlsxCellValue = string | number | boolean | null | undefined;
 type XlsxRow = Record<string, XlsxCellValue>;
 
@@ -1809,6 +1817,7 @@ interface PythonReportWorkbookOptions {
   unknownCielabGroupSummaries: UnknownCielabGroupSummary[];
   unknownMethodGroupResults: UnknownMethodGroupResult[];
   methodComparisonRows: XlsxRow[];
+  methodComparisonGroups: Array<{ group: MethodComparisonIdDfGroup; rows: XlsxRow[] }>;
   expectedRefs: ExpectedRef[];
   rankings: PythonResultsChannelRank[];
   methodMetadata: MethodMetadata;
@@ -3622,13 +3631,22 @@ function methodScore(r2Cal: number, r2Std: number, agreement: number, loq: numbe
   };
 }
 
-function buildMethodComparisonRowsFromFitRows(fitRows: XlsxRow[], expectedRefs: ExpectedRef[], includeSelectionColumns: boolean): XlsxRow[] {
+function buildMethodComparisonRowsFromFitRows(
+  fitRows: XlsxRow[],
+  expectedRefs: ExpectedRef[],
+  includeSelectionColumns: boolean,
+  targetGroup?: MethodComparisonIdDfGroup,
+): XlsxRow[] {
   const methods = [...new Set(fitRows.map((row) => stringRowValue(row, 'Channel')).filter(Boolean))];
   const rows = methods.map((method) => {
     const channelRows = fitRows.filter((row) => stringRowValue(row, 'Channel') === method);
     const cal = channelRows.find((row) => row.FitType === 'Calibration');
-    const stdRows = channelRows.filter((row) => row.FitType === 'StdAdd');
-    const unknownRows = channelRows.filter((row) => row.FitType === 'UnknownFromCal');
+    const rowMatchesTargetGroup = (row: XlsxRow): boolean => !targetGroup || (
+      stringRowValue(row, 'ID').trim() === targetGroup.sampleId
+      && Math.abs(numericRowValue(row, 'DF') - targetGroup.dilutionFactor) <= 1e-12
+    );
+    const stdRows = channelRows.filter((row) => row.FitType === 'StdAdd' && rowMatchesTargetGroup(row));
+    const unknownRows = channelRows.filter((row) => row.FitType === 'UnknownFromCal' && rowMatchesTargetGroup(row));
     const mCal = numericRowValue(cal, 'm');
     const mStdValues = stdRows.map((row) => numericRowValue(row, 'm')).filter(Number.isFinite);
     const mStdMean = meanFinite(mStdValues);
@@ -3963,6 +3981,7 @@ function buildReportOverviewRows(
   methodMetadata: MethodMetadata,
   measurements: WellMeasurement[],
   displayMeasurements: WellMeasurement[],
+  hasPairSpecificMethodComparison = false,
 ): XlsxRow[] {
   const rows: XlsxRow[] = [];
   const cmpRows = [...methodComparisonRows];
@@ -4064,22 +4083,24 @@ function buildReportOverviewRows(
 
   addRow('Selected quantitative method', selectedName);
   addRow('Selected family', selectedQuantitativeCmp.Family ?? methodFamilyFromReportMethod(selectedName));
-  addRow('Quantitative ranking mode', selectedQuantitativeCmp.RankMode ?? selectedQuantitativeCmp.Mode ?? '');
-  addRow('Selected quantitative method score', selectedQuantitativeCmp.Score ?? '');
-  addRow('Best diagnostic comparison method', bestComparisonName);
-  addRow('Best diagnostic comparison score', bestCmp.Score ?? '');
+  if (!hasPairSpecificMethodComparison) {
+    addRow('Quantitative ranking mode', selectedQuantitativeCmp.RankMode ?? selectedQuantitativeCmp.Mode ?? '');
+    addRow('Selected quantitative method score', selectedQuantitativeCmp.Score ?? '');
+    addRow('Best diagnostic comparison method', bestComparisonName);
+    addRow('Best diagnostic comparison score', bestCmp.Score ?? '');
 
-  [
-    ['R2 calibration', 'R2_cal'],
-    ['R2 std add', 'R2_std_mean'],
-    ['Slope agreement', 'SlopeAgreement'],
-    ['C0 median', 'C0_median'],
-    ['C0 SD median', 'C0_sd_median'],
-    ['beta (mean)', 'beta_mean'],
-    ['Bias index (mean)', 'bias_index_mean'],
-    ['LOD', 'LOD'],
-    ['LOQ', 'LOQ'],
-  ].forEach(([label, key]) => addRow(label, selectedQuantitativeCmp[key]));
+    [
+      ['R2 calibration', 'R2_cal'],
+      ['R2 std add', 'R2_std_mean'],
+      ['Slope agreement', 'SlopeAgreement'],
+      ['C0 median', 'C0_median'],
+      ['C0 SD median', 'C0_sd_median'],
+      ['beta (mean)', 'beta_mean'],
+      ['Bias index (mean)', 'bias_index_mean'],
+      ['LOD', 'LOD'],
+      ['LOQ', 'LOQ'],
+    ].forEach(([label, key]) => addRow(label, selectedQuantitativeCmp[key]));
+  }
 
   fitRows
     .filter((row) => stringRowValue(row, 'Channel') === selectedName)
@@ -4312,9 +4333,9 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "b", Meaning: "CIELAB blue–yellow axis", Formula: "median ROI value after RGB → CIELAB conversion", Unit: "dimensionless", "Where used": "RAW, SUMMARY", "Shown when": "CIELAB enabled", Notes: "" },
     { Term: "BaseScore/FinalScore", Meaning: "Intermediate/final score fields when present", Formula: "same common score unless an explicit post-score adjustment is applied", Unit: "dimensionless", "Where used": "METHOD_COMPARISON", "Shown when": "method comparison", Notes: "If identical to Score in the exported workbook, Score is the authoritative field." },
     { Term: "beta_k", Meaning: "Slope ratio for one standard-addition curve", Formula: "m_std / m_cal", Unit: "dimensionless", "Where used": "FITTING, METHOD_COMPARISON", "Shown when": "stdadd present", Notes: "Used to assess whether StdAdd and calibration slopes are coherent." },
-    { Term: "beta_k/beta_mean", Meaning: "Standard-addition/calibration slope ratio", Formula: "m_std / m_cal; beta_mean is the mean across available standard-addition fits", Unit: "dimensionless", "Where used": "06_FITTING, 07_METHOD_COMPARISON", "Shown when": "calibration plus standard addition present", Notes: "" },
+    { Term: "beta_k/beta_mean", Meaning: "Standard-addition/calibration slope ratio", Formula: "m_std / m_cal; beta_mean is the mean across available standard-addition fits", Unit: "dimensionless", "Where used": "06_FITTING, METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "calibration plus standard addition present", Notes: "" },
     { Term: "bias_index_k", Meaning: "Absolute relative slope bias for one standard-addition curve", Formula: "|beta_k − 1|", Unit: "dimensionless", "Where used": "FITTING, METHOD_COMPARISON", "Shown when": "stdadd present", Notes: "0 means identical slopes." },
-    { Term: "bias_index_k/bias_index_mean", Meaning: "Relative slope-bias index", Formula: "|m_std/m_cal - 1|; bias_index_mean is the mean across available fits", Unit: "dimensionless", "Where used": "06_FITTING, 07_METHOD_COMPARISON", "Shown when": "calibration plus standard addition present", Notes: "" },
+    { Term: "bias_index_k/bias_index_mean", Meaning: "Relative slope-bias index", Formula: "|m_std/m_cal - 1|; bias_index_mean is the mean across available fits", Unit: "dimensionless", "Where used": "06_FITTING, METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "calibration plus standard addition present", Notes: "" },
     { Term: "BiasIndex", Meaning: "Relative slope bias between standard addition and calibration", Formula: "|β − 1|, where β = m_std / m_cal", Unit: "dimensionless", "Where used": "METHOD_COMPARISON", "Shown when": "stdadd present", Notes: "Equals 0 when the standard-addition slope equals the calibration slope. Larger values indicate stronger slope bias." },
     { Term: "C0", Meaning: "Concentration in original sample", Formula: "standard addition: DF × (q/m); unknown/CRM from calibration: DF × ((y − q)/m); unknown from epsilon: DF × PAbs/(epsilon × l_cm), converted from M to the selected unit", Unit: unitLabel, "Where used": "FITTING, OVERVIEW", "Shown when": "stdadd present or unknown/CRM present", Notes: "Same symbol is used for standard addition and unknown/CRM results; FitType defines the method." },
     { Term: "C0/C0_sd", Meaning: "Estimated original-sample concentration and associated uncertainty", Formula: "standard addition: DF x q/m; calibration projection: DF x (y - q)/m; epsilon mode: DF x PAbs/(epsilon x l_cm), converted from M to the selected unit", Unit: unitLabel, "Where used": "FIGURE_RGB.png, 03_OVERVIEW, 06_FITTING", "Shown when": "standard addition, unknown or epsilon quantification present", Notes: "FitType identifies which calculation path produced C0." },
@@ -4328,18 +4349,18 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "Col", Meaning: "Plate column index", Formula: "1-based column number", Unit: "well-column index", "Where used": "RAW, REPLICATES_MEAN", "Shown when": "always", Notes: "" },
     { Term: "CommonFactorsN", Meaning: "Number of common factors used in the score", Formula: "3 for R2_cal, R2_std_mean and SlopeAgreement; LOQ is included in the score formula but not counted in CommonFactorsN; 1 for calibration-only or stdadd-only fallbacks", Unit: "integer", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "Used to avoid comparing scores obtained from different formulas." },
     { Term: "ComparableGroup", Meaning: "Set of methods scored with the same formula", Formula: "calibration_plus_stdadd, calibration_only, stdadd_only, or not_ranked", Unit: "text", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "Scores are directly comparable only within the same group. The group with the largest CommonFactorsN is used for Selected/Rank." },
-    { Term: "Overall method score", Meaning: "One value per analytical method/channel, aggregating every available standard-addition group. Used to compare methods and choose Selected, Rank and the BEST_CHANNEL method.", Formula: "mean(SA_k)^2 × √(R2_cal × mean(R2_std,k)) / LOQ", Unit: `1/${unitLabel}`, "Where used": "07_METHOD_COMPARISON; Selected; Rank; BEST_CHANNEL method selection", "Shown when": "calibration_plus_stdadd", Notes: "One value per method/channel. It is not a per-dilution score." },
+    { Term: "Overall method score", Meaning: "One value per analytical method/channel, aggregating every available standard-addition group. Used to compare methods and choose Selected, Rank and the BEST_CHANNEL method.", Formula: "mean(SA_k)^2 × √(R2_cal × mean(R2_std,k)) / LOQ", Unit: `1/${unitLabel}`, "Where used": "METHOD_COMPARISON ID+DF sheet(s); Selected; Rank; BEST_CHANNEL method selection", "Shown when": "calibration_plus_stdadd", Notes: "One value per method/channel. It is not a per-dilution score." },
     { Term: "Group score", Meaning: "One value for one Sample ID + dilution-factor group. Used only after the method is selected, to choose the ID/DF group shown in BEST_CHANNEL.", Formula: "SA_k^2 × √(R2_cal × R2_std,k) / LOQ", Unit: `1/${unitLabel}`, "Where used": "standard-addition result tables; best ID/DF selection within the selected method", "Shown when": "standard-addition group present", Notes: "One value per ID/DF group. It must not be reused as the overall method score." },
     { Term: "SA_k", Meaning: "Slope agreement for standard-addition group k", Formula: "min(|m_cal|, |m_std,k|) / max(|m_cal|, |m_std,k|)", Unit: "dimensionless", "Where used": "Overall method score; Group score", "Shown when": "calibration_plus_stdadd", Notes: "k identifies Sample ID and Dilution Factor." },
     { Term: "Conc", Meaning: "Configured concentration for calibration or added-standard wells", Formula: "user/configurator input", Unit: unitLabel, "Where used": "RAW, REPLICATES_MEAN, FITTING", "Shown when": "always", Notes: "Unknown wells may have undefined Conc." },
     { Term: "Best diagnostic comparison method", Meaning: "Highest-scoring method in the diagnostic method-comparison table", Formula: "method with maximum METHOD_COMPARISON Score", Unit: "method name", "Where used": "OVERVIEW", "Shown when": "METHOD_COMPARISON rows are available", Notes: "Reported separately from the selected quantitative RGB/PAbs method." },
     { Term: "Best diagnostic comparison score", Meaning: "Score of the best diagnostic comparison method", Formula: "maximum METHOD_COMPARISON Score", Unit: "score", "Where used": "OVERVIEW", "Shown when": "METHOD_COMPARISON rows are available", Notes: "Use for diagnostic comparison, not as a replacement for the primary quantitative RGB/PAbs selection." },
     { Term: "Confidence class", Meaning: "Qualitative class derived from reliability score", Formula: "HIGH >= 75; MEDIUM >= 45; LOW < 45; NOT QUANTIFIABLE when no valid quantification is available", Unit: "class", "Where used": "OVERVIEW", "Shown when": "always", Notes: "Interpret together with the reliability reason." },
-    { Term: "delta_expected_*/delta_reference_*", Meaning: "Difference between estimate and external reference", Formula: "estimate - reference", Unit: unitLabel, "Where used": "METHOD_COMPARISON.png, 03_OVERVIEW, 07_METHOD_COMPARISON", "Shown when": "reference values configured", Notes: "" },
+    { Term: "delta_expected_*/delta_reference_*", Meaning: "Difference between estimate and external reference", Formula: "estimate - reference", Unit: unitLabel, "Where used": "METHOD_COMPARISON PNG file(s), 03_OVERVIEW, METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "reference values configured", Notes: "" },
     { Term: "delta_reference_*", Meaning: "Difference between estimated concentration and an external reference", Formula: "C0 - reference_value", Unit: unitLabel, "Where used": "OVERVIEW, METHOD_COMPARISON, FIGURE_RGB", "Shown when": "reference values configured", Notes: "" },
     { Term: "Deltaa", Meaning: "Difference in CIELAB a* relative to the selected reference", Formula: "a - a_ref", Unit: "dimensionless", "Where used": "RAW, SUMMARY", "Shown when": "CIELAB enabled", Notes: "Reference source is reported in CIELAB_ref_source." },
     { Term: "Deltab", Meaning: "Difference in CIELAB b* relative to the selected reference", Formula: "b - b_ref", Unit: "dimensionless", "Where used": "RAW, SUMMARY", "Shown when": "CIELAB enabled", Notes: "Reference source is reported in CIELAB_ref_source." },
-    { Term: "DeltaE_ab", Meaning: "Total CIELAB color difference", Formula: "sqrt(DeltaL^2 + Deltaa^2 + Deltab^2)", Unit: "dimensionless", "Where used": "FIGURE_CIELAB_DELTAE.png, RAW_DATA_DETAILS_CAPTION.txt, 04_RAW, 05_REPLICATES_MEAN, 07_METHOD_COMPARISON, diagnostics", "Shown when": "DeltaE outputs present", Notes: "Reference: CIE 1976 L*a*b* color-difference form." },
+    { Term: "DeltaE_ab", Meaning: "Total CIELAB color difference", Formula: "sqrt(DeltaL^2 + Deltaa^2 + Deltab^2)", Unit: "dimensionless", "Where used": "FIGURE_CIELAB_DELTAE.png, RAW_DATA_DETAILS_CAPTION.txt, 04_RAW, 05_REPLICATES_MEAN, METHOD_COMPARISON ID+DF sheet(s), diagnostics", "Shown when": "DeltaE outputs present", Notes: "Reference: CIE 1976 L*a*b* color-difference form." },
     { Term: "DeltaE_ab_chroma", Meaning: "Chromatic CIELAB color difference without lightness", Formula: "sqrt(Deltaa^2 + Deltab^2)", Unit: "dimensionless", "Where used": "FIGURE_CIELAB_DELTAE.png, RAW_DATA_DETAILS_CAPTION.txt, 04_RAW, 05_REPLICATES_MEAN, diagnostics", "Shown when": "DeltaE outputs present", Notes: "Reference source is reported in CIELAB_ref_source." },
     { Term: "DeltaL", Meaning: "Difference in CIELAB lightness relative to the selected reference", Formula: "L - L_ref", Unit: "dimensionless", "Where used": "RAW, SUMMARY", "Shown when": "CIELAB enabled", Notes: "Reference source is reported in CIELAB_ref_source." },
     { Term: "DeltaL/Deltaa/Deltab", Meaning: "CIELAB coordinate differences from the selected CIELAB reference", Formula: "DeltaL = L - L_ref; Deltaa = a - a_ref; Deltab = b - b_ref", Unit: "dimensionless", "Where used": "FIGURE_CIELAB_DELTAE.png, 04_RAW, 05_REPLICATES_MEAN, diagnostics", "Shown when": "Delta outputs present", Notes: "The reference source is reported in CIELAB_ref_source." },
@@ -4347,8 +4368,8 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "Empty-well QC", Meaning: "QC based on empty-well robust SD and/or stored empty comparison", Formula: "warning/watch/ok/not_available from drift score and robust SD thresholds", Unit: "class", "Where used": "OVERVIEW", "Shown when": "always", Notes: "Flags comparability or background/empty-well drift." },
     { Term: "epsilon", Meaning: "User-configured Beer-Lambert-like proportionality coefficient for PAbs quantification", Formula: "PAbs = epsilon × l_cm × C_M", Unit: "M-1 cm-1", "Where used": "FITTING, OVERVIEW", "Shown when": "unknown-only epsilon mode", Notes: "C_M is mol/L. The analyzer converts the calculated concentration to the selected output unit." },
     { Term: "Estimate_value/Estimate_sd", Meaning: "Representative concentration estimate and associated SD used for method comparison", Formula: "derived from standard addition, calibration projection, or epsilon mode depending on Estimate_source", Unit: unitLabel, "Where used": "METHOD_COMPARISON", "Shown when": "method comparison", Notes: "" },
-    { Term: "Estimate_value/Estimate_sd/Estimate_source", Meaning: "Representative concentration estimate, associated SD and source", Formula: "selected according to Estimate_source", Unit: "mM and text", "Where used": "METHOD_COMPARISON.png, 07_METHOD_COMPARISON", "Shown when": "method comparison present", Notes: "" },
-    { Term: "expected_*/reference_*", Meaning: "External reference metadata configured by the user", Formula: "user/configurator input", Unit: "text or mM", "Where used": "METHOD_COMPARISON.png, 03_OVERVIEW, 07_METHOD_COMPARISON", "Shown when": "reference values configured", Notes: "External reference values are checks only and are not used for ranking." },
+    { Term: "Estimate_value/Estimate_sd/Estimate_source", Meaning: "Representative concentration estimate, associated SD and source", Formula: "selected according to Estimate_source", Unit: "mM and text", "Where used": "METHOD_COMPARISON PNG file(s), METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "method comparison present", Notes: "" },
+    { Term: "expected_*/reference_*", Meaning: "External reference metadata configured by the user", Formula: "user/configurator input", Unit: "text or mM", "Where used": "METHOD_COMPARISON PNG file(s), 03_OVERVIEW, METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "reference values configured", Notes: "External reference values are checks only and are not used for ranking." },
     { Term: "Family", Meaning: "Method family used in method comparison", Formula: "RGB, CIELAB, DeltaCIELAB, or other", Unit: "text", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "" },
     { Term: "Field", Meaning: "Name of a metadata or overview item", Formula: "label reported in the first column of the sheet", Unit: "text", "Where used": "02_METADATA, 03_OVERVIEW", "Shown when": "always", Notes: "" },
     { Term: "FitType", Meaning: "Type of fit or concentration-estimation row", Formula: "Calibration, StdAdd, UnknownFromCal, UnknownFromEpsilon, UnknownOnly", Unit: "text", "Where used": "FITTING", "Shown when": "always", Notes: "" },
@@ -4358,12 +4379,12 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "ID", Meaning: "Sample or reference identifier assigned in the plate map", Formula: "user/configurator input", Unit: "text", "Where used": "RAW, REPLICATES_MEAN, FITTING, METHOD_COMPARISON", "Shown when": "always", Notes: "" },
     { Term: "ImageWarning", Meaning: "Well-level optical QC warning flag", Formula: "1 if optical QC rules flag the well, else 0", Unit: "0/1", "Where used": "04_RAW", "Shown when": "always", Notes: "" },
     { Term: "ImageWarning_any", Meaning: "Group-level indicator that at least one replicate had an image warning", Formula: "1 if any replicate ImageWarning = 1", Unit: "0/1", "Where used": "diagnostic QC summaries", "Shown when": "diagnostics present", Notes: "Not exported in the main 05_REPLICATES_MEAN sheet." },
-    { Term: "IRLS", Meaning: "Iteratively reweighted least-squares robust linear regression with residual-based weights", Formula: "minimize sum_i w_i (y_i - (m x_i + q))^2; w_i is updated iteratively from residual magnitude", Unit: "dimensionless", "Where used": "FIGURE_RGB.png, FIGURE_CIELAB_DELTAE.png, RESULTS_CAPTION.txt, RAW_DATA_DETAILS_CAPTION.txt, 06_FITTING, 07_METHOD_COMPARISON, diagnostic fitting tables", "Shown when": "always", Notes: "Reference: Huber, P. J. (1964), Robust Estimation of a Location Parameter. Implementation: custom TypeScript IRLS using repeated weighted least-squares solves, median-centered residual weights and covariance propagation." },
+    { Term: "IRLS", Meaning: "Iteratively reweighted least-squares robust linear regression with residual-based weights", Formula: "minimize sum_i w_i (y_i - (m x_i + q))^2; w_i is updated iteratively from residual magnitude", Unit: "dimensionless", "Where used": "FIGURE_RGB.png, FIGURE_CIELAB_DELTAE.png, RESULTS_CAPTION.txt, RAW_DATA_DETAILS_CAPTION.txt, 06_FITTING, METHOD_COMPARISON ID+DF sheet(s), diagnostic fitting tables", "Shown when": "always", Notes: "Reference: Huber, P. J. (1964), Robust Estimation of a Location Parameter. Implementation: custom TypeScript IRLS using repeated weighted least-squares solves, median-centered residual weights and covariance propagation." },
     { Term: "L", Meaning: "CIELAB lightness", Formula: "median ROI value after RGB → CIELAB conversion", Unit: "dimensionless", "Where used": "RAW, SUMMARY", "Shown when": "CIELAB enabled", Notes: "" },
     { Term: "L/a/b", Meaning: "CIELAB lightness and opponent-color coordinates", Formula: "median ROI value after RGB to CIELAB conversion", Unit: "dimensionless", "Where used": "FIGURE_CIELAB_DELTAE.png, 04_RAW, 05_REPLICATES_MEAN, diagnostics", "Shown when": "CIELAB outputs present", Notes: "" },
     { Term: "liquid_volume_ul", Meaning: "Liquid volume loaded into each well", Formula: "user input", Unit: "uL", "Where used": "OVERVIEW, FITTING", "Shown when": "epsilon mode configured", Notes: "Used only to calculate path length for flat-bottom wells." },
     { Term: "LOD", Meaning: "Limit of detection", Formula: "3 × σ / |m|", Unit: unitLabel, "Where used": "FITTING, OVERVIEW", "Shown when": "calibration only or calibration present", Notes: "Shown only for calibration rows." },
-    { Term: "LOD/LOQ", Meaning: "Detection and quantification limits from calibration", Formula: "LOD = 3 x sigma_cal / |m|; LOQ = 10 x sigma_cal / |m|", Unit: unitLabel, "Where used": "FIGURE_RGB.png, FIGURE_CIELAB_DELTAE.png, 03_OVERVIEW, 06_FITTING, 07_METHOD_COMPARISON", "Shown when": "calibration present", Notes: "" },
+    { Term: "LOD/LOQ", Meaning: "Detection and quantification limits from calibration", Formula: "LOD = 3 x sigma_cal / |m|; LOQ = 10 x sigma_cal / |m|", Unit: unitLabel, "Where used": "FIGURE_RGB.png, FIGURE_CIELAB_DELTAE.png, 03_OVERVIEW, 06_FITTING, METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "calibration present", Notes: "" },
     { Term: "LOQ", Meaning: "Limit of quantification", Formula: "10 × σ / |m|", Unit: unitLabel, "Where used": "FITTING, OVERVIEW", "Shown when": "calibration only or calibration present", Notes: "Shown only for calibration rows." },
     { Term: "m", Meaning: "Slope of linear fit", Formula: "y = m x + q", Unit: "signal / mM", "Where used": "FITTING", "Shown when": "always", Notes: "Calibration and standard-addition fits use the same notation." },
     { Term: "m/q", Meaning: "Slope and intercept of the linear fit", Formula: "y = m x + q", Unit: "response / concentration and response", "Where used": "FIGURE_RGB.png, FIGURE_CIELAB_DELTAE.png, 06_FITTING", "Shown when": "fit rows present", Notes: "" },
@@ -4371,16 +4392,16 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "MeanBG_Red/MeanBG_Green/MeanBG_Blue", Meaning: "Linearized local inter-well background intensity for each RGB channel", Formula: "2D background surface evaluated at the well and gamma-linearized", Unit: "dimensionless", "Where used": "04_RAW", "Shown when": "always", Notes: "" },
     { Term: "MeanW_*", Meaning: "Linearized median well intensity for the channel", Formula: "median ROI channel intensity after gamma linearization", Unit: "dimensionless", "Where used": "RAW", "Shown when": "always", Notes: "Computed from selected well ROI pixels." },
     { Term: "MeanW_Red/MeanW_Green/MeanW_Blue", Meaning: "Linearized median well intensity for each RGB channel", Formula: "median ROI channel intensity after gamma linearization", Unit: "dimensionless", "Where used": "04_RAW", "Shown when": "always", Notes: "" },
-    { Term: "Method/Family/ComparableGroup/RankMode", Meaning: "Method-comparison identifiers and comparable-score grouping", Formula: "text labels defining descriptor, family and score comparability", Unit: "text", "Where used": "METHOD_COMPARISON.png, 07_METHOD_COMPARISON", "Shown when": "method comparison present", Notes: "Scores should be compared directly only within the same ComparableGroup." },
+    { Term: "Method/Family/ComparableGroup/RankMode", Meaning: "Method-comparison identifiers and comparable-score grouping", Formula: "text labels defining descriptor, family and score comparability", Unit: "text", "Where used": "METHOD_COMPARISON PNG file(s), METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "method comparison present", Notes: "Scores should be compared directly only within the same ComparableGroup." },
     { Term: "n_points", Meaning: "Number of finite data points used by the fit", Formula: "count of finite x,y pairs", Unit: "count", "Where used": "FITTING", "Shown when": "always", Notes: "All finite points are retained by robust IRLS." },
     { Term: "NClipPoints/ClipX/ClipDelta", Meaning: "Calibration clipping/baseline diagnostic fields", Formula: "NClipPoints = number of adjusted points; ClipX = concentrations; ClipDelta = applied response adjustments", Unit: "count, concentration, response", "Where used": "06_FITTING", "Shown when": "calibration present", Notes: "Diagnostic only; clipping is not part of the common method score." },
     { Term: "NReplicates", Meaning: "Number of replicate wells in a summarized group", Formula: "count of wells in group", Unit: "count", "Where used": "05_REPLICATES_MEAN", "Shown when": "always", Notes: "" },
     { Term: "NWellWarnings/NWellCritical", Meaning: "Counts of replicate wells with warning or critical optical QC", Formula: "count over replicate wells", Unit: "count", "Where used": "diagnostic QC summaries", "Shown when": "diagnostics present", Notes: "Not exported in the main 05_REPLICATES_MEAN sheet." },
-    { Term: "PAbs", Meaning: "Image-derived RGB pseudo-absorbance", Formula: "PAbs = log10(I_BG / I_well) = -log10(I_well / I_BG)", Unit: "dimensionless", "Where used": "FIGURE_RGB.png, RESULTS_CAPTION.txt, 04_RAW, 05_REPLICATES_MEAN, 06_FITTING, 07_METHOD_COMPARISON", "Shown when": "always", Notes: "Pseudo-absorbance is not assumed to be spectrophotometric absorbance." },
+    { Term: "PAbs", Meaning: "Image-derived RGB pseudo-absorbance", Formula: "PAbs = log10(I_BG / I_well) = -log10(I_well / I_BG)", Unit: "dimensionless", "Where used": "FIGURE_RGB.png, RESULTS_CAPTION.txt, 04_RAW, 05_REPLICATES_MEAN, 06_FITTING, METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "always", Notes: "Pseudo-absorbance is not assumed to be spectrophotometric absorbance." },
     { Term: "PAbs_Blue", Meaning: "RGB pseudo-absorbance (blue channel)", Formula: "log10(BG_blue/W_blue) = -log10(W_blue/BG_blue)", Unit: "dimensionless", "Where used": "RAW, REPLICATES_MEAN, FITTING", "Shown when": "always", Notes: "Image-derived pseudo-absorbance with fixed full-background normalization." },
     { Term: "PAbs_Green", Meaning: "RGB pseudo-absorbance (green channel)", Formula: "log10(BG_green/W_green) = -log10(W_green/BG_green)", Unit: "dimensionless", "Where used": "RAW, REPLICATES_MEAN, FITTING", "Shown when": "always", Notes: "Image-derived pseudo-absorbance with fixed full-background normalization." },
     { Term: "PAbs_Red", Meaning: "RGB pseudo-absorbance (red channel)", Formula: "log10(BG_red/W_red) = -log10(W_red/BG_red)", Unit: "dimensionless", "Where used": "RAW, REPLICATES_MEAN, FITTING", "Shown when": "always", Notes: "Image-derived pseudo-absorbance with fixed full-background normalization." },
-    { Term: "PAbs_Red/PAbs_Green/PAbs_Blue", Meaning: "RGB pseudo-absorbance for the red, green and blue channels", Formula: "log10(MeanBG_channel / MeanW_channel)", Unit: "dimensionless", "Where used": "FIGURE_RGB.png, 04_RAW, 05_REPLICATES_MEAN, 06_FITTING, 07_METHOD_COMPARISON", "Shown when": "always", Notes: "Exported in standard RGB order." },
+    { Term: "PAbs_Red/PAbs_Green/PAbs_Blue", Meaning: "RGB pseudo-absorbance for the red, green and blue channels", Formula: "log10(MeanBG_channel / MeanW_channel)", Unit: "dimensionless", "Where used": "FIGURE_RGB.png, 04_RAW, 05_REPLICATES_MEAN, 06_FITTING, METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "always", Notes: "Exported in standard RGB order." },
     { Term: "path_length", Meaning: "Estimated optical path length", Formula: "l_cm = (V_uL / A_bottom_mm2) / 10", Unit: "cm", "Where used": "OVERVIEW, FITTING", "Shown when": "epsilon mode configured", Notes: "Assumes 1 uL = 1 mm^3 and a flat-bottom well with nominal bottom area." },
     { Term: "path_length_mm", Meaning: "Estimated liquid height", Formula: "l_mm = V_uL / A_bottom_mm2", Unit: "mm", "Where used": "OVERVIEW, FITTING", "Shown when": "epsilon mode configured", Notes: "Converted to cm before Beer-Lambert-like concentration calculation." },
     { Term: "Purpose", Meaning: "Short description of the sheet role", Formula: "free-text description", Unit: "text", "Where used": "01_CONTENTS", "Shown when": "always", Notes: "" },
@@ -4388,12 +4409,12 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "QCCritical", Meaning: "Group-level critical optical quality flag", Formula: "1 if any replicate has a critical optical QC warning", Unit: "0/1", "Where used": "REPLICATES_MEAN", "Shown when": "always", Notes: "Critical flag; points remain reported and used." },
     { Term: "QCFlagged", Meaning: "Group-level optical quality warning", Formula: "1 if any replicate has a well-level optical QC warning", Unit: "0/1", "Where used": "REPLICATES_MEAN", "Shown when": "always", Notes: "Warning flag; points remain reported and used." },
     { Term: "QCFlagged/QCCritical", Meaning: "Replicate-group QC warning and critical flags", Formula: "rule-based aggregation of well-level warning and critical optical QC messages", Unit: "0/1", "Where used": "05_REPLICATES_MEAN", "Shown when": "always", Notes: "" },
-    { Term: "R2", Meaning: "Coefficient of determination", Formula: "1 - SSE/SST", Unit: "dimensionless", "Where used": "FIGURE_RGB.png, FIGURE_CIELAB_DELTAE.png, 06_FITTING, 07_METHOD_COMPARISON", "Shown when": "fit rows present", Notes: "Closer to 1 indicates better fit." },
-    { Term: "R2_cal/R2_std_mean/m_cal/m_std_mean", Meaning: "Calibration and standard-addition fit descriptors used in method comparison", Formula: "R2_cal from calibration fit; R2_std_mean = mean standard-addition R2; m_cal and m_std_mean are fit slopes", Unit: "mixed", "Where used": "METHOD_COMPARISON.png, 07_METHOD_COMPARISON", "Shown when": "method comparison present", Notes: "" },
+    { Term: "R2", Meaning: "Coefficient of determination", Formula: "1 - SSE/SST", Unit: "dimensionless", "Where used": "FIGURE_RGB.png, FIGURE_CIELAB_DELTAE.png, 06_FITTING, METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "fit rows present", Notes: "Closer to 1 indicates better fit." },
+    { Term: "R2_cal/R2_std_mean/m_cal/m_std_mean", Meaning: "Calibration and standard-addition fit descriptors used in method comparison", Formula: "R2_cal from calibration fit; R2_std_mean = mean standard-addition R2; m_cal and m_std_mean are fit slopes", Unit: "mixed", "Where used": "METHOD_COMPARISON PNG file(s), METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "method comparison present", Notes: "" },
     { Term: "Rank", Meaning: "Workbook-level rank of each method", Formula: "1 = highest Score within the selected ComparableGroup", Unit: "integer", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "Rows outside the selected ComparableGroup are not assigned a direct rank." },
     { Term: "RankMode", Meaning: "Data basis available for ranking", Formula: "calibration_plus_stdadd, calibration_only, stdadd_only, or unavailable", Unit: "text", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "" },
-    { Term: "recovery_pct_*", Meaning: "Recovery relative to external reference", Formula: "100 x estimate / reference", Unit: "%", "Where used": "FIGURE_RGB.png, METHOD_COMPARISON.png, 03_OVERVIEW, 07_METHOD_COMPARISON", "Shown when": "reference values configured", Notes: "" },
-    { Term: "rel_error_*", Meaning: "Relative error versus external reference", Formula: "100 x (estimate - reference) / reference", Unit: "%", "Where used": "03_OVERVIEW, 07_METHOD_COMPARISON", "Shown when": "reference values configured", Notes: "" },
+    { Term: "recovery_pct_*", Meaning: "Recovery relative to external reference", Formula: "100 x estimate / reference", Unit: "%", "Where used": "FIGURE_RGB.png, METHOD_COMPARISON PNG file(s), 03_OVERVIEW, METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "reference values configured", Notes: "" },
+    { Term: "rel_error_*", Meaning: "Relative error versus external reference", Formula: "100 x (estimate - reference) / reference", Unit: "%", "Where used": "03_OVERVIEW, METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "reference values configured", Notes: "" },
     { Term: "Reliability criteria", Meaning: "Rule used to flag a method as low reliability in method comparison", Formula: "low if slope agreement < 0.5 OR R² < 0.8 OR |Δ| > threshold", Unit: "rule", "Where used": "METHOD_COMPARISON", "Shown when": "stdadd present", Notes: "The Δ threshold is max(3×reference SD, 50% of the reference value), evaluated against the nearest available reference." },
     { Term: "Reliability score", Meaning: "Overall report-level reliability score", Formula: "starts at 50 and adds/subtracts rule-based penalties/bonuses for calibration availability, stored calibration, plate QC, critical wells, used fraction, empty-well QC, and ranking separation", Unit: "0-100", "Where used": "OVERVIEW", "Shown when": "always", Notes: "Not a statistical probability; it is a heuristic audit score." },
     { Term: "RGB linearization", Meaning: "Conversion of gamma-domain RGB values to an intensity-like scale", Formula: "I_lin = (I/255)^gamma, gamma approximately 2.2", Unit: "dimensionless", "Where used": "PAbs calculation in 04_RAW and FIGURE_RGB.png", "Shown when": "always", Notes: "No automatic image correction is applied." },
@@ -4402,17 +4423,17 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "Robust SD", Meaning: "Robust dispersion across replicates", Formula: "1.4826 × MAD, where MAD = median(|x − median(x)|)", Unit: "same as variable", "Where used": "REPLICATES_MEAN", "Shown when": "always", Notes: "Computed within each replicate group." },
     { Term: "Row", Meaning: "Plate row label", Formula: "A-based alphabetical row label", Unit: "well-row label", "Where used": "RAW, REPLICATES_MEAN", "Shown when": "always", Notes: "" },
     { Term: "S0_calibration", Meaning: "Channel-wide low-signal offset estimated from raw calibration", Formula: "max(0, −min(raw calibration response))", Unit: "signal", "Where used": "FITTING", "Shown when": "RGB calibration", Notes: "Estimated before forced-zero calibration and transferred to StdAdd/unknown data." },
-    { Term: "Overall method score", Meaning: "Common cross-method ranking score; one value per method/channel", Formula: "for calibration plus standard addition: SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ)", Unit: `1/${unitLabel}`, "Where used": "FIGURE_RGB.png, METHOD_COMPARISON.png, 07_METHOD_COMPARISON", "Shown when": "method comparison present", Notes: "Expected/reference values, recovery, SNR and clipping are not used in this score." },
+    { Term: "Overall method score", Meaning: "Common cross-method ranking score; one value per method/channel", Formula: "for calibration plus standard addition: SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ)", Unit: `1/${unitLabel}`, "Where used": "FIGURE_RGB.png, METHOD_COMPARISON PNG file(s), METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "method comparison present", Notes: "Expected/reference values, recovery, SNR and clipping are not used in this score." },
     { Term: "OverallScoreFormula", Meaning: "Formula used to compute Overall method score", Formula: "text descriptor", Unit: "text", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "Documents which score formula was applied to the row." },
     { Term: "Selected", Meaning: "Workbook-level selected method flag", Formula: "1 for the highest-ranked row within the most informative ComparableGroup, otherwise 0", Unit: "0/1", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "Selection in the workbook is derived from method-comparison rank and not from expected/recovery." },
-    { Term: "Selected/Rank", Meaning: "Selected method flag and rank position", Formula: "Selected = 1 for the selected method; Rank = score order within the highest common-factor group", Unit: "0/1 and integer", "Where used": "07_METHOD_COMPARISON", "Shown when": "method comparison present", Notes: "" },
+    { Term: "Selected/Rank", Meaning: "Selected method flag and rank position", Formula: "Selected = 1 for the selected method; Rank = score order within the highest common-factor group", Unit: "0/1 and integer", "Where used": "METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "method comparison present", Notes: "" },
     { Term: "Sheet", Meaning: "Workbook sheet name", Formula: "worksheet name", Unit: "text", "Where used": "01_CONTENTS", "Shown when": "always", Notes: "" },
     { Term: "sigma_cal", Meaning: "Noise estimate for calibration", Formula: "SD at zero concentration or median calibration SD", Unit: "signal", "Where used": "FITTING", "Shown when": "calibration only or calibration present", Notes: "Source is reported in sigma_source." },
-    { Term: "sigma_cal/sigma_source/SNR", Meaning: "Calibration noise estimate, its source and slope-to-noise ratio", Formula: "SNR = |m| / sigma_cal", Unit: "mixed", "Where used": "06_FITTING, 07_METHOD_COMPARISON", "Shown when": "calibration present", Notes: "SNR is diagnostic only and is not used in the common score." },
+    { Term: "sigma_cal/sigma_source/SNR", Meaning: "Calibration noise estimate, its source and slope-to-noise ratio", Formula: "SNR = |m| / sigma_cal", Unit: "mixed", "Where used": "06_FITTING, METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "calibration present", Notes: "SNR is diagnostic only and is not used in the common score." },
     { Term: "sigma_source", Meaning: "Source of sigma_cal", Formula: "median_calibration_sd, blank_zero_calibration_sd, or unavailable", Unit: "text", "Where used": "FITTING", "Shown when": "calibration present", Notes: "sigma_source records the source actually selected by the calibration-noise estimator. The hierarchy is applied to the descriptor being fitted: a usable positive blank/zero-calibration dispersion may be used; otherwise the estimator may use the median dispersion across calibration levels; if no reliable estimate is available, sigma_cal remains unavailable." },
     { Term: "SignalT_*", Meaning: "Transmittance-like intensity ratio before logarithm", Formula: "MeanW_* / MeanBG_*", Unit: "dimensionless", "Where used": "RAW", "Shown when": "always", Notes: "PAbs_* = -log10(SignalT_*)." },
     { Term: "SignalT_Red/SignalT_Green/SignalT_Blue", Meaning: "Transmittance-like ratio before logarithmic conversion", Formula: "SignalT_channel = MeanW_channel / MeanBG_channel", Unit: "dimensionless", "Where used": "04_RAW", "Shown when": "always", Notes: "PAbs_channel = -log10(SignalT_channel)." },
-    { Term: "SlopeAgreement", Meaning: "Mean agreement between calibration and standard-addition slope magnitudes", Formula: "mean_k[min(|m_cal|, |m_std,k|) / max(|m_cal|, |m_std,k|)]", Unit: "dimensionless", "Where used": "METHOD_COMPARISON.png, 07_METHOD_COMPARISON", "Shown when": "calibration plus standard addition present", Notes: "Equals 1 when all available standard-addition slopes match the calibration slope magnitude; lower values indicate poorer agreement." },
+    { Term: "SlopeAgreement", Meaning: "Mean agreement between calibration and standard-addition slope magnitudes", Formula: "mean_k[min(|m_cal|, |m_std,k|) / max(|m_cal|, |m_std,k|)]", Unit: "dimensionless", "Where used": "METHOD_COMPARISON PNG file(s), METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "calibration plus standard addition present", Notes: "Equals 1 when all available standard-addition slopes match the calibration slope magnitude; lower values indicate poorer agreement." },
     { Term: "SNR", Meaning: "Slope-to-noise ratio", Formula: "|m| / sigma_cal", Unit: "dimensionless", "Where used": "FITTING", "Shown when": "calibration only or calibration present", Notes: "Used only for calibration rows." },
     { Term: "Type", Meaning: "Well role in the analytical workflow", Formula: "C = calibration; A = standard addition; U = unknown; other labels may be reported when present", Unit: "text", "Where used": "RAW, REPLICATES_MEAN", "Shown when": "always", Notes: "" },
     { Term: "UsedFraction", Meaning: "Fraction of ROI core pixels retained after filtering", Formula: "n_used / n_core", Unit: "dimensionless", "Where used": "RAW, SUMMARY", "Shown when": "always", Notes: "Lower values indicate stronger filtering. Closer to 1 means less aggressive trimming." },
@@ -4482,6 +4503,15 @@ function deduplicateReportFittingRows(rows: XlsxRow[]): XlsxRow[] {
   });
 }
 
+function methodComparisonWorkbookSheetTitle(group: MethodComparisonIdDfGroup, index: number): string {
+  const desired = `METHOD_COMPARISON_${group.fileSuffix}`;
+  if (desired.length <= 28) {
+    return desired;
+  }
+  const prefix = `METHOD_CMP_${String(index + 1).padStart(2, '0')}_`;
+  return `${prefix}${group.fileSuffix.slice(0, Math.max(1, 28 - prefix.length))}`;
+}
+
 async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptions): Promise<Blob> {
   const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap, options.storedCalibration?.cielabReference);
   const rawRows = buildReportRawRows(options.measurements, options.displayMeasurements, options.plateMap, options.correctionApplications, options.storedCalibration?.cielabReference);
@@ -4504,6 +4534,8 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
   ]);
   const hasStandardAddition = options.standardAdditionFits.length > 0;
   const methodComparisonRows = options.methodComparisonRows;
+  const methodComparisonGroups = options.methodComparisonGroups;
+  const hasPairSpecificMethodComparison = hasStandardAddition && methodComparisonGroups.length > 0;
   const overviewRows = buildReportOverviewRows(
     options.imageBase,
     options.unitLabel,
@@ -4518,6 +4550,7 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     options.methodMetadata,
     options.measurements,
     options.displayMeasurements,
+    hasPairSpecificMethodComparison,
   );
   const methodComparisonPreferred = [
     'Selected',
@@ -4555,6 +4588,19 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     'bias_index_mean',
     'n_stdadd',
   ].includes(header));
+  const methodComparisonSheetSpecs: SequentialWorkbookSheetSpec[] = hasPairSpecificMethodComparison
+    ? methodComparisonGroups.map((entry, index) => ({
+      title: methodComparisonWorkbookSheetTitle(entry.group, index),
+      purpose: `Method comparison for ID=${entry.group.sampleId}, DF=${formatFigureDilutionFactor(entry.group.dilutionFactor)}.`,
+      rows: tableRows(uniqueHeaders(methodComparisonPreferred, entry.rows), entry.rows),
+      include: entry.rows.length > 0,
+    }))
+    : [{
+      title: 'METHOD_COMPARISON',
+      purpose: 'Method comparison for the available non-standard-addition workflow.',
+      rows: tableRows(uniqueHeaders(methodComparisonPreferred, methodComparisonRows), methodComparisonRows),
+      include: methodComparisonRows.length > 0,
+    }];
   const unknownGroupDataRows = unknownGroupRows(options.unknownGroupSummaries);
   const unknownCielabGroupDataRows = unknownCielabGroupRows(options.unknownCielabGroupSummaries);
 
@@ -4598,12 +4644,7 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
         ),
         include: fitRows.length > 0,
       },
-      {
-        title: 'METHOD_COMPARISON',
-        purpose: 'Method ranking using only common score factors; expected values are external checks only.',
-        rows: tableRows(uniqueHeaders(methodComparisonPreferred, methodComparisonRows), methodComparisonRows),
-        include: methodComparisonRows.length > 0,
-      },
+      ...methodComparisonSheetSpecs,
       {
         title: 'LEGENDS',
         purpose: 'Definitions for all fields reported in this workbook and primary RGB figure.',
@@ -5659,7 +5700,7 @@ function completeStoredCalibrationBundle(
 }
 
 function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
-  return [
+  const rows: XlsxRow[] = [
     { Term: "area", Meaning: "Accepted background-mask area or fit-input sample area, depending on sheet", Formula: "number of accepted pixels represented by the BG cell record", Unit: "pixels", 'Where used': "BG_SAMPLES, BG_MODEL_INPUTS", Notes: "In the BG_SAMPLES sheet this is the background-cell diagnostic area; in BG_MODEL_INPUTS it is the area represented by the actual polynomial fit input sample." },
     { Term: "Associated_Wells", Meaning: "Four wells surrounding an inter-well background cell", Formula: "well(r,c)-well(r,c+1)-well(r+1,c)-well(r+1,c+1)", Unit: "well labels", 'Where used': "02_BG_SAMPLES", Notes: "Clarifies that BG samples are inter-well regions rather than wells." },
     { Term: "B_*/G_*/R_*", Meaning: "Robust statistics of raw well-channel intensities", Formula: "computed over retained well ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Browser image data are handled and exported in standard RGB order." },
@@ -5698,11 +5739,11 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "DeltaE_ab", Meaning: "Total CIELAB color difference", Formula: "sqrt(DeltaL^2 + Deltaa^2 + Deltab^2)", Unit: "dimensionless", 'Where used': "REPORT, 10_METHOD_COMPARISON, 11_CIELAB_FITTING, FIGURE_CIELAB_DELTAE.png", Notes: "Reference source is reported in CIELAB_ref_source in the main report." },
     { Term: "DeltaE_ab_chroma", Meaning: "Chromatic CIELAB difference", Formula: "sqrt(Deltaa^2 + Deltab^2)", Unit: "dimensionless", 'Where used': "REPORT, 10_METHOD_COMPARISON, 11_CIELAB_FITTING, FIGURE_CIELAB_DELTAE.png", Notes: "Excludes the lightness term DeltaL." },
     { Term: "DeltaL/Deltaa/Deltab/DeltaE_ab/DeltaE_ab_chroma", Meaning: "CIELAB difference descriptors", Formula: "DeltaL = L - L_ref; Deltaa = a - a_ref; Deltab = b - b_ref; DeltaE_ab = sqrt(DeltaL^2 + Deltaa^2 + Deltab^2); DeltaE_ab_chroma = sqrt(Deltaa^2 + Deltab^2)", Unit: "dimensionless", 'Where used': "FIGURE_CIELAB_DELTAE.png, RAW_DATA_DETAILS_CAPTION.txt, 10_METHOD_COMPARISON, 11_CIELAB_FITTING", Notes: "Reference: CIE 1976 L*a*b* color-difference form." },
-    { Term: "estimate_for_expected_*/delta_expected_*/recovery_pct_*/rel_error_*", Meaning: "External-reference comparison metrics", Formula: "delta = estimate - reference; recovery = 100 x estimate/reference; relative error = 100 x (estimate - reference)/reference", Unit: `${unitLabel} or %`, 'Where used': "METHOD_COMPARISON.png, 10_METHOD_COMPARISON", Notes: "" },
+    { Term: "estimate_for_expected_*/delta_expected_*/recovery_pct_*/rel_error_*", Meaning: "External-reference comparison metrics", Formula: "delta = estimate - reference; recovery = 100 x estimate/reference; relative error = 100 x (estimate - reference)/reference", Unit: `${unitLabel} or %`, 'Where used': "METHOD_COMPARISON PNG file(s), 10_METHOD_COMPARISON", Notes: "" },
     { Term: "Estimate_source", Meaning: "Source of the representative concentration estimate", Formula: "standard_addition, unknown_from_calibration, epsilon or unavailable", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Identifies how Estimate_value was obtained." },
     { Term: "Estimate_value/Estimate_sd", Meaning: "Representative diagnostic concentration estimate and associated SD", Formula: "derived according to Estimate_source", Unit: unitLabel, 'Where used': "10_METHOD_COMPARISON", Notes: "" },
-    { Term: "Estimate_value/Estimate_sd/Estimate_source", Meaning: "Representative diagnostic concentration estimate, SD and source", Formula: "derived according to Estimate_source", Unit: `${unitLabel} and text`, 'Where used': "METHOD_COMPARISON.png, 10_METHOD_COMPARISON", Notes: "" },
-    { Term: "expected_label_*/expected_id_*/expected_value_*/expected_sd_*", Meaning: "External reference metadata", Formula: "user/configurator input", Unit: `text or ${unitLabel}`, 'Where used': "METHOD_COMPARISON.png, 10_METHOD_COMPARISON", Notes: "External reference values are checks only and are not part of Score." },
+    { Term: "Estimate_value/Estimate_sd/Estimate_source", Meaning: "Representative diagnostic concentration estimate, SD and source", Formula: "derived according to Estimate_source", Unit: `${unitLabel} and text`, 'Where used': "METHOD_COMPARISON PNG file(s), 10_METHOD_COMPARISON", Notes: "" },
+    { Term: "expected_label_*/expected_id_*/expected_value_*/expected_sd_*", Meaning: "External reference metadata", Formula: "user/configurator input", Unit: `text or ${unitLabel}`, 'Where used': "METHOD_COMPARISON PNG file(s), 10_METHOD_COMPARISON", Notes: "External reference values are checks only and are not part of Score." },
     { Term: "Family", Meaning: "Method family", Formula: "RGB, CIELAB, DeltaCIELAB or other", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Used to separate method families." },
     { Term: "FitType", Meaning: "Type of fit row", Formula: "Calibration, StdAdd, UnknownFromCal, UnknownOnly", Unit: "text", 'Where used': "11_CIELAB_FITTING", Notes: "Same convention as main fitting output." },
     { Term: "floor_source/local_pitch_px/px_per_mm/cyl_r_bg", Meaning: "Geometry-source and local scale descriptors", Formula: "reported source, local pitch, pixel/mm scale and well-exclusion/background radius approximation", Unit: "mixed", 'Where used': "05_GEOMETRY_QC, 06_WELL_BOTTOM", Notes: "In mouth-floor-intersection ROI, local_pitch_px is also used to derive the standardized quantitative mouth radius from 96-well physical geometry." },
@@ -5712,7 +5753,7 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "highlight_fraction_roi/highlight_fraction_core", Meaning: "Fraction of very bright pixels in ROI/core", Formula: "fraction of pixels with grayscale above the highlight threshold", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Optical QC descriptor for highlights/specular artifacts." },
     { Term: "HighlightIndex", Meaning: "Combined highlight severity index", Formula: "BrightExcludedFraction x BrightExcessMeanGray", Unit: "gray-level weighted fraction", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Higher values indicate more severe bright artifacts." },
     { Term: "ImageWarning/WarningReason", Meaning: "Well-level optical QC warning and triggering reason", Formula: "rule-based flags from highlights, trimming and intensity SD", Unit: "0/1 and text", 'Where used': "04_WELL_ROBUST_STATS", Notes: "WarningReason lists the triggering conditions." },
-    { Term: "IRLS", Meaning: "Iteratively reweighted least-squares robust linear regression with residual-based weights", Formula: "minimize sum_i w_i (y_i - (m x_i + q))^2; w_i is updated iteratively from residual magnitude", Unit: "dimensionless", 'Where used': "METHOD_COMPARISON.png, FIGURE_CIELAB_DELTAE.png, 10_METHOD_COMPARISON, 11_CIELAB_FITTING", Notes: "Reference: Huber, P. J. (1964), Robust Estimation of a Location Parameter. Implementation: custom TypeScript IRLS using repeated weighted least-squares solves, median-centered residual weights and covariance propagation." },
+    { Term: "IRLS", Meaning: "Iteratively reweighted least-squares robust linear regression with residual-based weights", Formula: "minimize sum_i w_i (y_i - (m x_i + q))^2; w_i is updated iteratively from residual magnitude", Unit: "dimensionless", 'Where used': "METHOD_COMPARISON PNG file(s), FIGURE_CIELAB_DELTAE.png, 10_METHOD_COMPARISON, 11_CIELAB_FITTING", Notes: "Reference: Huber, P. J. (1964), Robust Estimation of a Location Parameter. Implementation: custom TypeScript IRLS using repeated weighted least-squares solves, median-centered residual weights and covariance propagation." },
     { Term: "key/value", Meaning: "Plate-geometry metadata key and value", Formula: "embedded plate-geometry database entry", Unit: "mixed", 'Where used': "07_PLATE_GEOMETRY", Notes: "Geometry is assumed to be ANSI/SLAS-compatible flat-bottom geometry unless stated otherwise." },
     { Term: "L_*/a_*/b_*", Meaning: "Robust statistics of CIELAB coordinates", Formula: "computed from the TypeScript sRGB/D65 CIELAB conversion over retained ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS", Notes: "CIELAB values are diagnostic descriptors derived from RGB image data." },
     { Term: "local_pitch_px / px_per_mm / cyl_r_bg", Meaning: "Local geometry scale descriptors", Formula: "local plate pitch, pixel-to-mm conversion and well-exclusion/background radius approximation", Unit: "pixels or pixels/mm", 'Where used': "06_WELL_BOTTOM", Notes: "In mouth-floor-intersection ROI, local_pitch_px is also used to derive the standardized quantitative mouth radius from 96-well physical geometry." },
@@ -5724,24 +5765,24 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "MeanW_*", Meaning: "Linearized median well intensity", Formula: "median well ROI intensity after gamma linearization", Unit: "dimensionless", 'Where used': "REPORT", Notes: "The asterisk denotes Red, Green or Blue." },
     { Term: "MeanW_Red/MeanW_Green/MeanW_Blue", Meaning: "Linearized median well intensity for each RGB channel", Formula: "median ROI channel intensity after gamma linearization", Unit: "dimensionless", 'Where used': "08_EMPTY_WELLS", Notes: "" },
     { Term: "Method", Meaning: "Compared analytical descriptor", Formula: "PAbs_*, L/a/b, Delta* or DeltaE*", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "PAbs_* are RGB; CIELAB and DeltaCIELAB are derived diagnostics." },
-    { Term: "Method/Family/ComparableGroup/CommonFactorsN/RankMode", Meaning: "Method-comparison identifiers and comparable-score grouping", Formula: "text labels and number of factors defining score comparability", Unit: "mixed", 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Scores are directly comparable only within the same ComparableGroup." },
+    { Term: "Method/Family/ComparableGroup/CommonFactorsN/RankMode", Meaning: "Method-comparison identifiers and comparable-score grouping", Formula: "text labels and number of factors defining score comparability", Unit: "mixed", 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON PNG file(s)", Notes: "Scores are directly comparable only within the same ComparableGroup." },
     { Term: "mouth_* / floor_*", Meaning: "Mouth/floor circle center, radius and image-gradient score descriptors", Formula: "mouth-floor-intersection ROI uses the mouth center with a standardized quantitative mouth radius derived from local pitch and 96-well physical geometry; projected floor radii are clipped against that standardized mouth radius. mouth_score is a browser-side locally refined mean ring-gradient score on a blurred Purple image without moving the exported ROI geometry; floor_score is reserved for future browser-side auto-refined floor scoring and remains blank for projected/manual floor geometry", Unit: "pixels or score", 'Where used': "06_WELL_BOTTOM", Notes: "Used for ROI and geometry QC. The free manual mouth radius supports picking/overlay/projection, while the quantitative intersection ROI is standardized to reduce run-to-run sensitivity. Blank floor_score cells indicate that no TypeScript auto-refined floor ring-score was computed." },
     { Term: "n/intercept/slope_col/slope_row/R2/corr_col/corr_row", Meaning: "Spatial-trend fit descriptors", Formula: "linear trend of the diagnostic signal versus row/column position", Unit: "mixed", 'Where used': "09_SPATIAL_DIAGNOSTICS", Notes: "Diagnostic only; does not alter quantitative results." },
     { Term: "n_roi/n_core/n_used", Meaning: "Pixel counts used during well ROI filtering", Formula: "ROI pixels, core pixels and retained pixels", Unit: "pixels", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Used to audit well-level pixel filtering." },
     { Term: "PAbs_*", Meaning: "RGB pseudo-absorbance", Formula: "log10(MeanBG_*/MeanW_*)", Unit: "dimensionless", 'Where used': "REPORT, 10_METHOD_COMPARISON", Notes: "Primary RGB analytical descriptor." },
-    { Term: "PAbs_Red/PAbs_Green/PAbs_Blue", Meaning: "RGB pseudo-absorbance channels", Formula: "log10(MeanBG_channel / MeanW_channel)", Unit: "dimensionless", 'Where used': "08_EMPTY_WELLS, 10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Primary quantitative RGB descriptor; diagnostic sheets may include it for comparison." },
+    { Term: "PAbs_Red/PAbs_Green/PAbs_Blue", Meaning: "RGB pseudo-absorbance channels", Formula: "log10(MeanBG_channel / MeanW_channel)", Unit: "dimensionless", 'Where used': "08_EMPTY_WELLS, 10_METHOD_COMPARISON, METHOD_COMPARISON PNG file(s)", Notes: "Primary quantitative RGB descriptor; diagnostic sheets may include it for comparison." },
     { Term: "Purple_*", Meaning: "Robust statistics of the internal purple-color index", Formula: "Purple = 0.5 x (Red + Blue) - Green; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Diagnostic color index, not the primary quantitative signal." },
     { Term: "Purpose", Meaning: "Short description of the sheet role", Formula: "free-text description", Unit: "text", 'Where used': "01_CONTENTS", Notes: "" },
     { Term: "R2_cal/R2_std_mean", Meaning: "Calibration and mean standard-addition coefficient of determination", Formula: "R2 from linear fits; R2_std_mean is averaged over standard-addition curves", Unit: "dimensionless", 'Where used': "10_METHOD_COMPARISON, 11_CIELAB_FITTING", Notes: "Higher values indicate better linear fit quality." },
-    { Term: "R2_cal/R2_std_mean/m_cal/m_std_mean/SlopeAgreement", Meaning: "Fit-quality and slope-agreement descriptors for method comparison", Formula: "SlopeAgreement = mean_k[min(|m_cal|, |m_std,k|) / max(|m_cal|, |m_std,k|)]", Unit: "mixed", 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "" },
+    { Term: "R2_cal/R2_std_mean/m_cal/m_std_mean/SlopeAgreement", Meaning: "Fit-quality and slope-agreement descriptors for method comparison", Formula: "SlopeAgreement = mean_k[min(|m_cal|, |m_std,k|) / max(|m_cal|, |m_std,k|)]", Unit: "mixed", 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON PNG file(s)", Notes: "" },
     { Term: "RankMode", Meaning: "Data basis available for ranking", Formula: "calibration_plus_stdadd, calibration_only, stdadd_only, or unavailable", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Only rows with the same comparable group should be directly compared." },
     { Term: "Red_*/Green_*/Blue_*", Meaning: "Robust statistics of raw well-channel intensities", Formula: "computed over retained well ROI pixels; *=mean, median, sd, p10, p25, p50, p75, p90, iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Exported in standard RGB order." },
     { Term: "Red_median_raw/Green_median_raw/Blue_median_raw", Meaning: "Median raw channel value in accepted BG-mask pixels", Formula: "median over accepted mask pixels", Unit: "raw image intensity", 'Where used': "02_BG_SAMPLES", Notes: "Exported in standard RGB order; browser image data are handled in RGB order." },
-    { Term: "reference_*/delta_reference_*/recovery_pct_*", Meaning: "External reference checks used in diagnostic comparison", Formula: "delta = estimate - reference; recovery = 100 x estimate/reference", Unit: `${unitLabel} or %`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Reference values are external checks and are not part of Score." },
+    { Term: "reference_*/delta_reference_*/recovery_pct_*", Meaning: "External reference checks used in diagnostic comparison", Formula: "delta = estimate - reference; recovery = 100 x estimate/reference", Unit: `${unitLabel} or %`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON PNG file(s)", Notes: "Reference values are external checks and are not part of Score." },
     { Term: "RGB to CIELAB", Meaning: "Diagnostic conversion from RGB to CIE L*a*b*", Formula: "linearized sRGB -> XYZ using the standard sRGB-to-XYZ matrix and D65 reference white -> CIE L*a*b*", Unit: "dimensionless", 'Where used': "FIGURE_CIELAB_DELTAE.png, RAW_DATA_DETAILS_CAPTION.txt, 04_WELL_ROBUST_STATS, 11_CIELAB_FITTING", Notes: "References: IEC 61966-2-1:1999 sRGB; CIE 1976 L*a*b*; CIE standard illuminant D65." },
     { Term: "Row/Col/Well", Meaning: "Human-readable well position", Formula: "Row is A-based; Col is 1-based; Well = Row + Col", Unit: "well label", 'Where used': "03_BG_WELL_FIT, 04_WELL_ROBUST_STATS, 05_GEOMETRY_QC, 06_WELL_BOTTOM, 08_EMPTY_WELLS", Notes: "Used for true well-level records, not for inter-well BG cells." },
-    { Term: "Overall method score", Meaning: "Common ranking score; one value per method/channel", Formula: "for calibration+standard addition: SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ); fallback groups use the formula stated in ScoreFormula", Unit: `1/${unitLabel}`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Expected/reference values, SNR and clipping are excluded." },
-    { Term: "Overall method score / formula", Meaning: "Cross-method ranking value and its formula descriptor", Formula: "SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ) for calibration_plus_stdadd rows", Unit: `1/${unitLabel} and text`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON.png", Notes: "Expected/reference values, SNR and clipping are not part of Score." },
+    { Term: "Overall method score", Meaning: "Common ranking score; one value per method/channel", Formula: "for calibration+standard addition: SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ); fallback groups use the formula stated in ScoreFormula", Unit: `1/${unitLabel}`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON PNG file(s)", Notes: "Expected/reference values, SNR and clipping are excluded." },
+    { Term: "Overall method score / formula", Meaning: "Cross-method ranking value and its formula descriptor", Formula: "SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ) for calibration_plus_stdadd rows", Unit: `1/${unitLabel} and text`, 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON PNG file(s)", Notes: "Expected/reference values, SNR and clipping are not part of Score." },
     { Term: "OverallScoreFormula", Meaning: "Formula used to compute Overall method score", Formula: "text descriptor", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Documents which score formula was applied to the row." },
     { Term: "Sheet", Meaning: "Workbook sheet name", Formula: "worksheet name", Unit: "text", 'Where used': "01_CONTENTS", Notes: "" },
     { Term: "shift_frac_of_mouth_r", Meaning: "Relative mouth-to-floor center shift", Formula: "shift_px / mouth_r", Unit: "dimensionless", 'Where used': "05_GEOMETRY_QC", Notes: "Large values indicate poor floor/mouth alignment; in mouth-floor-intersection ROI, mouth_r is standardized from local pitch and physical 96-well mouth diameter." },
@@ -5755,8 +5796,19 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "UsedFraction", Meaning: "Fraction of core ROI retained", Formula: "n_used / n_core", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Low values indicate strong trimming." },
     { Term: "x/y", Meaning: "Image coordinates of a background sample or well center", Formula: "pixel coordinate in the analyzed image", Unit: "pixels", 'Where used': "02_BG_SAMPLES, 03_BG_WELL_FIT", Notes: "Coordinate system follows the image array." },
   ];
+  const excludedReferences = /(?:^|\b)(?:METHOD_COMPARISON(?:\.png)?|REPORT|OVERVIEW|RESULTS_CAPTION\.txt|BEST_CHANNEL|FIGURE_RGB)(?:\b|$)/i;
+  return rows
+    .map((row) => {
+      const whereUsed = String(row['Where used'] ?? '')
+        .replace(/14_BG_MODEL_COEFFICIENTS/g, '13_BG_MODEL_COEFFICIENTS')
+        .split(/[,;]/)
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0 && !excludedReferences.test(item))
+        .join(', ');
+      return { ...row, 'Where used': whereUsed };
+    })
+    .filter((row) => String(row['Where used'] ?? '').length > 0);
 }
-
 async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWorkbookOptions): Promise<Blob> {
   const currentEmptyWellQc = buildEmptyWellPlateQcSummary(options.measurements, options.displayMeasurements, options.plateMap);
   const { points: cielabPoints } = buildCielabDiagnosticPoints(options.measurements, options.plateMap, options.storedCalibration?.cielabReference);
@@ -5770,43 +5822,6 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
     options.rankings,
     options.lowSignalCorrections,
   );
-  const hasStandardAddition = options.standardAdditionFits.length > 0;
-  const methodComparisonRows = options.methodComparisonRows;
-  const methodComparisonPreferred = [
-    'Method',
-    'Family',
-    'ComparableGroup',
-    'CommonFactorsN',
-    'Score',
-    'ScoreFormula',
-    'RankMode',
-    'R2_cal',
-    'R2_std_mean',
-    'm_cal',
-    'm_std_mean',
-    'SlopeAgreement',
-    'beta_mean',
-    'bias_index_mean',
-    'C0_median',
-    'C0_sd_median',
-    'Estimate_value',
-    'Estimate_sd',
-    'Estimate_source',
-    'LOD',
-    'LOQ',
-    'SNR',
-    'n_stdadd',
-    'n_unknown',
-    'C0_mean',
-  ].filter((header) => hasStandardAddition || ![
-    'R2_std_mean',
-    'm_std_mean',
-    'SlopeAgreement',
-    'beta_mean',
-    'bias_index_mean',
-    'n_stdadd',
-  ].includes(header));
-
   const backgroundSampleRows = buildDiagnosticsBackgroundSampleRows(options);
   const backgroundWellFitRows = buildDiagnosticsBackgroundWellFitRows(options);
   const wellRobustStatsRows = buildDiagnosticsWellRobustStatsRows(options, cielabPoints);
@@ -5819,10 +5834,6 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
   const cielabFittingRows = buildCielabFittingRows(cielabPoints, CIELAB_DIAGNOSTIC_DESCRIPTORS, options.storedCalibration);
   const bgModelInputRows = buildDiagnosticsBgModelInputRows(options);
   const bgModelCoefficientRows = buildDiagnosticsBgModelCoefficientRows(options);
-  const unknownIndividualDataRows = unknownIndividualRows(options.unknownResultsWithReference);
-  const unknownGroupDataRows = unknownGroupRows(options.unknownGroupSummaries);
-  const unknownCielabIndividualDataRows = unknownCielabIndividualRows(options.unknownCielabResults);
-  const unknownCielabGroupDataRows = unknownCielabGroupRows(options.unknownCielabGroupSummaries);
 
   return createXlsxWorkbookBlob(createSequentialWorkbookSheets(
     'Index of diagnostic sheets included for this run.',
@@ -5882,21 +5893,10 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
         include: spatialRows.length > 0,
       },
       {
-        title: 'METHOD_COMPARISON',
-        purpose: 'Cross-method diagnostic comparison using common score factors.',
-        rows: tableRows(uniqueHeaders(methodComparisonPreferred, methodComparisonRows), methodComparisonRows),
-        include: methodComparisonRows.length > 0,
-      },
-      {
         title: 'CIELAB_FITTING',
         purpose: 'CIELAB/DeltaE diagnostic fit rows.',
         rows: tableRows(['Channel', 'FitType', 'ID', 'DF', 'n_points', 'm', 'q', 'R2', 'RMSE', 'LOD', 'LOQ', 'C0', 'C0_sd', 'sigma_cal', 'sigma_source', 'SNR', 'beta_k', 'bias_index_k'], cielabFittingRows),
         include: cielabFittingRows.length > 0,
-      },
-      {
-        title: 'LEGENDS',
-        purpose: 'Definitions for diagnostic workbook fields and figures.',
-        rows: tableRows(['Term', 'Meaning', 'Formula', 'Unit', 'Where used', 'Notes'], buildDiagnosticsLegendRows(options.unitLabel)),
       },
       {
         title: 'BG_MODEL_INPUTS',
@@ -5911,28 +5911,9 @@ async function createPythonDiagnosticsWorkbookBlob(options: PythonDiagnosticsWor
         include: bgModelCoefficientRows.length > 0,
       },
       {
-        title: 'UNKNOWN_INDIVIDUAL',
-        purpose: 'Well-level RGB unknown results retained for diagnostic traceability.',
-        rows: tableRows(['Well', 'Row', 'Col', 'ID', 'DF', 'Channel', 'PAbs_raw', 'PAbs_corrected', 'C_diluted', 'C0', 'ReferenceStatus', 'ReferenceID', 'ReferenceLabel', 'ReferenceValue', 'ReferenceSD', 'Delta', 'Recovery_pct', 'Warnings'], unknownIndividualDataRows),
-        include: unknownIndividualDataRows.length > 0,
-      },
-      {
-        title: 'UNKNOWN_GROUPS',
-        purpose: 'Group-only RGB unknown results used by primary summaries.',
-        rows: tableRows(['GroupKey', 'ID', 'DF', 'Channel', 'Wells', 'N_wells', 'PAbs_raw_mean', 'PAbs_raw_sd', 'PAbs_corrected_mean', 'PAbs_corrected_sd', 'C_diluted_mean', 'C_diluted_sd', 'C0_mean', 'C0_sd', 'ReferenceStatus', 'ReferenceID', 'ReferenceLabel', 'ReferenceValue', 'ReferenceSD', 'Delta_mean', 'Delta_sd', 'Recovery_mean_pct', 'Recovery_sd_pct', 'Warnings'], unknownGroupDataRows),
-        include: unknownGroupDataRows.length > 0,
-      },
-      {
-        title: 'UNKNOWN_CIELAB',
-        purpose: 'Well-level CIELAB unknown descriptors retained for diagnostic traceability.',
-        rows: tableRows(['Well', 'Row', 'Col', 'ID', 'DF', 'L', 'a', 'b', 'DeltaL', 'Deltaa', 'Deltab', 'DeltaE_ab', 'DeltaE_ab_chroma'], unknownCielabIndividualDataRows),
-        include: unknownCielabIndividualDataRows.length > 0,
-      },
-      {
-        title: 'UNKNOWN_CIELAB_GROUPS',
-        purpose: 'Group-only CIELAB and DeltaE unknown descriptor summaries.',
-        rows: tableRows(['GroupKey', 'ID', 'DF', 'Wells', 'N_wells', 'L_mean', 'L_sd', 'a_mean', 'a_sd', 'b_mean', 'b_sd', 'DeltaL_mean', 'DeltaL_sd', 'Deltaa_mean', 'Deltaa_sd', 'Deltab_mean', 'Deltab_sd', 'DeltaE_ab_mean', 'DeltaE_ab_sd', 'DeltaE_ab_chroma_mean', 'DeltaE_ab_chroma_sd'], unknownCielabGroupDataRows),
-        include: unknownCielabGroupDataRows.length > 0,
+        title: 'LEGENDS',
+        purpose: 'Definitions for diagnostic workbook fields and figures.',
+        rows: tableRows(['Term', 'Meaning', 'Formula', 'Unit', 'Where used', 'Notes'], buildDiagnosticsLegendRows(options.unitLabel)),
       },
     ],
   ));
@@ -6963,6 +6944,7 @@ function buildPythonStyleMethodComparisonCanvas(
   expectedRefs: ExpectedRef[],
   unitLabel: string,
   hasStandardAddition: boolean,
+  standardAdditionScopeLabel?: string,
 ): HTMLCanvasElement {
   void imageBase;
 
@@ -7598,7 +7580,7 @@ function buildPythonStyleMethodComparisonCanvas(
       const sourceTxt = source === 'unknown_from_calibration'
         ? 'unknown'
         : source === 'standard_addition'
-          ? 'std add'
+          ? standardAdditionScopeLabel ? `std add (${standardAdditionScopeLabel})` : 'std add'
           : 'estimated value';
 
       if (isReliable && !shownReliable) {
@@ -12129,10 +12111,23 @@ function App() {
       const legacyMethodComparisonRows = buildMethodComparisonRowsFromFitRows(methodComparisonFitRows, expectedRefs, true)
         .filter((row) => xlsxString(row, 'Estimate_source') !== 'unknown_from_calibration');
       const hasStandardAdditionForExport = standardAdditionFitsWithSlopeContext.length > 0;
+      const methodComparisonIdDfGroups = collectMethodComparisonIdDfGroups(methodComparisonFitRows);
       const methodComparisonRows = [
         ...legacyMethodComparisonRows,
         ...buildUnknownMethodComparisonRows(unknownMethodGroupResults, effectiveCalibrationFits, hasStandardAdditionForExport, calibrationForExport),
       ];
+      const methodComparisonGroups = methodComparisonIdDfGroups
+        .map((targetGroup) => {
+          const groupExpectedRefs = expectedRefs.filter((ref) => referenceMatchesSample(ref, targetGroup.sampleId));
+          const rows = buildMethodComparisonRowsFromFitRows(
+            methodComparisonFitRows,
+            groupExpectedRefs,
+            true,
+            targetGroup,
+          ).filter((row) => xlsxString(row, 'Estimate_source') !== 'unknown_from_calibration');
+          return { group: targetGroup, rows };
+        })
+        .filter((entry) => entry.rows.length > 0);
       const bestChannel = calibrationForExport?.selectedChannel ?? rankings[0]?.channel ?? 'R';
       if (completeGeneratedStoredCalibration) {
         completeGeneratedStoredCalibration.selectedChannel = bestChannel;
@@ -12261,6 +12256,7 @@ function App() {
           unknownCielabGroupSummaries,
           unknownMethodGroupResults,
           methodComparisonRows,
+          methodComparisonGroups,
           expectedRefs,
           rankings,
           methodMetadata: currentMethodMetadata,
@@ -12295,6 +12291,7 @@ function App() {
           unknownCielabGroupSummaries,
           unknownMethodGroupResults,
           methodComparisonRows,
+          methodComparisonGroups,
           expectedRefs,
           rankings,
           methodMetadata: currentMethodMetadata,
@@ -12338,16 +12335,38 @@ function App() {
           ), { targetWidthPx: PNG_TWO_COLUMN_WIDTH_PX }),
         );
       }
-      if (methodComparisonRows.length > 0) {
+      const methodComparisonFileNames: string[] = [];
+      if (hasStandardAdditionForExport && methodComparisonGroups.length > 0) {
+        for (const entry of methodComparisonGroups) {
+          const targetGroup = entry.group;
+          const groupExpectedRefs = expectedRefs.filter((ref) => referenceMatchesSample(ref, targetGroup.sampleId));
+          const fileName = `${pythonResultsPrefix}_METHOD_COMPARISON_${targetGroup.fileSuffix}.png`;
+          methodComparisonFileNames.push(fileName.split('/').pop() ?? fileName);
+          addZipBlob(
+            files,
+            fileName,
+            await canvasToPngBlob(buildPythonStyleMethodComparisonCanvas(
+              `${pythonResultsBase} | ID=${targetGroup.sampleId} | DF=${formatFigureDilutionFactor(targetGroup.dilutionFactor)}`,
+              entry.rows,
+              groupExpectedRefs,
+              plateMapUnit,
+              true,
+              `ID=${targetGroup.sampleId}, DF=${formatFigureDilutionFactor(targetGroup.dilutionFactor)}`,
+            ), { targetWidthPx: PNG_TWO_COLUMN_WIDTH_PX }),
+          );
+        }
+      } else if (methodComparisonRows.length > 0) {
+        const fileName = `${pythonResultsPrefix}_METHOD_COMPARISON PNG file(s)`;
+        methodComparisonFileNames.push(fileName.split('/').pop() ?? fileName);
         addZipBlob(
           files,
-          `${pythonRawDataDetailsPrefix}_METHOD_COMPARISON.png`,
+          fileName,
           await canvasToPngBlob(buildPythonStyleMethodComparisonCanvas(
             pythonResultsBase,
             methodComparisonRows,
             expectedRefs,
             plateMapUnit,
-            hasStandardAdditionForExport,
+            false,
           ), { targetWidthPx: PNG_TWO_COLUMN_WIDTH_PX }),
         );
       }
@@ -12356,12 +12375,19 @@ function App() {
 
       addTextFile(
         `${pythonResultsPrefix}_RESULTS_CAPTION.txt`,
-        createPythonResultsCaptionText(pythonResultsBase, plateMapUnit, expectedRefs, unknownMethodGroupResults, bestChannel, hasStandardAdditionForExport, currentEmptyWellQc),
+        createPythonResultsCaptionText(pythonResultsBase, plateMapUnit, expectedRefs, unknownMethodGroupResults, bestChannel, hasStandardAdditionForExport, currentEmptyWellQc, methodComparisonFileNames),
         'text/plain;charset=utf-8',
       );
       addTextFile(
         `${pythonRawDataDetailsPrefix}_RAW_DATA_DETAILS_CAPTION.txt`,
-        createPythonRawDataDetailsCaptionText(pythonResultsBase, plateMapUnit, unknownMethodGroupResults, bestChannel, hasStandardAdditionForExport, currentEmptyWellQc),
+        createPythonRawDataDetailsCaptionText(
+          pythonResultsBase,
+          plateMapUnit,
+          unknownMethodGroupResults,
+          bestChannel,
+          hasStandardAdditionForExport,
+          currentEmptyWellQc,
+        ),
         'text/plain;charset=utf-8',
       );
 

@@ -9,6 +9,7 @@ import {
   collectExpectedRefs,
   collectPlateState,
   importPlateMapCsv,
+  normalizeSnapshotPlateRegion,
   parseUnitLabel,
   PLATE_FORMATS,
   plateDataToWellConfigs,
@@ -135,6 +136,9 @@ export function PlateMapEditor({
   const [plateFormat, setPlateFormat] = useState<PlateFormatLabel>(initial.plateFormat);
   const [nrow, setNrow] = useState<number>(initial.nrow);
   const [ncol, setNcol] = useState<number>(initial.ncol);
+  const [plateRegion, setPlateRegion] = useState(() =>
+    normalizeSnapshotPlateRegion(initial.nrow, initial.ncol, editorSnapshot?.plateRegion),
+  );
   const [defaults, setDefaults] = useState<PlateDefaults>(initial.defaults);
   const [unitBase, setUnitBase] = useState(unitParts.base || 'mM');
   const [unitExp, setUnitExp] = useState(unitParts.exp || '0');
@@ -168,6 +172,11 @@ export function PlateMapEditor({
       setNrow(editorSnapshot.nrow);
       setNcol(editorSnapshot.ncol);
       setPlateFormat(inferPlateFormatLabel(editorSnapshot.nrow, editorSnapshot.ncol));
+      setPlateRegion(normalizeSnapshotPlateRegion(
+        editorSnapshot.nrow,
+        editorSnapshot.ncol,
+        editorSnapshot.plateRegion,
+      ));
       setDefaults(editorSnapshot.defaults);
       setIdDfPriority(editorSnapshot.idDfPriority);
       setExtendedView(editorSnapshot.extendedView ?? true);
@@ -186,6 +195,7 @@ export function PlateMapEditor({
     setNrow(parsed.nrow);
     setNcol(parsed.ncol);
     setPlateFormat(nextFormat);
+    setPlateRegion(normalizeSnapshotPlateRegion(parsed.nrow, parsed.ncol));
     setDefaults(parsed.defaults);
     setIdDfPriority('row');
     setExtendedView(true);
@@ -269,10 +279,11 @@ export function PlateMapEditor({
       ncol,
       idDfPriority,
       extendedView,
+      plateRegion,
     };
     lastEmittedEditorSnapshotSignatureRef.current = JSON.stringify(snapshot);
     onEditorSnapshotChange(snapshot);
-  }, [defaults, extendedView, grid, idDfPriority, ncol, nrow, onEditorSnapshotChange]);
+  }, [defaults, extendedView, grid, idDfPriority, ncol, nrow, onEditorSnapshotChange, plateRegion]);
 
   const configuredWellCount = useMemo(() => {
     const state = collectPlateState(grid, defaults, nrow, ncol, {
@@ -408,6 +419,7 @@ export function PlateMapEditor({
 
     setNrow(rows);
     setNcol(cols);
+    setPlateRegion(normalizeSnapshotPlateRegion(rows, cols));
 
     setDefaults((current) => {
       const next = buildDefaultPlateDefaults(rows, cols);

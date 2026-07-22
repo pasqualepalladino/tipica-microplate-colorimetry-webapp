@@ -2,7 +2,11 @@ import {
   buildDefaultPlateDefaults,
   buildPlateMapTemplateCsv,
   collectPlateState,
+  createFullPlateRegion,
   importPlateMapCsv,
+  isFullPlateRegion,
+  nominalWellId,
+  normalizePlateRegion,
   parseCellEntry,
   rowIndexFromLabel,
   rowLabelFromIndex,
@@ -32,6 +36,18 @@ function assertNaN(value: number, message: string): void {
   }
 }
 
+function assertThrows(fn: () => void, message: string): void {
+  let threw = false;
+  try {
+    fn();
+  } catch {
+    threw = true;
+  }
+  if (!threw) {
+    throw new Error(`${message}. Expected function to throw.`);
+  }
+}
+
 function testRowLabelFromIndex(): void {
   assertEqual(rowLabelFromIndex(0), 'A', 'rowLabelFromIndex(0)');
   assertEqual(rowLabelFromIndex(7), 'H', 'rowLabelFromIndex(7)');
@@ -55,6 +71,61 @@ function testWellId(): void {
   assertEqual(wellId(0, 11), 'A12', 'wellId(0,11)');
   assertEqual(wellId(7, 0), 'H1', 'wellId(7,0)');
   assertEqual(wellId(15, 23), 'P24', 'wellId(15,23)');
+}
+
+function testPlateRegionDefinition(): void {
+  const legacy = createFullPlateRegion(8, 12);
+  assertEqual(legacy.plateRows, 8, 'legacy plate rows');
+  assertEqual(legacy.plateColumns, 12, 'legacy plate columns');
+  assertEqual(legacy.visibleRows, 8, 'legacy visible rows');
+  assertEqual(legacy.visibleColumns, 12, 'legacy visible columns');
+  assertEqual(legacy.rowOffset, 0, 'legacy row offset');
+  assertEqual(legacy.columnOffset, 0, 'legacy column offset');
+  assert(isFullPlateRegion(legacy), 'legacy region should cover the full plate');
+  assertEqual(nominalWellId(legacy, 7, 11), 'H12', 'legacy nominal H12');
+
+  const cropped = normalizePlateRegion({
+    plateRows: 16,
+    plateColumns: 24,
+    visibleRows: 6,
+    visibleColumns: 8,
+    rowOffset: 2,
+    columnOffset: 3,
+  });
+  assert(!isFullPlateRegion(cropped), 'cropped region should not be full plate');
+  assertEqual(nominalWellId(cropped, 0, 0), 'C4', 'cropped first nominal well');
+  assertEqual(nominalWellId(cropped, 5, 7), 'H11', 'cropped last nominal well');
+
+  const offsetDefaults = normalizePlateRegion({
+    plateRows: 8,
+    plateColumns: 12,
+    rowOffset: 2,
+    columnOffset: 4,
+  });
+  assertEqual(offsetDefaults.visibleRows, 6, 'offset default visible rows');
+  assertEqual(offsetDefaults.visibleColumns, 8, 'offset default visible columns');
+
+  assertThrows(
+    () => normalizePlateRegion({ plateRows: 0, plateColumns: 12 }),
+    'zero nominal rows should be rejected',
+  );
+  assertThrows(
+    () => normalizePlateRegion({ plateRows: 8, plateColumns: 12, rowOffset: 8 }),
+    'row offset outside nominal plate should be rejected',
+  );
+  assertThrows(
+    () => normalizePlateRegion({
+      plateRows: 8,
+      plateColumns: 12,
+      visibleRows: 7,
+      rowOffset: 2,
+    }),
+    'visible row region extending outside nominal plate should be rejected',
+  );
+  assertThrows(
+    () => nominalWellId(cropped, 6, 0),
+    'visible row outside cropped region should be rejected',
+  );
 }
 
 function testParseCellEntry(): void {
@@ -296,6 +367,7 @@ function run(): void {
   testRowLabelFromIndex();
   testRowIndexFromLabel();
   testWellId();
+  testPlateRegionDefinition();
   testParseCellEntry();
   testCollectPlateStateFallbacks();
   testBuildPlateMapTemplateCsv();

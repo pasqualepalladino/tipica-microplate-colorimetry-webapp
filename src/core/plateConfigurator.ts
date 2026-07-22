@@ -7,6 +7,7 @@
  * Does not modify the existing WellConfig[] fitting/export pipeline.
  */
 
+import type { PlateRegionDefinition } from '../types/plate';
 import type { WellConfig } from '../types/plateMap';
 
 // ---------------------------------------------------------------------------
@@ -100,6 +101,7 @@ export interface PlateEditorState {
 export interface PlateEditorSnapshot extends PlateEditorState {
   idDfPriority: 'row' | 'col';
   extendedView?: boolean;
+  plateRegion?: PlateRegionDefinition;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +152,120 @@ export function rowIndexFromLabel(label: string): number {
  */
 export function wellId(row: number, col: number): string {
   return `${rowLabelFromIndex(row)}${col + 1}`;
+}
+
+/** Input accepted when constructing a nominal/visible plate region. */
+export type PlateRegionInput = Pick<
+  PlateRegionDefinition,
+  'plateRows' | 'plateColumns'
+> & Partial<Omit<PlateRegionDefinition, 'plateRows' | 'plateColumns'>>;
+
+function requireInteger(value: number, field: string, minimum: number): number {
+  if (!Number.isInteger(value) || value < minimum) {
+    throw new Error(`${field} must be an integer >= ${minimum}.`);
+  }
+  return value;
+}
+
+/**
+ * Normalize and validate nominal plate dimensions plus a visible rectangular
+ * image region. Legacy callers only need plateRows/plateColumns; that produces
+ * a full-plate visible region with zero offsets.
+ */
+export function normalizePlateRegion(input: PlateRegionInput): PlateRegionDefinition {
+  const plateRows = requireInteger(input.plateRows, 'plateRows', 1);
+  const plateColumns = requireInteger(input.plateColumns, 'plateColumns', 1);
+  const rowOffset = requireInteger(input.rowOffset ?? 0, 'rowOffset', 0);
+  const columnOffset = requireInteger(input.columnOffset ?? 0, 'columnOffset', 0);
+
+  if (rowOffset >= plateRows) {
+    throw new Error('rowOffset must identify a row inside the nominal plate.');
+  }
+  if (columnOffset >= plateColumns) {
+    throw new Error('columnOffset must identify a column inside the nominal plate.');
+  }
+
+  const visibleRows = requireInteger(
+    input.visibleRows ?? plateRows - rowOffset,
+    'visibleRows',
+    1,
+  );
+  const visibleColumns = requireInteger(
+    input.visibleColumns ?? plateColumns - columnOffset,
+    'visibleColumns',
+    1,
+  );
+
+  if (rowOffset + visibleRows > plateRows) {
+    throw new Error('rowOffset + visibleRows exceeds the nominal plate rows.');
+  }
+  if (columnOffset + visibleColumns > plateColumns) {
+    throw new Error('columnOffset + visibleColumns exceeds the nominal plate columns.');
+  }
+
+  return {
+    plateRows,
+    plateColumns,
+    visibleRows,
+    visibleColumns,
+    rowOffset,
+    columnOffset,
+  };
+}
+
+/** Full nominal plate region used by legacy 8 x 12 and other uncropped paths. */
+export function createFullPlateRegion(
+  plateRows: number,
+  plateColumns: number,
+): PlateRegionDefinition {
+  return normalizePlateRegion({ plateRows, plateColumns });
+}
+
+/**
+ * Resolve the persisted region for an editor snapshot. Projects created before
+ * plate-region persistence omit the field and are interpreted as full plate.
+ */
+export function normalizeSnapshotPlateRegion(
+  nrow: number,
+  ncol: number,
+  region?: PlateRegionDefinition,
+): PlateRegionDefinition {
+  const normalized = normalizePlateRegion(region ?? {
+    plateRows: nrow,
+    plateColumns: ncol,
+  });
+
+  if (normalized.plateRows !== nrow || normalized.plateColumns !== ncol) {
+    throw new Error('plateRegion nominal dimensions must match snapshot nrow/ncol.');
+  }
+
+  return normalized;
+}
+
+export function isFullPlateRegion(region: PlateRegionDefinition): boolean {
+  return region.rowOffset === 0
+    && region.columnOffset === 0
+    && region.visibleRows === region.plateRows
+    && region.visibleColumns === region.plateColumns;
+}
+
+/**
+ * Resolve a zero-based visible-region coordinate to its nominal well ID.
+ * Example: rowOffset=2, columnOffset=3, visible (0, 0) -> C4.
+ */
+export function nominalWellId(
+  region: PlateRegionDefinition,
+  visibleRow: number,
+  visibleColumn: number,
+): string {
+  requireInteger(visibleRow, 'visibleRow', 0);
+  requireInteger(visibleColumn, 'visibleColumn', 0);
+
+  if (visibleRow >= region.visibleRows || visibleColumn >= region.visibleColumns) {
+    throw new Error('Visible well coordinate is outside the configured visible region.');
+  }
+
+  return wellId(region.rowOffset + visibleRow, region.columnOffset + visibleColumn);
 }
 
 // ---------------------------------------------------------------------------

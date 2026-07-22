@@ -3,6 +3,7 @@ import {
   buildUnitLabel,
   collectExpectedRefs,
   collectPlateState,
+  normalizeSnapshotPlateRegion,
   plateDataToWellConfigs,
   type CellGrid,
   type PlateEditorSnapshot,
@@ -76,6 +77,14 @@ function representativePayload(): {
       nrow,
       ncol,
       idDfPriority: 'col',
+      plateRegion: normalizeSnapshotPlateRegion(nrow, ncol, {
+        plateRows: nrow,
+        plateColumns: ncol,
+        visibleRows: 1,
+        visibleColumns: 2,
+        rowOffset: 1,
+        columnOffset: 1,
+      }),
     },
     expectedRefs,
     unitLabel,
@@ -124,6 +133,45 @@ function testQuantificationFieldsSurviveProjectRoundTrip(): void {
   assertEqual(unk.dilutionFactor, 17, 'B3 unknown DF override');
 }
 
+function testLegacyPlateRegionFallback(): void {
+  const legacySnapshot: PlateEditorSnapshot = {
+    grid: {},
+    defaults: buildDefaultPlateDefaults(8, 12),
+    nrow: 8,
+    ncol: 12,
+    idDfPriority: 'row',
+  };
+
+  const normalized = normalizeSnapshotPlateRegion(
+    legacySnapshot.nrow,
+    legacySnapshot.ncol,
+    legacySnapshot.plateRegion,
+  );
+  assertDeepEqual(normalized, {
+    plateRows: 8,
+    plateColumns: 12,
+    visibleRows: 8,
+    visibleColumns: 12,
+    rowOffset: 0,
+    columnOffset: 0,
+  }, 'legacy snapshot should default to a full nominal plate region');
+
+  let mismatchRejected = false;
+  try {
+    normalizeSnapshotPlateRegion(8, 12, {
+      plateRows: 16,
+      plateColumns: 24,
+      visibleRows: 8,
+      visibleColumns: 12,
+      rowOffset: 0,
+      columnOffset: 0,
+    });
+  } catch {
+    mismatchRejected = true;
+  }
+  assert(mismatchRejected, 'snapshot/region nominal dimension mismatch should be rejected');
+}
+
 function testOverridePreservationPolicyModel(): void {
   let activeOverride = 'python-canonical.json';
 
@@ -147,6 +195,7 @@ function testOverridePreservationPolicyModel(): void {
 }
 
 testQuantificationFieldsSurviveProjectRoundTrip();
+testLegacyPlateRegionFallback();
 testOverridePreservationPolicyModel();
 
 console.log('smoke:configurator-persistence passed');

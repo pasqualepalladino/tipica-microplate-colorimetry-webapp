@@ -749,3 +749,62 @@ export function fitStandardAddition(
     };
   }));
 }
+
+
+export interface MethodComparisonIdDfGroup {
+  sampleId: string;
+  dilutionFactor: number;
+  fileSuffix: string;
+}
+
+function methodComparisonFileToken(value: string): string {
+  const token = value
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/^[_\.\-]+|[_\.\-]+$/g, '');
+  return token || 'blank';
+}
+
+function methodComparisonDfToken(value: number): string {
+  if (!Number.isFinite(value)) {
+    return 'NA';
+  }
+  return methodComparisonFileToken(Number.isInteger(value) ? String(value) : String(value));
+}
+
+export function collectMethodComparisonIdDfGroups(
+  rows: readonly Record<string, unknown>[],
+): MethodComparisonIdDfGroup[] {
+  const groups = new Map<string, { sampleId: string; dilutionFactor: number }>();
+
+  rows.forEach((row) => {
+    if (row.FitType !== 'StdAdd') {
+      return;
+    }
+    const sampleId = typeof row.ID === 'string' ? row.ID.trim() : String(row.ID ?? '').trim();
+    const dilutionFactor = typeof row.DF === 'number' ? row.DF : Number(row.DF);
+    if (!Number.isFinite(dilutionFactor)) {
+      return;
+    }
+    const key = `${sampleId}\u0000${dilutionFactor}`;
+    if (!groups.has(key)) {
+      groups.set(key, { sampleId, dilutionFactor });
+    }
+  });
+
+  const sorted = [...groups.values()].sort((a, b) => (
+    a.sampleId.localeCompare(b.sampleId)
+    || a.dilutionFactor - b.dilutionFactor
+  ));
+  const suffixCounts = new Map<string, number>();
+
+  return sorted.map((group) => {
+    const baseSuffix = `ID${methodComparisonFileToken(group.sampleId)}_DF${methodComparisonDfToken(group.dilutionFactor)}`;
+    const count = (suffixCounts.get(baseSuffix) ?? 0) + 1;
+    suffixCounts.set(baseSuffix, count);
+    return {
+      ...group,
+      fileSuffix: count === 1 ? baseSuffix : `${baseSuffix}_${count}`,
+    };
+  });
+}

@@ -1,4 +1,4 @@
-import { fitLineWithCovariance, stdAddC0SdFromFit } from '../src/core/fitting.js';
+import { collectMethodComparisonIdDfGroups, fitLineWithCovariance, stdAddC0SdFromFit } from '../src/core/fitting.js';
 
 const TOLERANCE = 1e-10;
 
@@ -151,11 +151,30 @@ function testStandardAdditionC0Sd(): void {
   assertClose(c0.c0Sd, 0.046363199686337564, 'standard-addition C0_sd');
 }
 
+function testMethodComparisonIdDfGrouping(): void {
+  const groups = collectMethodComparisonIdDfGroups([
+    { FitType: 'Calibration', Channel: 'R', ID: '', DF: '' },
+    { FitType: 'StdAdd', Channel: 'R', ID: '1', DF: 100 },
+    { FitType: 'StdAdd', Channel: 'G', ID: '1', DF: 100 },
+    { FitType: 'StdAdd', Channel: 'R', ID: '2', DF: 50 },
+    { FitType: 'StdAdd', Channel: 'B', ID: 'Sample / A', DF: 50 },
+    { FitType: 'StdAdd', Channel: 'B', ID: 'Sample / A', DF: 25.5 },
+  ]);
+
+  assert(groups.length === 4, 'method-comparison grouping should deduplicate channels within each ID + DF pair');
+  assert(groups[0].sampleId === '1' && groups[0].dilutionFactor === 100, 'first ID + DF group');
+  assert(groups[0].fileSuffix === 'ID1_DF100', 'numeric ID + DF filename suffix');
+  assert(groups[1].sampleId === '2' && groups[1].dilutionFactor === 50, 'second ID + DF group');
+  assert(groups[2].fileSuffix === 'IDSample_A_DF25.5', 'sanitized decimal ID + DF filename suffix');
+  assert(groups[3].fileSuffix === 'IDSample_A_DF50', 'sanitized ID + DF filename suffix');
+}
+
 testOrdinaryLine();
 testDownweightedOutlier();
 testCovariance();
 testTwoPointCovariance();
 testForceZeroCovariance();
 testStandardAdditionC0Sd();
+testMethodComparisonIdDfGrouping();
 
 console.log('fitting parity smoke passed');
