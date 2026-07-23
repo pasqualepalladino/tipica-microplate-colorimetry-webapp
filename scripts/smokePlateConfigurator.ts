@@ -14,6 +14,13 @@ import {
   wellConfigsToPlateEditorState,
 } from '../src/core/plateConfigurator.js';
 import { reconcileLoadedGeometryFloor } from '../src/core/geometryReconciliation.js';
+import {
+  FLAT_BOTTOM_PLATE_GEOMETRY_PRESETS,
+  getFlatBottomPlateGeometry,
+  getFlatBottomPlateGeometryByWellCount,
+  getFloorDimensionToPitchRatio,
+  getMouthDiameterToPitchRatio,
+} from '../src/core/physicalPlateGeometry.js';
 import { buildVisiblePlateCornerReferences, computeGeometryAlignmentDiagnostics, generate96WellFloorCircles, generate96WellGrid, generatePlateFloorCircles, generatePlateGrid, hasFloorGeometry } from '../src/core/plate.js';
 import type { PlateGeometry } from '../src/types/geometry.js';
 import type { WellConfig } from '../src/types/plateMap.js';
@@ -554,6 +561,39 @@ function testProjectAfterGeometryPreservesFloorPath(): void {
   );
 }
 
+function testFlatBottomPlateGeometryPresets(): void {
+  assertEqual(FLAT_BOTTOM_PLATE_GEOMETRY_PRESETS.length, 7, 'physical preset count');
+
+  const expected = [
+    [6, 2, 3, 'Watson'],
+    [12, 3, 4, 'Watson'],
+    [24, 4, 6, 'Watson'],
+    [48, 6, 8, 'Watson'],
+    [96, 8, 12, 'Corning'],
+    [384, 16, 24, 'Corning'],
+    [1536, 32, 48, 'Corning'],
+  ] as const;
+
+  for (const [wellCount, rows, columns, source] of expected) {
+    const preset = getFlatBottomPlateGeometry(rows, columns);
+    assert(preset !== null, `${wellCount}-well preset should exist`);
+    assertEqual(preset.wellCount, wellCount, `${wellCount}-well count`);
+    assertEqual(preset.sourceManufacturer, source, `${wellCount}-well source`);
+    assertEqual(preset.geometryClass, 'flat-bottom', `${wellCount}-well geometry class`);
+    assert(preset.pitchXmm > preset.mouthDiameterMm, `${wellCount}-well pitch should exceed mouth diameter`);
+    assert(preset.mouthDiameterMm > preset.floorDiameterOrWidthMm, `${wellCount}-well mouth should exceed floor dimension`);
+    assert(preset.bottomAreaMm2 > 0, `${wellCount}-well bottom area should be positive`);
+    assert(getMouthDiameterToPitchRatio(preset) > 0, `${wellCount}-well mouth ratio`);
+    assert(getFloorDimensionToPitchRatio(preset) > 0, `${wellCount}-well floor ratio`);
+    assertEqual(getFlatBottomPlateGeometryByWellCount(wellCount)?.key, preset.key, `${wellCount}-well lookup parity`);
+  }
+
+  const plate384 = getFlatBottomPlateGeometry(16, 24);
+  assert(plate384 !== null, '384-well preset should exist');
+  assertEqual(plate384.floorDimensionKind, 'width', '384-well lower dimension is documented as width');
+  assertEqual(getFlatBottomPlateGeometry(5, 5), null, 'unsupported layout should not invent a preset');
+}
+
 function run(): void {
   testRowLabelFromIndex();
   testRowIndexFromLabel();
@@ -568,6 +608,7 @@ function run(): void {
   testImportPlateMapCsv();
   testWellConfigsToPlateEditorState();
   testProjectAfterGeometryPreservesFloorPath();
+  testFlatBottomPlateGeometryPresets();
 
   console.log('smoke:plate-configurator passed');
 }

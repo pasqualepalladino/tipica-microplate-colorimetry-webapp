@@ -24,6 +24,10 @@ import {
 import type { WellChannelCorrectionApplication } from './core/lowSignalCorrection';
 import { computePAbs, linearizeRgb } from './core/pabs';
 import {
+  flatBottomPlateGeometryEntries,
+  getFlatBottomPlateGeometry,
+} from './core/physicalPlateGeometry';
+import {
   buildVisiblePlateCornerReferences,
   computeGeometryAlignmentDiagnostics,
   estimateLocalPitch,
@@ -4736,6 +4740,8 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
 }
 
 interface PythonDiagnosticsWorkbookOptions extends PythonReportWorkbookOptions {
+  nominalPlateRows: number;
+  nominalPlateColumns: number;
   wells: WellCenter[];
   geometry: PlateGeometry | null;
   backgroundDiagnostics: BackgroundVisualDiagnostics | null;
@@ -5108,152 +5114,25 @@ function buildDiagnosticsWellBottomRows(options: PythonDiagnosticsWorkbookOption
   });
 }
 
-type PythonLikePlateGeometryValue = string | number | [number, number];
-
-function formatPythonLikePlateGeometryValue(value: PythonLikePlateGeometryValue): string | number {
-  if (Array.isArray(value)) {
-    return `(${value[0]}, ${value[1]})`;
-  }
-
-  return value;
-}
-
-function inferPlateShapeFromWells(wells: WellCenter[]): { nrow: number; ncol: number } {
-  const maxRow = wells.reduce((current, well) => Math.max(current, well.row), -1);
-  const maxCol = wells.reduce((current, well) => Math.max(current, well.col), -1);
-
-  return {
-    nrow: maxRow >= 0 ? maxRow + 1 : 8,
-    ncol: maxCol >= 0 ? maxCol + 1 : 12,
-  };
-}
-
 function getPythonLikePlateGeometryRows(nrow: number, ncol: number): XlsxRow[] {
-  const plateGeometryDb: Record<string, Record<string, PythonLikePlateGeometryValue>> = {
-    '2x3': {
-      name: '6-well standard flat-bottom cell-culture plate',
-      footprint_length_mm: 127.76,
-      footprint_width_mm: 85.48,
-      pitch_mm: 39.12,
-      well_depth_mm_nominal: 17.5,
-      mouth_diam_mm_nominal: 35.0,
-      floor_diam_mm_nominal: 35.0,
-      standard_basis: 'approximate standard flat-bottom 6-well geometry; verify vendor-specific dimensions for quantitative path-length work',
-    },
-    '3x4': {
-      name: '12-well standard flat-bottom cell-culture plate',
-      footprint_length_mm: 127.76,
-      footprint_width_mm: 85.48,
-      pitch_mm: 26.0,
-      well_depth_mm_nominal: 17.5,
-      mouth_diam_mm_nominal: 22.1,
-      floor_diam_mm_nominal: 22.1,
-      standard_basis: 'approximate standard flat-bottom 12-well geometry; verify vendor-specific dimensions for quantitative path-length work',
-    },
-    '4x6': {
-      name: '24-well standard flat-bottom cell-culture plate',
-      footprint_length_mm: 127.76,
-      footprint_width_mm: 85.48,
-      pitch_mm: 19.3,
-      well_depth_mm_nominal: 17.5,
-      mouth_diam_mm_nominal: 15.6,
-      floor_diam_mm_nominal: 15.6,
-      standard_basis: 'approximate standard flat-bottom 24-well geometry; verify vendor-specific dimensions for quantitative path-length work',
-    },
-    '6x8': {
-      name: '48-well standard flat-bottom cell-culture plate',
-      footprint_length_mm: 127.76,
-      footprint_width_mm: 85.48,
-      pitch_mm: 13.0,
-      well_depth_mm_nominal: 17.5,
-      mouth_diam_mm_nominal: 11.0,
-      floor_diam_mm_nominal: 11.0,
-      standard_basis: 'approximate standard flat-bottom 48-well geometry; verify vendor-specific dimensions for quantitative path-length work',
-    },
-    '8x12': {
-      name: '96-well standard F-bottom / flat-bottom',
-      footprint_length_mm: 127.76,
-      footprint_width_mm: 85.48,
-      footprint_length_mm_range: [127.76, 127.8],
-      footprint_width_mm_range: [85.48, 85.5],
-      plate_height_mm_nominal: 14.4,
-      plate_height_mm_range: [14.2, 14.6],
-      a1_row_offset_mm: 11.24,
-      a1_row_offset_mm_range: [11.18, 11.24],
-      a1_col_offset_mm: 14.38,
-      a1_col_offset_mm_range: [14.29, 14.38],
-      pitch_mm: 9.0,
-      pitch_mm_range: '(9.0, 9.02)',
-      well_depth_mm: 10.9,
-      well_depth_mm_range: [10.67, 10.9],
-      mouth_diam_mm: 6.9,
-      mouth_diam_mm_range: [6.69, 6.96],
-      floor_diam_mm: 6.48,
-      floor_diam_mm_range: [6.35, 6.58],
-      outer_diam_mm: 7.75,
-      inner_diam_mm: 6.9,
-      bridge_width_mm: 0.6,
-      extra_optical_margin_mm: 0.2,
-      well_bottom_elevation_mm_nominal: 3.6,
-      well_bottom_elevation_mm_range: [3.5, 3.7],
-      flange_or_skirt_height_mm: 2.5,
-    },
-    '16x24': {
-      name: '384-well standard F-bottom / flat-bottom',
-      footprint_length_mm: 127.76,
-      footprint_width_mm: 85.48,
-      plate_height_mm_nominal: 14.2,
-      a1_row_offset_mm: 8.99,
-      a1_col_offset_mm: 12.13,
-      pitch_mm: 4.5,
-      well_depth_mm_nominal: 11.5,
-      mouth_diam_mm_nominal: 3.66,
-      floor_diam_mm_nominal: 3.05,
-      flange_or_skirt_height_mm: 2.5,
-    },
-    '32x48': {
-      name: '1536-well standard F-bottom / flat-bottom',
-      footprint_length_mm: 127.76,
-      footprint_width_mm: 85.48,
-      plate_height_mm_nominal: 10.4,
-      a1_row_offset_mm: 7.87,
-      a1_col_offset_mm: 11.01,
-      pitch_mm: 2.25,
-      well_depth_mm_nominal: 4.9,
-      mouth_diam_mm_nominal: 1.75,
-      floor_diam_mm_nominal: 1.56,
-      flange_or_skirt_height_mm: 2.0,
-    },
-  };
+  const preset = getFlatBottomPlateGeometry(nrow, ncol);
 
-  const geometry = {
-    ...(plateGeometryDb[`${nrow}x${ncol}`] ?? {
-      name: `generic ${nrow}x${ncol}`,
-      pitch_mm: nrow === 8 && ncol === 12 ? 9.0 : 1.0,
-      mouth_diam_mm: nrow === 8 && ncol === 12 ? 6.9 : 1.0,
-      floor_diam_mm: nrow === 8 && ncol === 12 ? 6.48 : 0.9,
-      well_depth_mm: nrow === 8 && ncol === 12 ? 10.9 : 1.0,
-      outer_diam_mm: nrow === 8 && ncol === 12 ? 7.75 : 1.1,
-      inner_diam_mm: nrow === 8 && ncol === 12 ? 6.9 : 1.0,
-      bridge_width_mm: nrow === 8 && ncol === 12 ? 0.6 : 0.05,
-      extra_optical_margin_mm: nrow === 8 && ncol === 12 ? 0.2 : 0.02,
-      standard_basis: 'generic geometry; not ANSI/SLAS-certified',
-    }),
-  };
-
-  if (!geometry.standard_basis) {
-    geometry.standard_basis = 'ANSI/SLAS-compatible flat-bottom geometry; vendor dimensions may vary by plate family';
+  if (!preset) {
+    return [
+      { key: 'name', value: `unsupported ${nrow}x${ncol} plate geometry` },
+      { key: 'geometry_class', value: 'flat-bottom' },
+      { key: 'standard_basis', value: 'No nominal physical preset is registered for this layout.' },
+    ];
   }
 
-  return Object.keys(geometry)
-    .sort()
-    .map((key) => ({ key, value: formatPythonLikePlateGeometryValue(geometry[key]) }));
+  return flatBottomPlateGeometryEntries(preset);
 }
 
 function buildDiagnosticsPlateGeometryRows(options: PythonDiagnosticsWorkbookOptions): XlsxRow[] {
-  const { nrow, ncol } = inferPlateShapeFromWells(options.wells);
-
-  return getPythonLikePlateGeometryRows(nrow, ncol);
+  return getPythonLikePlateGeometryRows(
+    options.nominalPlateRows,
+    options.nominalPlateColumns,
+  );
 }
 
 function buildDiagnosticsEmptyWellRows(
@@ -10201,8 +10080,10 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
             <li>
               Complete geometry and analysis:
               <ol type="a">
-                <li>Pick the 4 mouth/corner circles in the order A1 to A12 to H12 to H1.</li>
-                <li>Pick the 4 floor circles in the same order.</li>
+                <li>Select the mouth circle(s) that define the visible layout: one circle for a 1 x 1 region, the two endpoint circles for a single row or column, or the four corner circles for a region with multiple rows and columns.</li>
+                <li>Select the corresponding floor circle(s) in the same order.</li>
+                <li>Well labels are local to the visible image region and always start from A1.</li>
+                <li>Example: for a complete 96-well 8 x 12 layout, select A1 to A12 to H12 to H1.</li>
                 <li>Run TIPICA analysis.</li>
               </ol>
             </li>
@@ -10214,7 +10095,9 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
         <section className="about-dialog-section">
           <h3>Experimental setup block</h3>
           <ul>
-            <li>Plate format defines the expected well-grid layout.</li>
+            <li>Plate format selects the nominal flat-bottom plate geometry; Visible rows and Visible columns define only the local image region to analyze.</li>
+            <li>Nominal physical presets use Watson reference dimensions for 6-, 12-, 24- and 48-well plates, and Corning standard flat-bottom reference dimensions for 96-, 384- and 1536-well plates.</li>
+            <li>These presets are vendor-specific reference geometries, not universal ANSI/SLAS mouth, floor or depth dimensions; verify the actual plate model for quantitative path-length work.</li>
             <li>Unit and x 10^ define the displayed concentration unit.</li>
             <li>Extended view shows the full editable plate-map table.</li>
             <li>ID/DF priority chooses whether row defaults or column defaults are applied first.</li>
@@ -12398,6 +12281,8 @@ function App() {
         files,
         `${pythonRawDataDetailsPrefix}_DIAGNOSTICS.xlsx`,
         await createPythonDiagnosticsWorkbookBlob({
+          nominalPlateRows: activePlateRegion.plateRows,
+          nominalPlateColumns: activePlateRegion.plateColumns,
           imageBase: pythonResultsBase,
           imageName,
           unitLabel: plateMapUnit,
