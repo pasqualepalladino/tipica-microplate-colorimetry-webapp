@@ -7,6 +7,7 @@ import type { WellCenter } from '../types/plate';
 interface PlateCanvasProps {
   image: HTMLImageElement | null;
   wells: WellCenter[];
+  cornerLabels: string[];
   radiusFactor: number;
   onCanvasSizeChange: (size: { width: number; height: number } | null) => void;
   manualPoints: Point[];
@@ -31,7 +32,6 @@ interface PlateCanvasProps {
   floorCircles: FloorCircle[] | null;
 }
 
-const FLOOR_CIRCLE_LABELS = ['A1', 'A12', 'H12', 'H1'];
 const MANUAL_MOUTH_REFERENCES = [
   { label: 'A1', row: 0, col: 0 },
   { label: 'A12', row: 0, col: 11 },
@@ -200,6 +200,7 @@ function drawManualMouthMarkers(
   points: Point[],
   previewPoint: Point | null,
   wells: WellCenter[],
+  cornerLabels: string[],
   radiusFactor: number,
   manualMouthRadiusPx: number | null = null,
 ): void {
@@ -211,13 +212,13 @@ function drawManualMouthMarkers(
 
   points.forEach((point, index) => {
     const radius = manualMouthRadiusPx ?? estimateManualMouthRadius(points, wells, radiusFactor, index);
-    drawMouthCircleLabel(ctx, point, MANUAL_MOUTH_REFERENCES[index]?.label ?? String(index + 1), radius);
+    drawMouthCircleLabel(ctx, point, cornerLabels[index] ?? String(index + 1), radius);
   });
 
   if (previewPoint && points.length < MANUAL_MOUTH_REFERENCES.length) {
     const previewIndex = points.length;
     const radius = manualMouthRadiusPx ?? estimateManualMouthRadius(points, wells, radiusFactor, previewIndex, previewPoint);
-    drawMouthCircleLabel(ctx, previewPoint, MANUAL_MOUTH_REFERENCES[previewIndex].label, radius, true);
+    drawMouthCircleLabel(ctx, previewPoint, cornerLabels[previewIndex] ?? String(previewIndex + 1), radius, true);
   }
 
   ctx.restore();
@@ -227,6 +228,7 @@ function drawFloorCircleMarkers(
   ctx: CanvasRenderingContext2D,
   circles: FloorCircle[],
   previewCircle: FloorCircle | null,
+  cornerLabels: string[],
 ): void {
   if (circles.length === 0 && !previewCircle) {
     return;
@@ -260,7 +262,7 @@ function drawFloorCircleMarkers(
     ctx.fill();
     ctx.stroke();
 
-    const label = FLOOR_CIRCLE_LABELS[index] ?? String(index + 1);
+    const label = cornerLabels[index] ?? String(index + 1);
     ctx.lineWidth = Math.max(2, fontSize * 0.18);
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.82)';
     ctx.fillStyle = 'rgba(255, 255, 255, 0.98)';
@@ -303,6 +305,7 @@ function drawFloorCircleMarkers(
 export function PlateCanvas({
   image,
   wells,
+  cornerLabels,
   radiusFactor,
   onCanvasSizeChange,
   manualPoints,
@@ -527,6 +530,7 @@ export function PlateCanvas({
       manualPoints,
       manualPickingActive && manualPoints.length < MANUAL_MOUTH_REFERENCES.length ? manualPreviewPoint : null,
       wells,
+      cornerLabels,
       radiusFactor,
       manualPickingActive || manualPoints.length > 0 ? manualMouthRadiusPx : null,
     );
@@ -538,6 +542,7 @@ export function PlateCanvas({
           ? referenceFloorCircles
           : [],
       manualFloorCirclePreview,
+      cornerLabels,
     );
   }, [
     floorCirclePickingActive,
@@ -555,6 +560,7 @@ export function PlateCanvas({
     showFloorCircles,
     showMouthGrid,
     wells,
+    cornerLabels,
   ]);
 
   const getCanvasPoint = (event: MouseEvent<HTMLCanvasElement> | ReactPointerEvent<HTMLCanvasElement>): Point | null => {

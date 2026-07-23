@@ -400,6 +400,26 @@ export function PlateMapEditor({
     setGrid((current) => applyTagToRow(current, row, ncol, tag, storedCalibrationLoaded));
   };
 
+  const handleVisibleRowsChange = (visibleRows: number) => {
+    setPlateRegion((current) => normalizeSnapshotPlateRegion(nrow, ncol, {
+      ...current,
+      visibleRows,
+      visibleColumns: Math.min(current.visibleColumns, ncol),
+      rowOffset: 0,
+      columnOffset: 0,
+    }));
+  };
+
+  const handleVisibleColumnsChange = (visibleColumns: number) => {
+    setPlateRegion((current) => normalizeSnapshotPlateRegion(nrow, ncol, {
+      ...current,
+      visibleRows: Math.min(current.visibleRows, nrow),
+      visibleColumns,
+      rowOffset: 0,
+      columnOffset: 0,
+    }));
+  };
+
   const handlePlateFormatChange = (label: PlateFormatLabel) => {
     const [rows, cols] = PLATE_FORMATS[label];
     setPlateFormat(label);
@@ -497,14 +517,26 @@ export function PlateMapEditor({
       <section className="nested-control-section" aria-labelledby="experiment-setup-heading">
         <h3 id="experiment-setup-heading">Experiment setup</h3>
         <div className="plate-config-setup-row">
-          <label className="checkbox-control plate-config-extended-control">
-            <input
-              type="checkbox"
-              checked={extendedView}
-              onChange={(event) => setExtendedView(event.currentTarget.checked)}
-            />
-            <span>Extended view</span>
-          </label>
+          <div className="plate-config-extended-block">
+            {onHelpRequest ? (
+              <button
+                type="button"
+                className="secondary-button plate-config-help-button"
+                onClick={onHelpRequest}
+                aria-label="Open plate configurator help"
+              >
+                ?
+              </button>
+            ) : null}
+            <label className="checkbox-control plate-config-extended-control">
+              <input
+                type="checkbox"
+                checked={extendedView}
+                onChange={(event) => setExtendedView(event.currentTarget.checked)}
+              />
+              <span>Extended view</span>
+            </label>
+          </div>
 
           <label className="select-control plate-config-format-control">
             <span>Plate format</span>
@@ -545,6 +577,30 @@ export function PlateMapEditor({
               />
             </label>
           ) : null}
+          <label className="select-control plate-config-visible-control">
+            <span>Visible rows</span>
+            <select
+              value={plateRegion.visibleRows}
+              onChange={(event) => handleVisibleRowsChange(Number(event.currentTarget.value))}
+            >
+              {Array.from({ length: nrow }, (_, index) => index + 1).map((value) => (
+                <option key={`visible-row-${value}`} value={value}>{value}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="select-control plate-config-visible-control">
+            <span>Visible columns</span>
+            <select
+              value={plateRegion.visibleColumns}
+              onChange={(event) => handleVisibleColumnsChange(Number(event.currentTarget.value))}
+            >
+              {Array.from({ length: ncol }, (_, index) => index + 1).map((value) => (
+                <option key={`visible-column-${value}`} value={value}>{value}</option>
+              ))}
+            </select>
+          </label>
+
           {extendedView ? (
             <fieldset className="plate-config-inline-radio-group">
               <legend>ID/DF priority</legend>
@@ -567,16 +623,6 @@ export function PlateMapEditor({
                 <span>Columns</span>
               </label>
             </fieldset>
-          ) : null}
-          {onHelpRequest ? (
-            <button
-              type="button"
-              className="secondary-button plate-config-help-button"
-              onClick={onHelpRequest}
-              aria-label="Open plate configurator help"
-            >
-              ?
-            </button>
           ) : null}
         </div>
       </section>

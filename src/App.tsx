@@ -24,18 +24,18 @@ import {
 import type { WellChannelCorrectionApplication } from './core/lowSignalCorrection';
 import { computePAbs, linearizeRgb } from './core/pabs';
 import {
+  buildVisiblePlateCornerReferences,
   computeGeometryAlignmentDiagnostics,
   estimateLocalPitch,
   estimateRoiRadius,
   estimateStandardMouthRadius,
-  generate96WellGrid,
+  generatePlateGrid,
   getCanvasCoordinateSize,
   getImageAnalysisSize,
-  generate96WellFloorCircles,
+  generatePlateFloorCircles,
   hasFloorGeometry,
 } from './core/plate';
 import {
-  FLOOR_CIRCLE_REFERENCES,
   geometryWithFloorCircles,
   geometryWithoutFloorCircles,
   getReferenceFloorCircles,
@@ -88,7 +88,6 @@ const DEFAULT_RADIUS_FACTOR = 0.3;
 const DEFAULT_MANUAL_MOUTH_RADIUS_PX = 28;
 const MIN_MANUAL_MOUTH_RADIUS_PX = 8;
 const MAX_MANUAL_MOUTH_RADIUS_PX = 120;
-const MANUAL_CORNER_LABELS = ['A1', 'A12', 'H12', 'H1'];
 const LIMITED_STORED_CALIBRATION_METADATA_WARNING = 'Stored calibration has limited method metadata.';
 const STORED_CALIBRATION_METHOD_MISMATCH_WARNING = 'Stored calibration method differs from current extraction method; results may not be comparable.';
 const MISSING_VALUE = 'Not available';
@@ -126,17 +125,72 @@ interface SharedGeometryOverrideState {
   mappingSummary: string;
 }
 
-function geometryFromManualPoints(points: Point[]): PlateGeometry | null {
-  if (points.length !== 4) {
-    return null;
+function geometryFromManualPoints(
+  points: Point[],
+  visibleRows: number,
+  visibleColumns: number,
+): PlateGeometry | null {
+  if (visibleRows === 1 && visibleColumns === 1 && points.length === 1) {
+    return {
+      corner_a1: points[0],
+      corner_a12: points[0],
+      corner_h12: points[0],
+      corner_h1: points[0],
+    };
   }
 
-  return {
-    corner_a1: points[0],
-    corner_a12: points[1],
-    corner_h12: points[2],
-    corner_h1: points[3],
-  };
+  if (visibleRows === 1 && visibleColumns > 1 && points.length === 2) {
+    return {
+      corner_a1: points[0],
+      corner_a12: points[1],
+      corner_h12: points[1],
+      corner_h1: points[0],
+    };
+  }
+
+  if (visibleRows > 1 && visibleColumns === 1 && points.length === 2) {
+    return {
+      corner_a1: points[0],
+      corner_a12: points[0],
+      corner_h12: points[1],
+      corner_h1: points[1],
+    };
+  }
+
+  if (visibleRows > 1 && visibleColumns > 1 && points.length === 4) {
+    return {
+      corner_a1: points[0],
+      corner_a12: points[1],
+      corner_h12: points[2],
+      corner_h1: points[3],
+    };
+  }
+
+  return null;
+}
+
+function expandFloorCirclesForLegacyGeometry(
+  circles: FloorCircle[],
+  visibleRows: number,
+  visibleColumns: number,
+): [FloorCircle, FloorCircle, FloorCircle, FloorCircle] | null {
+  if (visibleRows === 1 && visibleColumns === 1 && circles.length === 1) {
+    return [circles[0], circles[0], circles[0], circles[0]];
+  }
+
+  if (visibleRows === 1 && visibleColumns > 1 && circles.length === 2) {
+    return [circles[0], circles[1], circles[1], circles[0]];
+  }
+
+  if (visibleRows > 1 && visibleColumns === 1 && circles.length === 2) {
+    return [circles[0], circles[0], circles[1], circles[1]];
+  }
+
+  if (visibleRows > 1 && visibleColumns > 1 && circles.length === 4) {
+    return [circles[0], circles[1], circles[2], circles[3]];
+  }
+
+  return null;
 }
 
 function pointDistance(a: Point, b: Point): number {
@@ -158,24 +212,30 @@ function medianNumber(values: number[]): number | null {
   return (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-function estimateCornerPitchFromManualPoints(points: Point[]): number | null {
-  const [a1, a12, h12, h1] = points;
+function estimateCornerPitchFromManualPoints(
+  points: Point[],
+  visibleRows: number,
+  visibleColumns: number,
+): number | null {
+  const [a1, topRight, bottomRight, bottomLeft] = points;
   const pitches: number[] = [];
+  const columnIntervals = Math.max(0, visibleColumns - 1);
+  const rowIntervals = Math.max(0, visibleRows - 1);
 
-  if (a1 && a12) {
-    pitches.push(pointDistance(a1, a12) / 11);
+  if (columnIntervals > 0 && a1 && topRight) {
+    pitches.push(pointDistance(a1, topRight) / columnIntervals);
   }
 
-  if (h1 && h12) {
-    pitches.push(pointDistance(h1, h12) / 11);
+  if (columnIntervals > 0 && bottomLeft && bottomRight) {
+    pitches.push(pointDistance(bottomLeft, bottomRight) / columnIntervals);
   }
 
-  if (a1 && h1) {
-    pitches.push(pointDistance(a1, h1) / 7);
+  if (rowIntervals > 0 && a1 && bottomLeft) {
+    pitches.push(pointDistance(a1, bottomLeft) / rowIntervals);
   }
 
-  if (a12 && h12) {
-    pitches.push(pointDistance(a12, h12) / 7);
+  if (rowIntervals > 0 && topRight && bottomRight) {
+    pitches.push(pointDistance(topRight, bottomRight) / rowIntervals);
   }
 
   return medianNumber(pitches.filter((pitch) => Number.isFinite(pitch) && pitch > 0));
@@ -346,8 +406,13 @@ function parseSharedGeometryOverrideJson(
   };
 }
 
-function manualMouthRadiusToRadiusFactor(points: Point[], radiusPx: number): number | null {
-  const pitch = estimateCornerPitchFromManualPoints(points);
+function manualMouthRadiusToRadiusFactor(
+  points: Point[],
+  radiusPx: number,
+  visibleRows: number,
+  visibleColumns: number,
+): number | null {
+  const pitch = estimateCornerPitchFromManualPoints(points, visibleRows, visibleColumns);
 
   if (!pitch || pitch <= 0) {
     return null;
@@ -366,8 +431,12 @@ function estimateInitialManualMouthRadius(wells: WellCenter[], radiusFactor: num
   return clampManualMouthRadiusPx(estimateRoiRadius(wells, a1.row, a1.col, radiusFactor));
 }
 
-function getReferenceMouthCircle(wells: WellCenter[], referenceIndex: number): FloorCircle | null {
-  const reference = FLOOR_CIRCLE_REFERENCES[referenceIndex];
+function getReferenceMouthCircle(
+  wells: WellCenter[],
+  references: ReadonlyArray<{ row: number; col: number }>,
+  referenceIndex: number,
+): FloorCircle | null {
+  const reference = references[referenceIndex];
 
   if (!reference) {
     return null;
@@ -10568,12 +10637,41 @@ function App() {
   const isExtractingRef = useRef(false);
   const isFittingRef = useRef(false);
 
-  const wells = useMemo(() => (geometry ? generate96WellGrid(geometry) : []), [geometry]);
-  const geometryAlignmentDiagnostics = useMemo(
-    () => (geometry && wells.length === 96 ? computeGeometryAlignmentDiagnostics(geometry, wells) : null),
-    [geometry, wells],
+  const activePlateRegion = useMemo(
+    () => normalizeSnapshotPlateRegion(
+      plateEditorSnapshot?.nrow ?? 8,
+      plateEditorSnapshot?.ncol ?? 12,
+      plateEditorSnapshot?.plateRegion,
+    ),
+    [plateEditorSnapshot],
   );
-  const overlayReady = Boolean(image && wells.length === 96);
+  const expectedVisibleWellCount = activePlateRegion.visibleRows * activePlateRegion.visibleColumns;
+  const visibleCornerReferences = useMemo(
+    () => buildVisiblePlateCornerReferences(activePlateRegion),
+    [activePlateRegion],
+  );
+  const visibleCornerPickOrder = visibleCornerReferences
+    .map((reference) => reference.label)
+    .join(' → ');
+  const isLegacyFull96Region = activePlateRegion.plateRows === 8
+    && activePlateRegion.plateColumns === 12
+    && activePlateRegion.visibleRows === 8
+    && activePlateRegion.visibleColumns === 12
+    && activePlateRegion.rowOffset === 0
+    && activePlateRegion.columnOffset === 0;
+  const wells = useMemo(
+    () => (geometry ? generatePlateGrid(geometry, activePlateRegion) : []),
+    [activePlateRegion, geometry],
+  );
+  const geometryReady = Boolean(geometry && wells.length === expectedVisibleWellCount);
+  const validatedAnalysisGeometryReady = geometryReady && isLegacyFull96Region && wells.length === 96;
+  const geometryAlignmentDiagnostics = useMemo(
+    () => (geometryReady && geometry
+      ? computeGeometryAlignmentDiagnostics(geometry, wells, activePlateRegion)
+      : null),
+    [activePlateRegion, geometry, geometryReady, wells],
+  );
+  const overlayReady = Boolean(image && geometryReady);
   const projectImageMismatchBlocksExtraction = Boolean(projectLoadedInfo?.imageName && projectLoadedInfo.imageName !== imageName);
   const loadedProjectMethodMetadataMismatch = Boolean(
     projectLoadedInfo?.hasMethodMetadata && (
@@ -10588,8 +10686,8 @@ function App() {
     [geometry],
   );
   const floorCircles = useMemo(
-    () => (geometry ? generate96WellFloorCircles(geometry, wells, radiusFactor) : null),
-    [geometry, radiusFactor, wells],
+    () => (geometry ? generatePlateFloorCircles(geometry, activePlateRegion, wells, radiusFactor) : null),
+    [activePlateRegion, geometry, radiusFactor, wells],
   );
   const effectiveWells = useMemo(() => {
     if (!sharedGeometryOverride) {
@@ -10619,7 +10717,7 @@ function App() {
   }, [floorCircles, radiusFactor, sharedGeometryOverride, wells]);
   const effectiveFloorGeometryAvailable = Boolean(
     sharedGeometryOverride
-      ? effectiveFloorCircles && effectiveFloorCircles.length === wells.length && wells.length === 96
+      ? effectiveFloorCircles && effectiveFloorCircles.length === wells.length && geometryReady
       : floorGeometryAvailable,
   );
   const sharedGeometryExclusionRadiiByWell = useMemo<WellExclusionRadiusMap | undefined>(() => {
@@ -10641,8 +10739,8 @@ function App() {
     [geometry],
   );
   const currentReferenceMouthCircle = useMemo(
-    () => getReferenceMouthCircle(wells, manualFloorCircles.length),
-    [manualFloorCircles.length, wells],
+    () => getReferenceMouthCircle(wells, visibleCornerReferences, manualFloorCircles.length),
+    [manualFloorCircles.length, visibleCornerReferences, wells],
   );
   const manualFloorCirclePreview = useMemo<FloorCircle | null>(() => {
     if (!floorCirclePickingActive || !currentReferenceMouthCircle) {
@@ -10914,20 +11012,23 @@ function App() {
     () => buildStandardAdditionWarningSummary(standardAdditionFitsWithSlopeContext),
     [standardAdditionFitsWithSlopeContext],
   );
-  const manualStatus = manualPickingActive && manualPoints.length < 4
-    ? `Click ${MANUAL_CORNER_LABELS[manualPoints.length]} mouth/corner circle (${manualPoints.length + 1}/4)`
+  const requiredReferenceCount = visibleCornerReferences.length;
+  const manualStatus = manualPickingActive && manualPoints.length < requiredReferenceCount
+    ? `Click ${visibleCornerReferences[manualPoints.length]?.label ?? 'next'} mouth/corner circle (${manualPoints.length + 1}/${requiredReferenceCount})`
     : geometry
-      ? '4/4 mouth points'
-      : `${manualPoints.length}/4 mouth points`;
+      ? `${requiredReferenceCount}/${requiredReferenceCount} mouth points`
+      : `${manualPoints.length}/${requiredReferenceCount} mouth points`;
   const manualMouthRadiusStatus = manualPickingActive
     ? `Mouse wheel: adjust mouth circle radius (${manualMouthRadiusPx.toFixed(1)} px)`
     : `Mouth circle radius: ${manualMouthRadiusPx.toFixed(1)} px`;
-  const activeFloorCircleLabel = FLOOR_CIRCLE_REFERENCES[Math.min(manualFloorCircles.length, FLOOR_CIRCLE_REFERENCES.length - 1)].label;
+  const activeFloorCircleLabel = visibleCornerReferences[
+    Math.min(manualFloorCircles.length, visibleCornerReferences.length - 1)
+  ]?.label ?? 'next';
   const floorCircleStatus = floorCirclePickingActive
     ? `Move circle to ${activeFloorCircleLabel} floor, use mouse wheel to resize, click to confirm`
     : floorGeometryAvailable
-      ? '4/4 floor circles'
-      : `${manualFloorCircles.length}/4 floor circles`;
+      ? `${requiredReferenceCount}/${requiredReferenceCount} floor circles`
+      : `${manualFloorCircles.length}/${requiredReferenceCount} floor circles`;
   const floorGeometrySourceLabel = formatFloorGeometrySource(floorGeometrySource, floorGeometryAvailable);
   const savedProjectRoiModeLabel = projectLoadedInfo?.savedRoiMode
     ? (
@@ -10995,7 +11096,7 @@ function App() {
         : 'Analysis waiting';
   const publicStatusItems = [
     image ? 'Image loaded' : 'Image waiting',
-    wells.length === 96 ? 'Geometry ready' : 'Geometry waiting',
+    geometryReady ? 'Geometry ready' : 'Geometry waiting',
     configuredWellCount > 0 ? 'Map configured' : 'Map waiting',
     analysisStatusLabel,
     error ? 'Needs attention' : null,
@@ -11032,7 +11133,7 @@ function App() {
 
     try {
       const text = await file.text();
-      const requiredWellIds = wells.length === 96
+      const requiredWellIds = geometryReady
         ? wells.map((well) => well.wellId)
         : defaultSharedGeometryWellIds();
       const override = parseSharedGeometryOverrideJson(text, file.name, requiredWellIds);
@@ -11106,7 +11207,7 @@ function App() {
   }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, floorGeometryAvailable, image, radiusFactor, wells]);
 
   const handleManualPointPick = useCallback((point: Point) => {
-    if (!manualPickingActive || manualPoints.length >= 4) {
+    if (!manualPickingActive || manualPoints.length >= requiredReferenceCount) {
       return;
     }
 
@@ -11114,11 +11215,20 @@ function App() {
     setManualPoints(nextPoints);
     clearMeasurementsAndFits();
 
-    if (nextPoints.length === 4) {
-      const nextGeometry = geometryFromManualPoints(nextPoints);
+    if (nextPoints.length === requiredReferenceCount) {
+      const nextGeometry = geometryFromManualPoints(
+        nextPoints,
+        activePlateRegion.visibleRows,
+        activePlateRegion.visibleColumns,
+      );
 
       if (nextGeometry) {
-        const nextRadiusFactor = manualMouthRadiusToRadiusFactor(nextPoints, manualMouthRadiusPx);
+        const nextRadiusFactor = manualMouthRadiusToRadiusFactor(
+          nextPoints,
+          manualMouthRadiusPx,
+          activePlateRegion.visibleRows,
+          activePlateRegion.visibleColumns,
+        );
         const geometryWithManualMouthRadius: PlateGeometry = {
           ...nextGeometry,
           mouth_radius_px: manualMouthRadiusPx,
@@ -11130,7 +11240,7 @@ function App() {
         }
 
         setGeometry(geometryWithManualMouthRadius);
-        setGeometryName('Manual 4-corner geometry');
+        setGeometryName(`Manual ${requiredReferenceCount}-reference geometry`);
         setGeometrySource('manual');
         setManualPickingActive(false);
         setStatusMessage(`Manual geometry complete; mouth radius ${manualMouthRadiusPx.toFixed(1)} px`);
@@ -11138,7 +11248,7 @@ function App() {
     }
 
     setError(null);
-  }, [clearMeasurementsAndFits, manualMouthRadiusPx, manualPickingActive, manualPoints]);
+  }, [activePlateRegion.visibleColumns, activePlateRegion.visibleRows, clearMeasurementsAndFits, manualMouthRadiusPx, manualPickingActive, manualPoints, requiredReferenceCount]);
 
   const handleManualMouthRadiusAdjust = useCallback((delta: number) => {
     if (!manualPickingActive) {
@@ -11213,7 +11323,7 @@ function App() {
       return;
     }
 
-    if (!geometry || wells.length !== 96) {
+    if (!geometry || !geometryReady) {
       setError('Load or define mouth/corner geometry before picking floor circles.');
       return;
     }
@@ -11230,7 +11340,7 @@ function App() {
     clearSharedGeometryOverrideState('Shared geometry override cleared because floor geometry changed.');
     clearMeasurementsAndFits();
     setError(null);
-  }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, geometry, image, wells.length]);
+  }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, geometry, geometryReady, image]);
 
   const handleFloorCirclePointerMove = useCallback((point: Point) => {
     if (!floorCirclePickingActive) {
@@ -11274,8 +11384,19 @@ function App() {
     setManualFloorCircleRadiusDelta(0);
     clearMeasurementsAndFits();
 
-    if (nextCircles.length === FLOOR_CIRCLE_REFERENCES.length) {
-      setGeometry(geometryWithFloorCircles(geometry, nextCircles));
+    if (nextCircles.length === requiredReferenceCount) {
+      const legacyFloorCircles = expandFloorCirclesForLegacyGeometry(
+        nextCircles,
+        activePlateRegion.visibleRows,
+        activePlateRegion.visibleColumns,
+      );
+
+      if (!legacyFloorCircles) {
+        setError('Could not build floor geometry from the selected visible layout.');
+        return;
+      }
+
+      setGeometry(geometryWithFloorCircles(geometry, legacyFloorCircles));
       setFloorGeometrySource('manual');
       setFloorCirclePickingActive(false);
       setManualFloorCircles([]);
@@ -11295,6 +11416,9 @@ function App() {
     geometry,
     manualFloorCircleRadiusDelta,
     manualFloorCircles,
+    activePlateRegion.visibleColumns,
+    activePlateRegion.visibleRows,
+    requiredReferenceCount,
   ]);
 
   const handleResetFloorCircles = useCallback(() => {
@@ -11503,8 +11627,8 @@ function App() {
       return false;
     }
 
-    if (!image || wells.length !== 96) {
-      setError('Load an image and a 96-well geometry before extraction.');
+    if (!image || !validatedAnalysisGeometryReady) {
+      setError('Load an image and a full 96-well geometry before extraction.');
       return false;
     }
 
@@ -12139,7 +12263,7 @@ function App() {
 
       let floorDQualitySummary: string | undefined;
 
-      if (image && measurements.length > 0 && wells.length === 96) {
+      if (image && measurements.length > 0 && validatedAnalysisGeometryReady) {
         const exportWells = sharedGeometryOverride ? effectiveWells : wells;
         const exportFloorCircles = sharedGeometryOverride ? effectiveFloorCircles : floorCircles;
         const exportFloorGeometryAvailable = sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable;
@@ -12490,8 +12614,8 @@ function App() {
       return;
     }
 
-    if (!image || wells.length !== 96) {
-      setError('Load an image and a 96-well geometry before running complete analysis.');
+    if (!image || !validatedAnalysisGeometryReady) {
+      setError('Load an image and a full 96-well geometry before running complete analysis.');
       return;
     }
 
@@ -12649,7 +12773,7 @@ function App() {
               workflowContent={(image && measurements.length === 0 && calibrationFits.length === 0 && standardAdditionFitsWithSlopeContext.length === 0 && unknownResults.length === 0) ? (
                 <div className="configurator-canvas-geometry-actions">
                   <p className="panel-note configurator-canvas-geometry-instruction">
-                    Pick order: A1 to A12 to H12 to H1.{floorGeometryAvailable ? ' Geometry complete.' : ''}
+                    Pick order: {visibleCornerPickOrder}.{floorGeometryAvailable ? ' Geometry complete.' : ''}
                   </p>
                   <button
                     type="button"
@@ -12857,6 +12981,7 @@ function App() {
               <PlateCanvas
                 image={image}
                 wells={wells}
+                cornerLabels={visibleCornerReferences.map((reference) => reference.label)}
                 radiusFactor={radiusFactor}
                 onCanvasSizeChange={handleCanvasSizeChange}
                 manualPoints={manualPoints}
@@ -12884,7 +13009,7 @@ function App() {
               <div className="configurator-canvas-geometry-actions">
                 <p className="panel-note configurator-canvas-workflow">3. Mouth / Floor / Run</p>
                 <p className="panel-note configurator-canvas-geometry-instruction">
-                  Pick order: A1 → A12 → H12 → H1.{floorGeometryAvailable ? ' Geometry complete.' : ''}
+                  Pick order: {visibleCornerPickOrder}.{floorGeometryAvailable ? ' Geometry complete.' : ''}
                 </p>
                 <button
                   type="button"
@@ -13306,7 +13431,7 @@ function App() {
             </div>
             <div>
               <dt>Geometry</dt>
-              <dd>{wells.length === 96 ? 'Ready' : 'Waiting'}</dd>
+              <dd>{geometryReady ? 'Ready' : 'Waiting'}</dd>
             </div>
             <div>
               <dt>Map</dt>
@@ -13330,6 +13455,7 @@ function App() {
         <PlateCanvas
           image={image}
           wells={wells}
+          cornerLabels={visibleCornerReferences.map((reference) => reference.label)}
           radiusFactor={radiusFactor}
           onCanvasSizeChange={handleCanvasSizeChange}
           manualPoints={manualPoints}

@@ -224,6 +224,50 @@ export function getCanvasCoordinateSize(image: HTMLImageElement, wells: WellCent
  * wellId preserves the complete nominal plate coordinates through the region
  * offsets. The four legacy corner fields represent the visible region corners.
  */
+export interface VisiblePlateCornerReference {
+  label: string;
+  row: number;
+  col: number;
+}
+
+/**
+ * Return the four local corner references for the visible image layout.
+ * Labels intentionally start at A1 regardless of the nominal plate offsets,
+ * because cropped figures often do not retain the original well identities.
+ */
+export function buildVisiblePlateCornerReferences(
+  regionInput: PlateRegionDefinition,
+): VisiblePlateCornerReference[] {
+  const region = normalizePlateRegion(regionInput);
+  const lastRow = region.visibleRows - 1;
+  const lastColumn = region.visibleColumns - 1;
+
+  if (lastRow === 0 && lastColumn === 0) {
+    return [{ label: 'A1', row: 0, col: 0 }];
+  }
+
+  if (lastRow === 0) {
+    return [
+      { label: 'A1', row: 0, col: 0 },
+      { label: `A${lastColumn + 1}`, row: 0, col: lastColumn },
+    ];
+  }
+
+  if (lastColumn === 0) {
+    return [
+      { label: 'A1', row: 0, col: 0 },
+      { label: `${rowLabelFromIndex(lastRow)}1`, row: lastRow, col: 0 },
+    ];
+  }
+
+  return [
+    { label: 'A1', row: 0, col: 0 },
+    { label: `A${lastColumn + 1}`, row: 0, col: lastColumn },
+    { label: `${rowLabelFromIndex(lastRow)}${lastColumn + 1}`, row: lastRow, col: lastColumn },
+    { label: `${rowLabelFromIndex(lastRow)}1`, row: lastRow, col: 0 },
+  ];
+}
+
 export function generatePlateGrid(
   geometry: PlateGeometry,
   regionInput: PlateRegionDefinition,
@@ -282,21 +326,25 @@ export interface GeometryAlignmentDiagnostics {
 export function computeGeometryAlignmentDiagnostics(
   geometry: PlateGeometry,
   wells: WellCenter[],
+  regionInput: PlateRegionDefinition,
   tolerancePx = 2,
 ): GeometryAlignmentDiagnostics {
+  const region = normalizePlateRegion(regionInput);
+  const lastRow = region.visibleRows - 1;
+  const lastColumn = region.visibleColumns - 1;
   const a1 = wellAt(wells, 0, 0);
-  const a12 = wellAt(wells, 0, COL_COUNT - 1);
-  const h12 = wellAt(wells, ROW_COUNT - 1, COL_COUNT - 1);
-  const h1 = wellAt(wells, ROW_COUNT - 1, 0);
+  const a12 = wellAt(wells, 0, lastColumn);
+  const h12 = wellAt(wells, lastRow, lastColumn);
+  const h1 = wellAt(wells, lastRow, 0);
   const a1MismatchPx = a1 ? pointDistance(geometry.corner_a1, a1) : Number.NaN;
   const a12MismatchPx = a12 ? pointDistance(geometry.corner_a12, a12) : Number.NaN;
   const h12MismatchPx = h12 ? pointDistance(geometry.corner_h12, h12) : Number.NaN;
   const h1MismatchPx = h1 ? pointDistance(geometry.corner_h1, h1) : Number.NaN;
   const mismatches = [
-    ['A1', a1MismatchPx],
-    ['A12', a12MismatchPx],
-    ['H12', h12MismatchPx],
-    ['H1', h1MismatchPx],
+    [a1?.wellId ?? 'upper-left', a1MismatchPx],
+    [a12?.wellId ?? 'upper-right', a12MismatchPx],
+    [h12?.wellId ?? 'lower-right', h12MismatchPx],
+    [h1?.wellId ?? 'lower-left', h1MismatchPx],
   ] as const;
   const badCorners = mismatches
     .filter(([, value]) => !Number.isFinite(value) || value > tolerancePx)
@@ -322,8 +370,9 @@ export function hasFloorGeometry(geometry: PlateGeometry): boolean {
   );
 }
 
-export function generate96WellFloorCircles(
+export function generatePlateFloorCircles(
   geometry: PlateGeometry,
+  regionInput: PlateRegionDefinition,
   wells: WellCenter[] | null = null,
   _radiusFactor: number | null = null,
 ): FloorCircle[] | null {
@@ -331,35 +380,46 @@ export function generate96WellFloorCircles(
     return null;
   }
 
+  const region = normalizePlateRegion(regionInput);
   const floorA1 = geometry.floor_a1_circle_img as FloorCircle;
   const floorA12 = geometry.floor_a12_circle_img as FloorCircle;
   const floorH12 = geometry.floor_h12_circle_img as FloorCircle;
   const floorH1 = geometry.floor_h1_circle_img as FloorCircle;
   const floorCircles: FloorCircle[] = [];
+  const useLegacy96MouthClamp = region.plateRows === ROW_COUNT
+    && region.plateColumns === COL_COUNT
+    && region.visibleRows === ROW_COUNT
+    && region.visibleColumns === COL_COUNT
+    && region.rowOffset === 0
+    && region.columnOffset === 0;
+  const lastRow = region.visibleRows - 1;
+  const lastColumn = region.visibleColumns - 1;
   const sourceCorners: Point[] = [
     { x: 0, y: 0 },
-    { x: COL_COUNT - 1, y: 0 },
-    { x: COL_COUNT - 1, y: ROW_COUNT - 1 },
-    { x: 0, y: ROW_COUNT - 1 },
+    { x: lastColumn, y: 0 },
+    { x: lastColumn, y: lastRow },
+    { x: 0, y: lastRow },
   ];
   const targetCorners: Point[] = [floorA1, floorA12, floorH12, floorH1];
-  const perspectiveTransform = computePerspectiveTransform(sourceCorners, targetCorners);
+  const perspectiveTransform = lastRow > 0 && lastColumn > 0
+    ? computePerspectiveTransform(sourceCorners, targetCorners)
+    : null;
 
-  for (let row = 0; row < ROW_COUNT; row += 1) {
-    const rowT = row / (ROW_COUNT - 1);
+  for (let row = 0; row < region.visibleRows; row += 1) {
+    const rowT = lastRow === 0 ? 0 : row / lastRow;
     const leftEdge = lerpPoint(floorA1, floorH1, rowT);
     const rightEdge = lerpPoint(floorA12, floorH12, rowT);
     const leftRadius = lerp(floorA1.r, floorH1.r, rowT);
     const rightRadius = lerp(floorA12.r, floorH12.r, rowT);
 
-    for (let col = 0; col < COL_COUNT; col += 1) {
-      const colT = col / (COL_COUNT - 1);
+    for (let col = 0; col < region.visibleColumns; col += 1) {
+      const colT = lastColumn === 0 ? 0 : col / lastColumn;
       const projectedCenter = perspectiveTransform
         ? applyPerspectiveTransform(perspectiveTransform, col, row)
         : null;
       const center = projectedCenter ?? lerpPoint(leftEdge, rightEdge, colT);
       const interpolatedRadius = Math.max(1, lerp(leftRadius, rightRadius, colT));
-      const mouthRadius = wells
+      const mouthRadius = wells && useLegacy96MouthClamp
         ? estimateStandardMouthRadius(wells, row, col)
         : Number.NaN;
       const radius = Number.isFinite(mouthRadius)
@@ -375,6 +435,22 @@ export function generate96WellFloorCircles(
   }
 
   return floorCircles;
+}
+
+/** Legacy-compatible full 96-well floor-circle wrapper. */
+export function generate96WellFloorCircles(
+  geometry: PlateGeometry,
+  wells: WellCenter[] | null = null,
+  radiusFactor: number | null = null,
+): FloorCircle[] | null {
+  return generatePlateFloorCircles(geometry, {
+    plateRows: ROW_COUNT,
+    plateColumns: COL_COUNT,
+    visibleRows: ROW_COUNT,
+    visibleColumns: COL_COUNT,
+    rowOffset: 0,
+    columnOffset: 0,
+  }, wells, radiusFactor);
 }
 
 export function estimateLocalPitch(wells: WellCenter[], row: number, col: number): number {

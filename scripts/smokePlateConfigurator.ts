@@ -14,7 +14,7 @@ import {
   wellConfigsToPlateEditorState,
 } from '../src/core/plateConfigurator.js';
 import { reconcileLoadedGeometryFloor } from '../src/core/geometryReconciliation.js';
-import { generate96WellGrid, generatePlateGrid, hasFloorGeometry } from '../src/core/plate.js';
+import { buildVisiblePlateCornerReferences, computeGeometryAlignmentDiagnostics, generate96WellFloorCircles, generate96WellGrid, generatePlateFloorCircles, generatePlateGrid, hasFloorGeometry } from '../src/core/plate.js';
 import type { PlateGeometry } from '../src/types/geometry.js';
 import type { WellConfig } from '../src/types/plateMap.js';
 
@@ -71,6 +71,68 @@ function testWellId(): void {
   assertEqual(wellId(0, 11), 'A12', 'wellId(0,11)');
   assertEqual(wellId(7, 0), 'H1', 'wellId(7,0)');
   assertEqual(wellId(15, 23), 'P24', 'wellId(15,23)');
+}
+
+function testVisiblePlateCornerReferences(): void {
+  const sixWell = buildVisiblePlateCornerReferences({
+    plateRows: 2,
+    plateColumns: 3,
+    visibleRows: 2,
+    visibleColumns: 3,
+    rowOffset: 0,
+    columnOffset: 0,
+  });
+  assertEqual(sixWell.map((reference) => reference.label).join(','), 'A1,A3,B3,B1', '6-well visible corner labels');
+
+  const cropped96 = buildVisiblePlateCornerReferences({
+    plateRows: 8,
+    plateColumns: 12,
+    visibleRows: 2,
+    visibleColumns: 4,
+    rowOffset: 3,
+    columnOffset: 5,
+  });
+  assertEqual(cropped96.map((reference) => reference.label).join(','), 'A1,A4,B4,B1', 'cropped labels should remain local');
+
+  const cropped384 = buildVisiblePlateCornerReferences({
+    plateRows: 16,
+    plateColumns: 24,
+    visibleRows: 6,
+    visibleColumns: 8,
+    rowOffset: 2,
+    columnOffset: 3,
+  });
+  assertEqual(cropped384.map((reference) => reference.label).join(','), 'A1,A8,F8,F1', '384 cropped visible corner labels');
+
+  const oneByOne = buildVisiblePlateCornerReferences({
+    plateRows: 8,
+    plateColumns: 12,
+    visibleRows: 1,
+    visibleColumns: 1,
+    rowOffset: 0,
+    columnOffset: 0,
+  });
+  assertEqual(oneByOne.map((reference) => reference.label).join(','), 'A1', '1x1 should require one reference');
+
+  const oneByFour = buildVisiblePlateCornerReferences({
+    plateRows: 8,
+    plateColumns: 12,
+    visibleRows: 1,
+    visibleColumns: 4,
+    rowOffset: 0,
+    columnOffset: 0,
+  });
+  assertEqual(oneByFour.map((reference) => reference.label).join(','), 'A1,A4', '1x4 should require two references');
+
+  const fourByOne = buildVisiblePlateCornerReferences({
+    plateRows: 8,
+    plateColumns: 12,
+    visibleRows: 4,
+    visibleColumns: 1,
+    rowOffset: 0,
+    columnOffset: 0,
+  });
+  assertEqual(fourByOne.map((reference) => reference.label).join(','), 'A1,D1', '4x1 should require two references');
 }
 
 function testPlateRegionDefinition(): void {
@@ -213,6 +275,50 @@ function testGeneratePlateGrid(): void {
     'generatePlateGrid should reject a region outside nominal rows',
   );
 }
+function testDynamicGeometryHelpers(): void {
+  const geometry: PlateGeometry = {
+    corner_a1: { x: 10, y: 20 },
+    corner_a12: { x: 110, y: 30 },
+    corner_h12: { x: 120, y: 90 },
+    corner_h1: { x: 20, y: 80 },
+    floor_a1_circle_img: { x: 12, y: 22, r: 4 },
+    floor_a12_circle_img: { x: 108, y: 32, r: 5 },
+    floor_h12_circle_img: { x: 118, y: 88, r: 6 },
+    floor_h1_circle_img: { x: 22, y: 78, r: 7 },
+  };
+  const region = normalizePlateRegion({
+    plateRows: 16,
+    plateColumns: 24,
+    visibleRows: 6,
+    visibleColumns: 8,
+    rowOffset: 2,
+    columnOffset: 3,
+  });
+  const wells = generatePlateGrid(geometry, region);
+  const diagnostics = computeGeometryAlignmentDiagnostics(geometry, wells, region);
+  assertEqual(diagnostics.warning, null, 'dynamic geometry diagnostics should match visible corners');
+
+  const floorCircles = generatePlateFloorCircles(geometry, region, null);
+  assert(floorCircles !== null, 'dynamic floor circles should be generated');
+  assertEqual(floorCircles.length, 48, 'dynamic floor circle count');
+  assertEqual(floorCircles[0].x, geometry.floor_a1_circle_img?.x, 'dynamic floor upper-left x');
+  assertEqual(floorCircles[7].x, geometry.floor_a12_circle_img?.x, 'dynamic floor upper-right x');
+  assertEqual(floorCircles[47].x, geometry.floor_h12_circle_img?.x, 'dynamic floor lower-right x');
+  assertEqual(floorCircles[40].x, geometry.floor_h1_circle_img?.x, 'dynamic floor lower-left x');
+
+  const legacyWells = generate96WellGrid(geometry);
+  const genericLegacyFloor = generatePlateFloorCircles(geometry, createFullPlateRegion(8, 12), legacyWells);
+  const wrappedLegacyFloor = generate96WellFloorCircles(geometry, legacyWells);
+  assert(genericLegacyFloor !== null, 'generic legacy floor circles should be generated');
+  assert(wrappedLegacyFloor !== null, 'wrapped legacy floor circles should be generated');
+  assertEqual(wrappedLegacyFloor.length, genericLegacyFloor.length, 'legacy floor wrapper count');
+  for (let index = 0; index < wrappedLegacyFloor.length; index += 1) {
+    assertEqual(wrappedLegacyFloor[index].x, genericLegacyFloor[index].x, `legacy floor wrapper x ${index}`);
+    assertEqual(wrappedLegacyFloor[index].y, genericLegacyFloor[index].y, `legacy floor wrapper y ${index}`);
+    assertEqual(wrappedLegacyFloor[index].r, genericLegacyFloor[index].r, `legacy floor wrapper r ${index}`);
+  }
+}
+
 function testParseCellEntry(): void {
   const rowIdDefault = 'A';
 
@@ -452,8 +558,10 @@ function run(): void {
   testRowLabelFromIndex();
   testRowIndexFromLabel();
   testWellId();
+  testVisiblePlateCornerReferences();
   testPlateRegionDefinition();
   testGeneratePlateGrid();
+  testDynamicGeometryHelpers();
   testParseCellEntry();
   testCollectPlateStateFallbacks();
   testBuildPlateMapTemplateCsv();
