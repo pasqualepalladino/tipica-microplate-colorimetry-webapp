@@ -1,9 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.1.56-beta - 2026-07-23
 
-- No unreleased changes after preparation of v0.1.54-beta.
+### Plate-format workflows
 
+- Completed internal technical workflow testing for nominal flat-bottom 6-, 12-, 24- and 48-well formats using real near-frontal images.
+- Preserved 96-well as the experimentally validated format and 384-/1536-well as geometrically configurable and supported in principle, but not yet internally workflow-tested.
+- Added dynamic nominal plate geometry, physical mouth/floor scaling, and physical inter-well background regions across supported layouts.
+- Added dynamic and compact BG_STAT_MASK corner labels and diagnostics for small source images.
+- Enforced floor radii below their corresponding local mouth radii consistently across ROI use, overlays and JSON export.
+
+### Validation boundaries
+
+- Epsilon/path-length quantification remains not implemented; related equations and fields are informational placeholders only.
 ## 0.1.54-beta - 2026-07-21
 
 ### Changed
