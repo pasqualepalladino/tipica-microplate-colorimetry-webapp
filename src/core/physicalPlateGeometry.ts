@@ -240,3 +240,41 @@ export function flatBottomPlateGeometryEntries(
     { key: 'notes', value: preset.notes },
   ];
 }
+
+/** Returns the number of quadrilateral inter-well cells in a local visible grid. */
+export function countPhysicalInterwellCells(visibleRows: number, visibleColumns: number): number {
+  const rows = Math.max(0, Math.trunc(visibleRows));
+  const columns = Math.max(0, Math.trunc(visibleColumns));
+  return Math.max(0, rows - 1) * Math.max(0, columns - 1);
+}
+export interface Validated96WellVisibleRegionInput {
+  plateRows: number;
+  plateColumns: number;
+  visibleRows: number;
+  visibleColumns: number;
+  rowOffset: number;
+  columnOffset: number;
+  actualWellCount: number;
+}
+
+export function isValidated96WellVisibleRegion(
+  input: Validated96WellVisibleRegionInput,
+): boolean {
+  const values = [
+    input.plateRows,
+    input.plateColumns,
+    input.visibleRows,
+    input.visibleColumns,
+    input.rowOffset,
+    input.columnOffset,
+    input.actualWellCount,
+  ];
+  if (!values.every(Number.isInteger)) return false;
+  if (input.plateRows !== 8 || input.plateColumns !== 12) return false;
+  if (input.visibleRows < 1 || input.visibleRows > input.plateRows) return false;
+  if (input.visibleColumns < 1 || input.visibleColumns > input.plateColumns) return false;
+  if (input.rowOffset < 0 || input.columnOffset < 0) return false;
+  if (input.rowOffset + input.visibleRows > input.plateRows) return false;
+  if (input.columnOffset + input.visibleColumns > input.plateColumns) return false;
+  return input.actualWellCount === input.visibleRows * input.visibleColumns;
+}

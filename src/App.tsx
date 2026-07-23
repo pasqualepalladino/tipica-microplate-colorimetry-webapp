@@ -27,6 +27,7 @@ import {
   flatBottomPlateGeometryEntries,
   getFlatBottomPlateGeometry,
   getPixelsPerMm,
+  isValidated96WellVisibleRegion,
   type FlatBottomPlateGeometryPreset,
 } from './core/physicalPlateGeometry';
 import {
@@ -4873,8 +4874,14 @@ function diagnosticWellContext(
   };
 }
 
+function itemForWellPosition<T>(items: T[] | null | undefined, wells: WellCenter[], row: number, col: number): T | undefined {
+  if (!items || items.length !== wells.length) return undefined;
+  const index = wells.findIndex((well) => well.row === row && well.col === col);
+  return index >= 0 ? items[index] : undefined;
+}
+
 function associatedWellsForBackgroundCell(cellRow: number, cellCol: number): string {
-  if (!Number.isInteger(cellRow) || !Number.isInteger(cellCol) || cellRow < 0 || cellCol < 0 || cellRow > 6 || cellCol > 10) {
+  if (!Number.isInteger(cellRow) || !Number.isInteger(cellCol) || cellRow < 0 || cellCol < 0) {
     return '';
   }
 
@@ -5114,7 +5121,7 @@ function buildDiagnosticsGeometryQcRows(options: PythonDiagnosticsWorkbookOption
     const context = diagnosticWellContext(measurement.wellId, wellsById);
     const overrideRecord = override?.recordsByWell.get(measurement.wellId);
     const floor = Number.isFinite(context.row) && Number.isFinite(context.col) && options.floorCircles?.length === options.wells.length
-      ? options.floorCircles[context.row * 12 + context.col]
+      ? itemForWellPosition(options.floorCircles, options.wells, context.row, context.col)
       : null;
     const fallbackMouthRadius = Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
       ? estimateRoiRadius(options.wells, context.row, context.col, options.radiusFactor)
@@ -5162,7 +5169,7 @@ function buildDiagnosticsWellBottomRows(options: PythonDiagnosticsWorkbookOption
     const context = diagnosticWellContext(measurement.wellId, wellsById);
     const overrideRecord = override?.recordsByWell.get(measurement.wellId);
     const floor = Number.isFinite(context.row) && Number.isFinite(context.col) && options.floorCircles?.length === options.wells.length
-      ? options.floorCircles[context.row * 12 + context.col]
+      ? itemForWellPosition(options.floorCircles, options.wells, context.row, context.col)
       : null;
     const localPitch = Number.isFinite(context.row) && Number.isFinite(context.col)
       ? overrideRecord?.localPitchPx ?? estimateLocalPitch(options.wells, context.row, context.col)
@@ -7802,7 +7809,7 @@ function buildPythonStylePlateRoiOverlayCanvas(
       ? measurement.mouthRadiusUsed
       : estimateRoiRadius(wells, well.row, well.col, radiusFactor);
     const floorCircle = floorCircles && floorCircles.length === wells.length
-      ? floorCircles[well.row * 12 + well.col]
+      ? itemForWellPosition(floorCircles, wells, well.row, well.col)
       : null;
     const floorRadius = floorCircle
       ? measurement?.floorRadiusUsed && measurement.floorRadiusUsed > 0
@@ -8465,8 +8472,8 @@ function buildFigureFloorDQualitySummary(options: {
   options.measurements.forEach((measurement) => {
     const row = measurement.row;
     const col = measurement.col;
-    const floor = Number.isFinite(row) && Number.isFinite(col) ? options.floorCircles?.[row * 12 + col] : undefined;
-    const well = Number.isFinite(row) && Number.isFinite(col) ? options.wells[row * 12 + col] : undefined;
+    const floor = Number.isFinite(row) && Number.isFinite(col) ? itemForWellPosition(options.floorCircles, options.wells, row, col) : undefined;
+    const well = Number.isFinite(row) && Number.isFinite(col) ? options.wells.find((candidate) => candidate.row === row && candidate.col === col) : undefined;
     const mouthRadius = Number.isFinite(measurement.mouthRadiusUsed ?? Number.NaN)
       ? measurement.mouthRadiusUsed as number
       : Number.isFinite(row) && Number.isFinite(col) && options.wells.length === 96
@@ -10622,12 +10629,6 @@ function App() {
   const visibleCornerPickOrder = visibleCornerReferences
     .map((reference) => reference.label)
     .join(' → ');
-  const isLegacyFull96Region = activePlateRegion.plateRows === 8
-    && activePlateRegion.plateColumns === 12
-    && activePlateRegion.visibleRows === 8
-    && activePlateRegion.visibleColumns === 12
-    && activePlateRegion.rowOffset === 0
-    && activePlateRegion.columnOffset === 0;
   const nominalPlatePreset = useMemo(
     () => getFlatBottomPlateGeometry(activePlateRegion.plateRows, activePlateRegion.plateColumns),
     [activePlateRegion.plateColumns, activePlateRegion.plateRows],
@@ -10637,7 +10638,15 @@ function App() {
     [activePlateRegion, geometry],
   );
   const geometryReady = Boolean(geometry && wells.length === expectedVisibleWellCount);
-  const validatedAnalysisGeometryReady = geometryReady && isLegacyFull96Region && wells.length === 96;
+  const validatedAnalysisGeometryReady = geometryReady && isValidated96WellVisibleRegion({
+    plateRows: activePlateRegion.plateRows,
+    plateColumns: activePlateRegion.plateColumns,
+    visibleRows: activePlateRegion.visibleRows,
+    visibleColumns: activePlateRegion.visibleColumns,
+    rowOffset: activePlateRegion.rowOffset,
+    columnOffset: activePlateRegion.columnOffset,
+    actualWellCount: wells.length,
+  });
   const geometryAlignmentDiagnostics = useMemo(
     () => (geometryReady && geometry
       ? computeGeometryAlignmentDiagnostics(geometry, wells, activePlateRegion)
@@ -11682,7 +11691,7 @@ function App() {
     }
 
     if (!image || !validatedAnalysisGeometryReady) {
-      setError('Load an image and a full 96-well geometry before extraction.');
+      setError('Load an image and a valid visible region from a nominal 96-well plate before extraction.');
       return false;
     }
 
@@ -11712,8 +11721,18 @@ function App() {
           const floorCirclesForBackground = extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length
             ? extractionFloorCircles
             : undefined;
-          const precomputedPhysicalBackground = selectedBackgroundModel === 'physical-interwell-polynomial-v1'
-            ? estimatePhysicalInterwellPolynomialBackgrounds(imageData, extractionWells, floorCirclesForBackground, sharedGeometryExclusionRadiiByWell)
+          const precomputedPhysicalBackground = selectedBackgroundModel === 'physical-interwell-polynomial-v1' && nominalPlatePreset
+            ? estimatePhysicalInterwellPolynomialBackgrounds(
+                imageData,
+                extractionWells,
+                {
+                  visibleRows: activePlateRegion.visibleRows,
+                  visibleColumns: activePlateRegion.visibleColumns,
+                  preset: nominalPlatePreset,
+                },
+                floorCirclesForBackground,
+                sharedGeometryExclusionRadiiByWell,
+              )
             : null;
           const nextMeasurements = extractionWells.map((well) => {
           const overrideRecord = sharedGeometryOverride?.recordsByWell.get(well.wellId);
@@ -11724,11 +11743,14 @@ function App() {
           let roiModeUsed: 'simple' | 'floor-aware' | 'mouth-floor-intersection' = 'simple';
           const roiWarnings: string[] = [];
           const diagnosticFloorCircle = extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length
-            ? extractionFloorCircles[well.row * 12 + well.col]
+            ? itemForWellPosition(extractionFloorCircles, extractionWells, well.row, well.col)
             : null;
 
           if (selectedRoiMode === 'mouth-floor-intersection' && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length) {
-            const projectedFloorCircle = extractionFloorCircles[well.row * 12 + well.col];
+            const projectedFloorCircle = itemForWellPosition(extractionFloorCircles, extractionWells, well.row, well.col);
+            if (!projectedFloorCircle) {
+              throw new Error(`Floor geometry is missing for ${well.wellId}.`);
+            }
             if (!nominalPlatePreset) {
               throw new Error('No nominal flat-bottom physical preset is registered for the selected plate format.');
             }
@@ -11741,7 +11763,10 @@ function App() {
             roiModeUsed = 'mouth-floor-intersection';
             roiSample = sampleCircleIntersectionRoi(imageData, well.x, well.y, mouthRadius, projectedFloorCircle.x, projectedFloorCircle.y, floorRadius, { pixelStatisticsMode: selectedRoiPixelStatisticsMode });
           } else if (selectedRoiMode === 'floor-aware' && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length) {
-            const projectedFloorCircle = extractionFloorCircles[well.row * 12 + well.col];
+            const projectedFloorCircle = itemForWellPosition(extractionFloorCircles, extractionWells, well.row, well.col);
+            if (!projectedFloorCircle) {
+              throw new Error(`Floor geometry is missing for ${well.wellId}.`);
+            }
             const radius = overrideRecord ? Math.max(1, overrideRecord.floorRadius) : Math.max(1, projectedFloorCircle.r);
             floorRadiusUsed = radius;
             roiModeUsed = 'floor-aware';
@@ -11755,11 +11780,11 @@ function App() {
             roiSample = sampleCircularRoi(imageData, well.x, well.y, roiRadius, { pixelStatisticsMode: selectedRoiPixelStatisticsMode });
           }
 
-          const backgroundCx = (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length
-            ? extractionFloorCircles[well.row * 12 + well.col].x
+          const backgroundCx = (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && diagnosticFloorCircle
+            ? diagnosticFloorCircle.x
             : well.x;
-          const backgroundCy = (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length
-            ? extractionFloorCircles[well.row * 12 + well.col].y
+          const backgroundCy = (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && diagnosticFloorCircle
+            ? diagnosticFloorCircle.y
             : well.y;
           const backgroundRoiRadius = (selectedRoiMode === 'floor-aware' || selectedRoiMode === 'mouth-floor-intersection') && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length
             ? floorRadiusUsed
@@ -12401,6 +12426,13 @@ function App() {
             exportWells,
             geometry,
             diagnosticBackgroundModel,
+            nominalPlatePreset
+              ? {
+                  visibleRows: activePlateRegion.visibleRows,
+                  visibleColumns: activePlateRegion.visibleColumns,
+                  preset: nominalPlatePreset,
+                }
+              : undefined,
             exportFloorGeometryAvailable ? exportFloorCircles ?? undefined : undefined,
             sharedGeometryExclusionRadiiByWell,
           );
@@ -12674,7 +12706,7 @@ function App() {
     }
 
     if (!image || !validatedAnalysisGeometryReady) {
-      setError('Load an image and a full 96-well geometry before running complete analysis.');
+      setError('Load an image and a valid visible region from a nominal 96-well plate before running complete analysis.');
       return;
     }
 

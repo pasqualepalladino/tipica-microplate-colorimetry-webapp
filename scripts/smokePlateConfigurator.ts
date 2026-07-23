@@ -16,6 +16,7 @@ import {
 import { reconcileLoadedGeometryFloor } from '../src/core/geometryReconciliation.js';
 import {
   FLAT_BOTTOM_PLATE_GEOMETRY_PRESETS,
+  countPhysicalInterwellCells,
   getFlatBottomPlateGeometry,
   getFlatBottomPlateGeometryByWellCount,
   getFloorDimensionToPitchRatio,
@@ -24,6 +25,7 @@ import {
   getMouthDiameterToPitchRatio,
   getMouthRadiusPx,
   getPixelsPerMm,
+  isValidated96WellVisibleRegion,
 } from '../src/core/physicalPlateGeometry.js';
 import { buildVisiblePlateCornerReferences, computeGeometryAlignmentDiagnostics, estimateNominalFloorRadius, estimateNominalMouthRadius, generate96WellFloorCircles, generate96WellGrid, generatePlateFloorCircles, generatePlateGrid, hasFloorGeometry } from '../src/core/plate.js';
 import type { PlateGeometry } from '../src/types/geometry.js';
@@ -644,6 +646,59 @@ function testNominalPhysicalRuntimeScaling(): void {
   assertEqual(estimateNominalFloorRadius(reducedVisibleWells, 0, 0, preset96), getFloorRadiusPx(90, preset96), 'reduced 96-well region floor radius');
 }
 
+
+function testDynamicPhysicalInterwellCellCounts(): void {
+  assertEqual(countPhysicalInterwellCells(8, 12), 77, '96-well full inter-well cell count');
+  assertEqual(countPhysicalInterwellCells(2, 4), 3, '96-well reduced visible inter-well cell count');
+  assertEqual(countPhysicalInterwellCells(4, 6), 15, '24-well full inter-well cell count');
+  assertEqual(countPhysicalInterwellCells(2, 3), 2, '6-well full inter-well cell count');
+  assertEqual(countPhysicalInterwellCells(1, 12), 0, 'single-row inter-well cell count');
+  assertEqual(countPhysicalInterwellCells(12, 1), 0, 'single-column inter-well cell count');
+  assertEqual(countPhysicalInterwellCells(1, 1), 0, 'single-well inter-well cell count');
+}
+
+function testValidated96WellVisibleRegionGate(): void {
+  for (let visibleRows = 1; visibleRows <= 8; visibleRows += 1) {
+    for (let visibleColumns = 1; visibleColumns <= 12; visibleColumns += 1) {
+      assert(
+        isValidated96WellVisibleRegion({
+          plateRows: 8,
+          plateColumns: 12,
+          visibleRows,
+          visibleColumns,
+          rowOffset: 0,
+          columnOffset: 0,
+          actualWellCount: visibleRows * visibleColumns,
+        }),
+        `96-well ${visibleRows}x${visibleColumns} visible region should be allowed`,
+      );
+    }
+  }
+
+  assert(isValidated96WellVisibleRegion({
+    plateRows: 8,
+    plateColumns: 12,
+    visibleRows: 2,
+    visibleColumns: 4,
+    rowOffset: 6,
+    columnOffset: 8,
+    actualWellCount: 8,
+  }), 'offset 96-well visible region should be allowed when it remains inside the plate');
+
+  assert(!isValidated96WellVisibleRegion({
+    plateRows: 8, plateColumns: 12, visibleRows: 2, visibleColumns: 4, rowOffset: 7, columnOffset: 0, actualWellCount: 8,
+  }), 'row-overflow region should be rejected');
+  assert(!isValidated96WellVisibleRegion({
+    plateRows: 8, plateColumns: 12, visibleRows: 2, visibleColumns: 4, rowOffset: 0, columnOffset: 10, actualWellCount: 8,
+  }), 'column-overflow region should be rejected');
+  assert(!isValidated96WellVisibleRegion({
+    plateRows: 8, plateColumns: 12, visibleRows: 2, visibleColumns: 4, rowOffset: 0, columnOffset: 0, actualWellCount: 7,
+  }), 'wrong visible well count should be rejected');
+  assert(!isValidated96WellVisibleRegion({
+    plateRows: 4, plateColumns: 6, visibleRows: 4, visibleColumns: 6, rowOffset: 0, columnOffset: 0, actualWellCount: 24,
+  }), 'non-96 nominal format should remain blocked');
+}
+
 function run(): void {
   testRowLabelFromIndex();
   testRowIndexFromLabel();
@@ -660,6 +715,8 @@ function run(): void {
   testProjectAfterGeometryPreservesFloorPath();
   testFlatBottomPlateGeometryPresets();
   testNominalPhysicalRuntimeScaling();
+  testDynamicPhysicalInterwellCellCounts();
+  testValidated96WellVisibleRegionGate();
 
   console.log('smoke:plate-configurator passed');
 }

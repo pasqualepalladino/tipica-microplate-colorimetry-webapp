@@ -1,6 +1,7 @@
 import type { FloorCircle, PlateGeometry } from '../types/geometry';
 import type { Rgb } from '../types/results';
 import type { WellCenter } from '../types/plate';
+import { countPhysicalInterwellCells, type FlatBottomPlateGeometryPreset } from './physicalPlateGeometry';
 import { estimateLocalBackground } from './sampling';
 import { estimateLocalPitch } from './plate';
 
@@ -11,13 +12,12 @@ const CHROMA_THRESHOLD = 64;
 const DEFAULT_CANDIDATE_SAMPLE_STRIDE = 4;
 const MAX_CANDIDATE_SAMPLE_STRIDE = 4;
 const MAX_CANDIDATE_PIXEL_BUDGET = 250_000;
-const PHYSICAL_PITCH_MM = 9.0;
-const PHYSICAL_INNER_DIAM_MM = 6.90;
-const PHYSICAL_OUTER_DIAM_MM = 7.75;
-const PHYSICAL_BRIDGE_WIDTH_MM = 0.60;
-const PHYSICAL_EXTRA_OPTICAL_MARGIN_MM = 0.20;
-const PHYSICAL_MOUTH_RADIUS_FACTOR_OF_PITCH = 0.34;
-const PHYSICAL_EXCLUSION_RADIUS_FACTOR = (0.5 * PHYSICAL_OUTER_DIAM_MM + PHYSICAL_EXTRA_OPTICAL_MARGIN_MM) / (0.5 * PHYSICAL_INNER_DIAM_MM);
+// Algorithmic background-mask ratios are normalized to the legacy 96-well model.
+// Vendor-specific dimensions remain in FlatBottomPlateGeometryPreset; these ratios
+// describe the mask construction rather than universal plate dimensions.
+const PHYSICAL_OUTER_TO_MOUTH_DIAMETER_RATIO = 7.75 / 6.90;
+const PHYSICAL_BRIDGE_TO_PITCH_RATIO = 0.60 / 9.0;
+const PHYSICAL_OPTICAL_MARGIN_TO_PITCH_RATIO = 0.20 / 9.0;
 const PHYSICAL_FLOOR_EXCLUSION_FACTOR = 1.08;
 const PHYSICAL_MIN_CANDIDATE_PIXELS = 1000;
 const PHYSICAL_MIN_ACCEPTED_PIXELS = 240;
@@ -146,6 +146,14 @@ export interface BackgroundVisualDiagnostics {
 }
 
 export type WellExclusionRadiusMap = Map<string, number>;
+
+
+export interface PhysicalInterwellGeometryConfig {
+  visibleRows: number;
+  visibleColumns: number;
+  preset: FlatBottomPlateGeometryPreset;
+}
+
 
 const BACKGROUND_CELL_DIAGNOSTIC_HEADERS = [
   'cell row',
@@ -1211,6 +1219,7 @@ function createEmptyDiagnostics(): BackgroundDiagnostics {
 function createPhysicalInterwellCandidates(
   imageData: ImageData,
   wells: WellCenter[],
+  geometryConfig: PhysicalInterwellGeometryConfig,
   floorCircles?: FloorCircle[],
   wellExclusionRadiiByWell?: WellExclusionRadiusMap,
 ): { collection: CandidateCollection; diagnostics: BackgroundDiagnostics } {
@@ -1220,16 +1229,23 @@ function createPhysicalInterwellCandidates(
     return { collection: { pixels: [], rawPixels: [], stride: DEFAULT_CANDIDATE_SAMPLE_STRIDE }, diagnostics: createEmptyDiagnostics() };
   }
 
+  const { visibleRows, visibleColumns, preset } = geometryConfig;
   const pitches = wells.map((well) => estimateLocalPitch(wells, well.row, well.col));
   const medianPitch = median(pitches);
+  const meanPitchMm = 0.5 * (preset.pitchXmm + preset.pitchYmm);
+  const mouthRadiusFactorOfPitch = 0.5 * preset.mouthDiameterMm / meanPitchMm;
+  const outerDiameterMm = preset.mouthDiameterMm * PHYSICAL_OUTER_TO_MOUTH_DIAMETER_RATIO;
+  const opticalMarginMm = meanPitchMm * PHYSICAL_OPTICAL_MARGIN_TO_PITCH_RATIO;
+  const forbiddenRadiusMm = 0.5 * outerDiameterMm + opticalMarginMm;
+  const exclusionFactor = forbiddenRadiusMm / (0.5 * preset.mouthDiameterMm);
   const exclusionRadii = wells.map((well, index) => {
     const overrideRadius = wellExclusionRadiiByWell?.get(well.wellId);
     if (overrideRadius && Number.isFinite(overrideRadius) && overrideRadius > 0) {
       return overrideRadius;
     }
 
-    const mouthRadius = PHYSICAL_MOUTH_RADIUS_FACTOR_OF_PITCH * estimateLocalPitch(wells, well.row, well.col);
-    const mouthExclusion = PHYSICAL_EXCLUSION_RADIUS_FACTOR * mouthRadius;
+    const mouthRadius = mouthRadiusFactorOfPitch * estimateLocalPitch(wells, well.row, well.col);
+    const mouthExclusion = exclusionFactor * mouthRadius;
     const floorExclusion = floorCircles && floorCircles.length === wells.length
       ? floorCircles[index].r * PHYSICAL_FLOOR_EXCLUSION_FACTOR
       : 0;
@@ -1238,7 +1254,7 @@ function createPhysicalInterwellCandidates(
   });
   const wellExclusionRadiusApprox = wellExclusionRadiiByWell && exclusionRadii.length > 0
     ? median(exclusionRadii)
-    : PHYSICAL_EXCLUSION_RADIUS_FACTOR * PHYSICAL_MOUTH_RADIUS_FACTOR_OF_PITCH * medianPitch;
+    : exclusionFactor * mouthRadiusFactorOfPitch * medianPitch;
   const pixels: CandidatePixel[] = [];
   const rawPixels: CandidatePixel[] = [];
   const cellDiagnostics: BackgroundCellDiagnostic[] = [];
@@ -1249,8 +1265,10 @@ function createPhysicalInterwellCandidates(
   const regionY1 = Math.min(height - 1, Math.ceil(Math.max(...wells.map((w) => w.y)) + regionExpand));
   const sampleStride = DEFAULT_CANDIDATE_SAMPLE_STRIDE;
 
-  for (let row = 0; row < 7; row += 1) {
-    for (let col = 0; col < 11; col += 1) {
+  const wellIndexByPosition = new Map(wells.map((well, index) => [`${well.row},${well.col}`, index]));
+
+  for (let row = 0; row < Math.max(0, visibleRows - 1); row += 1) {
+    for (let col = 0; col < Math.max(0, visibleColumns - 1); col += 1) {
       const topLeft = wellAt(wells, row, col);
       const topRight = wellAt(wells, row, col + 1);
       const bottomLeft = wellAt(wells, row + 1, col);
@@ -1262,11 +1280,11 @@ function createPhysicalInterwellCandidates(
 
       const quad = [topLeft, topRight, bottomRight, bottomLeft];
       const localExclusionWellIndices = [
-        row * 12 + col,
-        row * 12 + col + 1,
-        (row + 1) * 12 + col,
-        (row + 1) * 12 + col + 1,
-      ];
+        wellIndexByPosition.get(`${row},${col}`),
+        wellIndexByPosition.get(`${row},${col + 1}`),
+        wellIndexByPosition.get(`${row + 1},${col}`),
+        wellIndexByPosition.get(`${row + 1},${col + 1}`),
+      ].filter((index): index is number => typeof index === 'number');
       const projectedPolygonAreaPx = polygonArea(quad);
       const cellDiagnostic: BackgroundCellDiagnostic = {
         cellRow: row,
@@ -1291,13 +1309,14 @@ function createPhysicalInterwellCandidates(
 
       const sxPx = Math.max(1e-6, Math.hypot(topRight.x - topLeft.x, topRight.y - topLeft.y));
       const syPx = Math.max(1e-6, Math.hypot(bottomLeft.x - topLeft.x, bottomLeft.y - topLeft.y));
-      const pxPerMmX = sxPx / PHYSICAL_PITCH_MM;
-      const pxPerMmY = syPx / PHYSICAL_PITCH_MM;
-      const forbiddenRadiusMm = 0.5 * PHYSICAL_OUTER_DIAM_MM + PHYSICAL_EXTRA_OPTICAL_MARGIN_MM;
+      const pxPerMmX = sxPx / preset.pitchXmm;
+      const pxPerMmY = syPx / preset.pitchYmm;
       const rForbiddenX = clamp((forbiddenRadiusMm * pxPerMmX) / sxPx, 0.18, 0.49);
       const rForbiddenY = clamp((forbiddenRadiusMm * pxPerMmY) / syPx, 0.18, 0.49);
-      const bridgeHalfW = clamp((0.5 * PHYSICAL_BRIDGE_WIDTH_MM * pxPerMmX) / sxPx, 0.01, 0.06);
-      const bridgeHalfH = clamp((0.5 * PHYSICAL_BRIDGE_WIDTH_MM * pxPerMmY) / syPx, 0.01, 0.06);
+      const bridgeWidthXmm = preset.pitchXmm * PHYSICAL_BRIDGE_TO_PITCH_RATIO;
+      const bridgeWidthYmm = preset.pitchYmm * PHYSICAL_BRIDGE_TO_PITCH_RATIO;
+      const bridgeHalfW = clamp((0.5 * bridgeWidthXmm * pxPerMmX) / sxPx, 0.01, 0.06);
+      const bridgeHalfH = clamp((0.5 * bridgeWidthYmm * pxPerMmY) / syPx, 0.01, 0.06);
       const modelPixels: CandidatePixel[] = [];
       const seenPixels = new Set<string>();
       const canonicalSize = 220;
@@ -2394,10 +2413,11 @@ function physicalFallbackResult(diagnostics: BackgroundDiagnostics, fallbackWarn
 export function estimatePhysicalInterwellPolynomialBackgrounds(
   imageData: ImageData,
   wells: WellCenter[],
+  geometryConfig: PhysicalInterwellGeometryConfig,
   floorCircles?: FloorCircle[],
   wellExclusionRadiiByWell?: WellExclusionRadiusMap,
 ): PhysicalPolynomialBackgroundResult {
-  const { collection, diagnostics } = createPhysicalInterwellCandidates(imageData, wells, floorCircles, wellExclusionRadiiByWell);
+  const { collection, diagnostics } = createPhysicalInterwellCandidates(imageData, wells, geometryConfig, floorCircles, wellExclusionRadiiByWell);
 
   if (collection.pixels.length < PHYSICAL_MIN_CANDIDATE_PIXELS) {
     return physicalFallbackResult(
@@ -2494,11 +2514,24 @@ export function buildBackgroundVisualDiagnostics(
   wells: WellCenter[],
   geometry: PlateGeometry,
   backgroundModel: BackgroundModel,
+  physicalGeometryConfig?: PhysicalInterwellGeometryConfig,
   floorCircles?: FloorCircle[],
   wellExclusionRadiiByWell?: WellExclusionRadiusMap,
 ): BackgroundVisualDiagnostics {
   if (backgroundModel === 'physical-interwell-polynomial-v1') {
-    const { collection, diagnostics } = createPhysicalInterwellCandidates(imageData, wells, floorCircles, wellExclusionRadiiByWell);
+    if (!physicalGeometryConfig) {
+      return {
+        selectedModel: backgroundModel,
+        actualModel: 'robust-interwell-v1',
+        rawCandidatePixels: [],
+        candidatePixels: [],
+        acceptedPixels: [],
+        samplePixels: [],
+        diagnostics: createEmptyDiagnostics(),
+        warning: 'Physical inter-well diagnostics require a nominal plate geometry preset.',
+      };
+    }
+    const { collection, diagnostics } = createPhysicalInterwellCandidates(imageData, wells, physicalGeometryConfig, floorCircles, wellExclusionRadiiByWell);
     const filteredResult = filterPhysicalCandidatePixels(collection.pixels);
     const samples = buildPhysicalCellSamples(filteredResult.pixels);
     const cellDiagnosticsAfterFiltering = updateCellDiagnosticsAfterFiltering(diagnostics.cellDiagnostics, filteredResult.pixels);
