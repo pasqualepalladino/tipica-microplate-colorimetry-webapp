@@ -25,9 +25,12 @@ import {
   getMouthDiameterToPitchRatio,
   getMouthRadiusPx,
   getPixelsPerMm,
-  isValidated96WellVisibleRegion,
+  getPlateAnalysisSupportLevel,
+  getPlateAnalysisSupportNote,
+  isAnalysisExecutionAllowed,
+  isValidVisiblePlateRegion,
 } from '../src/core/physicalPlateGeometry.js';
-import { buildVisiblePlateCornerReferences, computeGeometryAlignmentDiagnostics, estimateNominalFloorRadius, estimateNominalMouthRadius, generate96WellFloorCircles, generate96WellGrid, generatePlateFloorCircles, generatePlateGrid, hasFloorGeometry } from '../src/core/plate.js';
+import { buildVisiblePlateCornerReferences, clampFloorRadiusToMouth, computeGeometryAlignmentDiagnostics, estimateNominalFloorRadius, estimateNominalMouthRadius, generate96WellFloorCircles, generate96WellGrid, generatePlateFloorCircles, generatePlateGrid, hasFloorGeometry } from '../src/core/plate.js';
 import type { PlateGeometry } from '../src/types/geometry.js';
 import type { WellConfig } from '../src/types/plateMap.js';
 
@@ -647,6 +650,44 @@ function testNominalPhysicalRuntimeScaling(): void {
 }
 
 
+function testDynamicCornerReferencesAndFloorClamp(): void {
+  assertEqual(
+    buildVisiblePlateCornerReferences({ plateRows: 2, plateColumns: 3, visibleRows: 2, visibleColumns: 3, rowOffset: 0, columnOffset: 0 })
+      .map((corner) => corner.label)
+      .join(','),
+    'A1,A3,B3,B1',
+    '6-well corner labels',
+  );
+  assertEqual(
+    buildVisiblePlateCornerReferences({ plateRows: 1, plateColumns: 1, visibleRows: 1, visibleColumns: 1, rowOffset: 0, columnOffset: 0 })
+      .map((corner) => corner.label)
+      .join(','),
+    'A1',
+    'single-well corner labels',
+  );
+  assertEqual(
+    buildVisiblePlateCornerReferences({ plateRows: 1, plateColumns: 4, visibleRows: 1, visibleColumns: 4, rowOffset: 0, columnOffset: 0 })
+      .map((corner) => corner.label)
+      .join(','),
+    'A1,A4',
+    'single-row corner labels',
+  );
+  assertEqual(
+    buildVisiblePlateCornerReferences({ plateRows: 4, plateColumns: 1, visibleRows: 4, visibleColumns: 1, rowOffset: 0, columnOffset: 0 })
+      .map((corner) => corner.label)
+      .join(','),
+    'A1,D1',
+    'single-column corner labels',
+  );
+
+  const mouthRadius = 35.50181892814302;
+  const oversizedFloor = 35.8658;
+  const clampedFloor = clampFloorRadiusToMouth(oversizedFloor, mouthRadius);
+  assert(clampedFloor < mouthRadius, 'clamped floor radius must remain strictly below mouth radius');
+  assertEqual(clampedFloor, mouthRadius * 0.99, 'floor clamp uses the common 0.99 mouth limit');
+  assert(clampFloorRadiusToMouth(20, mouthRadius) === 20, 'valid floor radius remains unchanged');
+}
+
 function testDynamicPhysicalInterwellCellCounts(): void {
   assertEqual(countPhysicalInterwellCells(8, 12), 77, '96-well full inter-well cell count');
   assertEqual(countPhysicalInterwellCells(2, 4), 3, '96-well reduced visible inter-well cell count');
@@ -657,46 +698,60 @@ function testDynamicPhysicalInterwellCellCounts(): void {
   assertEqual(countPhysicalInterwellCells(1, 1), 0, 'single-well inter-well cell count');
 }
 
-function testValidated96WellVisibleRegionGate(): void {
-  for (let visibleRows = 1; visibleRows <= 8; visibleRows += 1) {
-    for (let visibleColumns = 1; visibleColumns <= 12; visibleColumns += 1) {
-      assert(
-        isValidated96WellVisibleRegion({
-          plateRows: 8,
-          plateColumns: 12,
+function testPlateAnalysisSupportAndExecutionGate(): void {
+  const executionEnabledFormats = [
+    { rows: 2, columns: 3, level: 'internal-testing' },
+    { rows: 3, columns: 4, level: 'internal-testing' },
+    { rows: 4, columns: 6, level: 'internal-testing' },
+    { rows: 6, columns: 8, level: 'internal-testing' },
+    { rows: 8, columns: 12, level: 'validated' },
+  ] as const;
+
+  for (const format of executionEnabledFormats) {
+    assertEqual(getPlateAnalysisSupportLevel(format.rows, format.columns), format.level, `${format.rows}x${format.columns} support level`);
+    assert(getPlateAnalysisSupportNote(format.level).length > 0, `${format.level} support note should be present`);
+    for (let visibleRows = 1; visibleRows <= format.rows; visibleRows += 1) {
+      for (let visibleColumns = 1; visibleColumns <= format.columns; visibleColumns += 1) {
+        const input = {
+          plateRows: format.rows,
+          plateColumns: format.columns,
           visibleRows,
           visibleColumns,
           rowOffset: 0,
           columnOffset: 0,
           actualWellCount: visibleRows * visibleColumns,
-        }),
-        `96-well ${visibleRows}x${visibleColumns} visible region should be allowed`,
-      );
+        };
+        assert(isValidVisiblePlateRegion(input), `${format.rows}x${format.columns} ${visibleRows}x${visibleColumns} region should be geometrically valid`);
+        assert(isAnalysisExecutionAllowed(input), `${format.rows}x${format.columns} ${visibleRows}x${visibleColumns} region should be analysis-enabled`);
+      }
     }
   }
 
-  assert(isValidated96WellVisibleRegion({
-    plateRows: 8,
-    plateColumns: 12,
-    visibleRows: 2,
-    visibleColumns: 4,
-    rowOffset: 6,
-    columnOffset: 8,
-    actualWellCount: 8,
-  }), 'offset 96-well visible region should be allowed when it remains inside the plate');
+  for (const format of [{ rows: 16, columns: 24 }, { rows: 32, columns: 48 }]) {
+    assertEqual(getPlateAnalysisSupportLevel(format.rows, format.columns), 'configurable-only', `${format.rows}x${format.columns} support level`);
+    const input = {
+      plateRows: format.rows,
+      plateColumns: format.columns,
+      visibleRows: 2,
+      visibleColumns: 2,
+      rowOffset: 0,
+      columnOffset: 0,
+      actualWellCount: 4,
+    };
+    assert(isValidVisiblePlateRegion(input), `${format.rows}x${format.columns} region should remain geometrically configurable`);
+    assert(!isAnalysisExecutionAllowed(input), `${format.rows}x${format.columns} analysis should remain disabled`);
+  }
 
-  assert(!isValidated96WellVisibleRegion({
-    plateRows: 8, plateColumns: 12, visibleRows: 2, visibleColumns: 4, rowOffset: 7, columnOffset: 0, actualWellCount: 8,
+  assertEqual(getPlateAnalysisSupportLevel(5, 5), 'unsupported', 'unknown layout support level');
+  assert(!isAnalysisExecutionAllowed({
+    plateRows: 4, plateColumns: 6, visibleRows: 2, visibleColumns: 4, rowOffset: 3, columnOffset: 0, actualWellCount: 8,
   }), 'row-overflow region should be rejected');
-  assert(!isValidated96WellVisibleRegion({
-    plateRows: 8, plateColumns: 12, visibleRows: 2, visibleColumns: 4, rowOffset: 0, columnOffset: 10, actualWellCount: 8,
+  assert(!isAnalysisExecutionAllowed({
+    plateRows: 4, plateColumns: 6, visibleRows: 2, visibleColumns: 4, rowOffset: 0, columnOffset: 3, actualWellCount: 8,
   }), 'column-overflow region should be rejected');
-  assert(!isValidated96WellVisibleRegion({
-    plateRows: 8, plateColumns: 12, visibleRows: 2, visibleColumns: 4, rowOffset: 0, columnOffset: 0, actualWellCount: 7,
+  assert(!isAnalysisExecutionAllowed({
+    plateRows: 4, plateColumns: 6, visibleRows: 2, visibleColumns: 4, rowOffset: 0, columnOffset: 0, actualWellCount: 7,
   }), 'wrong visible well count should be rejected');
-  assert(!isValidated96WellVisibleRegion({
-    plateRows: 4, plateColumns: 6, visibleRows: 4, visibleColumns: 6, rowOffset: 0, columnOffset: 0, actualWellCount: 24,
-  }), 'non-96 nominal format should remain blocked');
 }
 
 function run(): void {
@@ -715,8 +770,9 @@ function run(): void {
   testProjectAfterGeometryPreservesFloorPath();
   testFlatBottomPlateGeometryPresets();
   testNominalPhysicalRuntimeScaling();
+  testDynamicCornerReferencesAndFloorClamp();
   testDynamicPhysicalInterwellCellCounts();
-  testValidated96WellVisibleRegionGate();
+  testPlateAnalysisSupportAndExecutionGate();
 
   console.log('smoke:plate-configurator passed');
 }

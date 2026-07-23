@@ -27,11 +27,14 @@ import {
   flatBottomPlateGeometryEntries,
   getFlatBottomPlateGeometry,
   getPixelsPerMm,
-  isValidated96WellVisibleRegion,
+  getPlateAnalysisSupportLevel,
+  getPlateAnalysisSupportNote,
+  isAnalysisExecutionAllowed,
   type FlatBottomPlateGeometryPreset,
 } from './core/physicalPlateGeometry';
 import {
   buildVisiblePlateCornerReferences,
+  clampFloorRadiusToMouth,
   computeGeometryAlignmentDiagnostics,
   estimateLocalPitch,
   estimateNominalFloorRadius,
@@ -81,7 +84,7 @@ import {
   storedCalibrationToJson,
 } from './core/storedCalibration';
 import type { FloorCircle, PlateGeometry, Point } from './types/geometry';
-import type { WellCenter } from './types/plate';
+import type { PlateRegionDefinition, WellCenter } from './types/plate';
 import type { CalibrationFit, FitChannel, StandardAdditionFit, WellConfig } from './types/plateMap';
 import type { MethodMetadata, Rgb, RoiMode, RoiPixelStatisticsMode, WellMeasurement } from './types/results';
 import type {
@@ -1396,6 +1399,7 @@ function createAnalysisRunConfigMetadata(options: {
   floorRoiRadiusFactor: number;
   floorGeometryAvailable: boolean;
   floorCircles: FloorCircle[] | null;
+  mouthRadii: number[];
   geometry: PlateGeometry | null;
   wells: WellCenter[];
   plateMap: WellConfig[];
@@ -1406,6 +1410,26 @@ function createAnalysisRunConfigMetadata(options: {
   appVersion: string;
   generatedAt: string;
 }): Record<string, unknown> {
+  const validCircleSet = Boolean(
+    options.floorGeometryAvailable &&
+    options.floorCircles &&
+    options.floorCircles.length === options.wells.length &&
+    options.mouthRadii.length === options.wells.length,
+  );
+  const normalizedFloorCircles = validCircleSet
+    ? options.floorCircles?.map((circle, index) => ({
+      ...circle,
+      r: clampFloorRadiusToMouth(circle.r, options.mouthRadii[index]),
+    })) ?? null
+    : null;
+  const mouthCircles = options.mouthRadii.length === options.wells.length
+    ? options.wells.map((well, index) => ({
+      x: well.x,
+      y: well.y,
+      r: options.mouthRadii[index],
+    }))
+    : null;
+
   return {
     appVersion: options.appVersion,
     generatedAt: options.generatedAt,
@@ -1427,16 +1451,26 @@ function createAnalysisRunConfigMetadata(options: {
         mouth_radius_px: options.geometry.mouth_radius_px ?? null,
       }
       : null,
-    manualFloorGeometry: options.geometry && hasFloorGeometry(options.geometry)
-      ? {
-        floor_a1_circle_img: options.geometry.floor_a1_circle_img ?? null,
-        floor_a12_circle_img: options.geometry.floor_a12_circle_img ?? null,
-        floor_h12_circle_img: options.geometry.floor_h12_circle_img ?? null,
-        floor_h1_circle_img: options.geometry.floor_h1_circle_img ?? null,
-      }
+    mouthCircles,
+    mouthRadiusSemantics: 'Per-well effective mouth radii used for floor comparison, ROI geometry and export. manualMouthGeometry.mouth_radius_px is the manual reference radius and may differ from local pitch-derived mouth radii.',
+    manualFloorGeometry: normalizedFloorCircles
+      ? (() => {
+        const maxRow = Math.max(...options.wells.map((well) => well.row));
+        const maxColumn = Math.max(...options.wells.map((well) => well.col));
+        const circleAt = (row: number, col: number): FloorCircle | null => {
+          const index = options.wells.findIndex((well) => well.row === row && well.col === col);
+          return index >= 0 ? normalizedFloorCircles[index] ?? null : null;
+        };
+        return {
+          floor_a1_circle_img: circleAt(0, 0),
+          floor_a12_circle_img: circleAt(0, maxColumn),
+          floor_h12_circle_img: circleAt(maxRow, maxColumn),
+          floor_h1_circle_img: circleAt(maxRow, 0),
+        };
+      })()
       : null,
-    floorCircles: options.floorGeometryAvailable && options.floorCircles && options.floorCircles.length === options.wells.length
-      ? options.floorCircles.map((circle) => ({ x: circle.x, y: circle.y, r: circle.r }))
+    floorCircles: normalizedFloorCircles
+      ? normalizedFloorCircles.map((circle) => ({ x: circle.x, y: circle.y, r: circle.r }))
       : null,
     sharedGeometryOverride: options.sharedGeometryOverride
       ? {
@@ -1451,7 +1485,12 @@ function createAnalysisRunConfigMetadata(options: {
           floorCx: record.floorCx,
           floorCy: record.floorCy,
           mouthRadius: record.mouthRadius,
-          floorRadius: record.floorRadius,
+          floorRadius: (() => {
+            const index = options.wells.findIndex((well) => well.wellId === record.wellId);
+            return index >= 0 && normalizedFloorCircles?.[index]
+              ? normalizedFloorCircles[index].r
+              : clampFloorRadiusToMouth(record.floorRadius, record.mouthRadius);
+          })(),
           floorRadiusGeom: record.floorRadiusGeom ?? null,
           mouthRadiusGeom: record.mouthRadiusGeom ?? null,
           cylRadiusBg: record.cylRadiusBg ?? null,
@@ -1529,24 +1568,73 @@ function drawDiagnosticLabel(ctx: CanvasRenderingContext2D, text: string, x = 12
   ctx.restore();
 }
 
-function drawCornerWellLabels(ctx: CanvasRenderingContext2D, wells: WellCenter[]): void {
-  const cornerIds = new Set(['A1', 'A12', 'H12', 'H1']);
+interface DiagnosticDrawingScale {
+  fontSmall: number;
+  fontLarge: number;
+  markerRadius: number;
+  crossRadius: number;
+  textStroke: number;
+  lineWidth: number;
+  padding: number;
+  lineGap: number;
+}
+
+function getDiagnosticDrawingScale(ctx: CanvasRenderingContext2D): DiagnosticDrawingScale {
+  const shortSide = Math.max(1, Math.min(ctx.canvas.width, ctx.canvas.height));
+  const unit = Math.max(0.55, Math.min(1.4, shortSide / 1000));
+  return {
+    fontSmall: Math.round(Math.max(7, Math.min(12, 10 * unit))),
+    fontLarge: Math.round(Math.max(8, Math.min(13, 12 * unit))),
+    markerRadius: Math.max(2, Math.min(5, 3 * unit)),
+    crossRadius: Math.max(2.5, Math.min(6, 4 * unit)),
+    textStroke: Math.max(1, Math.min(2.5, 1.5 * unit)),
+    lineWidth: Math.max(1, Math.min(2, 1.2 * unit)),
+    padding: Math.max(4, Math.min(9, 6 * unit)),
+    lineGap: Math.max(2, Math.min(6, 4 * unit)),
+  };
+}
+
+function fitDiagnosticText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maximumWidth: number,
+): string {
+  if (maximumWidth <= 0 || ctx.measureText(text).width <= maximumWidth) return text;
+
+  const suffix = '...';
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const candidate = `${text.slice(0, middle).trimEnd()}${suffix}`;
+    if (ctx.measureText(candidate).width <= maximumWidth) low = middle;
+    else high = middle - 1;
+  }
+
+  return `${text.slice(0, low).trimEnd()}${suffix}`;
+}
+
+function drawCornerWellLabels(
+  ctx: CanvasRenderingContext2D,
+  wells: WellCenter[],
+  region: PlateRegionDefinition,
+  scale: DiagnosticDrawingScale,
+): void {
+  const corners = buildVisiblePlateCornerReferences(region);
 
   ctx.save();
-  ctx.font = '700 15px Inter, ui-sans-serif, system-ui, sans-serif';
+  ctx.font = `700 ${scale.fontLarge}px Inter, ui-sans-serif, system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  ctx.lineWidth = scale.textStroke;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.78)';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.98)';
 
-  wells.forEach((well) => {
-    if (!cornerIds.has(well.wellId)) {
-      return;
-    }
-
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.78)';
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.98)';
-    ctx.strokeText(well.wellId, well.x, well.y);
-    ctx.fillText(well.wellId, well.x, well.y);
+  corners.forEach((corner) => {
+    const well = wells.find((candidate) => candidate.row === corner.row && candidate.col === corner.col);
+    if (!well) return;
+    ctx.strokeText(corner.label, well.x, well.y);
+    ctx.fillText(corner.label, well.x, well.y);
   });
 
   ctx.restore();
@@ -1556,55 +1644,62 @@ function drawGeometryCornerDiagnosticMarkers(
   ctx: CanvasRenderingContext2D,
   geometry: PlateGeometry | null,
   wells: WellCenter[],
+  region: PlateRegionDefinition,
+  scale: DiagnosticDrawingScale,
 ): void {
-  if (!geometry) {
-    return;
-  }
+  if (!geometry) return;
 
-  const corners = [
-    { label: 'A1', picked: geometry.corner_a1, generated: wells.find((well) => well.row === 0 && well.col === 0) },
-    { label: 'A12', picked: geometry.corner_a12, generated: wells.find((well) => well.row === 0 && well.col === 11) },
-    { label: 'H12', picked: geometry.corner_h12, generated: wells.find((well) => well.row === 7 && well.col === 11) },
-    { label: 'H1', picked: geometry.corner_h1, generated: wells.find((well) => well.row === 7 && well.col === 0) },
+  const pickedCorners = [
+    geometry.corner_a1,
+    geometry.corner_a12,
+    geometry.corner_h12,
+    geometry.corner_h1,
   ];
+  const references = buildVisiblePlateCornerReferences(region);
+  const corners = references.map((reference, index) => ({
+    label: reference.label,
+    picked: pickedCorners[index] ?? pickedCorners[0],
+    generated: wells.find((well) => well.row === reference.row && well.col === reference.col),
+  }));
 
   ctx.save();
-  ctx.font = '800 14px Inter, ui-sans-serif, system-ui, sans-serif';
+  ctx.font = `800 ${scale.fontSmall}px Inter, ui-sans-serif, system-ui, sans-serif`;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
 
   corners.forEach(({ label, picked, generated }) => {
     ctx.beginPath();
-    ctx.arc(picked.x, picked.y, 6, 0, Math.PI * 2);
+    ctx.arc(picked.x, picked.y, scale.markerRadius, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(255, 0, 255, 0.92)';
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.96)';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = scale.lineWidth;
     ctx.fill();
     ctx.stroke();
 
     if (generated) {
       ctx.beginPath();
-      ctx.moveTo(generated.x - 7, generated.y);
-      ctx.lineTo(generated.x + 7, generated.y);
-      ctx.moveTo(generated.x, generated.y - 7);
-      ctx.lineTo(generated.x, generated.y + 7);
+      ctx.moveTo(generated.x - scale.crossRadius, generated.y);
+      ctx.lineTo(generated.x + scale.crossRadius, generated.y);
+      ctx.moveTo(generated.x, generated.y - scale.crossRadius);
+      ctx.lineTo(generated.x, generated.y + scale.crossRadius);
       ctx.strokeStyle = 'rgba(0, 255, 255, 0.98)';
-      ctx.lineWidth = 3;
+      ctx.lineWidth = scale.lineWidth;
       ctx.stroke();
 
       ctx.beginPath();
       ctx.moveTo(picked.x, picked.y);
       ctx.lineTo(generated.x, generated.y);
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = Math.max(1, scale.lineWidth * 0.75);
       ctx.stroke();
     }
 
-    ctx.lineWidth = 4;
+    const textX = picked.x + scale.markerRadius + scale.padding;
+    ctx.lineWidth = scale.textStroke;
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.78)';
     ctx.fillStyle = 'rgba(255, 255, 255, 0.98)';
-    ctx.strokeText(`${label} picked/generated`, picked.x + 9, picked.y);
-    ctx.fillText(`${label} picked/generated`, picked.x + 9, picked.y);
+    ctx.strokeText(label, textX, picked.y);
+    ctx.fillText(label, textX, picked.y);
   });
 
   ctx.restore();
@@ -1614,6 +1709,7 @@ function drawBackgroundDiagnostics(
   ctx: CanvasRenderingContext2D,
   wells: WellCenter[],
   diagnostics: BackgroundVisualDiagnostics,
+  region: PlateRegionDefinition,
 ): void {
   const {
     candidateRegionX0,
@@ -1656,24 +1752,35 @@ function drawBackgroundDiagnostics(
   drawDiagnosticPixels(ctx, diagnostics.acceptedPixels, 'rgba(255, 224, 0, 0.75)', Math.max(1, Math.floor(stride / 2)));
   drawDiagnosticPixels(ctx, diagnostics.samplePixels, 'rgba(255, 0, 255, 0.90)', Math.max(2, Math.floor(stride)));
 
-  drawCornerWellLabels(ctx, wells);
-  drawDiagnosticLabel(
+  const scale = getDiagnosticDrawingScale(ctx);
+  const labelX = scale.padding + 2;
+  const maximumLabelWidth = Math.max(1, ctx.canvas.width - labelX - scale.padding - 10);
+  let labelY = scale.padding + 2;
+
+  ctx.save();
+  ctx.font = `700 ${scale.fontLarge}px Inter, ui-sans-serif, system-ui, sans-serif`;
+  const summary = fitDiagnosticText(
     ctx,
-    `Background mask: ${diagnostics.diagnostics.maskAlgorithm ?? diagnostics.selectedModel}; candidates ${diagnostics.candidatePixels.length}, accepted ${diagnostics.acceptedPixels.length}, samples ${diagnostics.samplePixels.length}`,
-    12,
-    12,
-    32,
+    `BG mask: ${diagnostics.diagnostics.maskAlgorithm ?? diagnostics.selectedModel} | C ${diagnostics.candidatePixels.length} | A ${diagnostics.acceptedPixels.length} | S ${diagnostics.samplePixels.length}`,
+    maximumLabelWidth,
   );
-  drawDiagnosticLabel(
+  ctx.restore();
+  drawDiagnosticLabel(ctx, summary, labelX, labelY, scale.fontLarge);
+
+  labelY += scale.fontLarge + scale.lineGap + scale.padding;
+  ctx.save();
+  ctx.font = `700 ${scale.fontSmall}px Inter, ui-sans-serif, system-ui, sans-serif`;
+  const colorLegend = fitDiagnosticText(
     ctx,
-    'Colors: blue = candidate (visible blue = rejected); yellow = accepted; magenta = model sample',
-    12,
-    54,
-    32,
+    'Blue rejected | yellow accepted | magenta sample',
+    maximumLabelWidth,
   );
+  ctx.restore();
+  drawDiagnosticLabel(ctx, colorLegend, labelX, labelY, scale.fontSmall);
 
   if (diagnostics.warning) {
-    drawDiagnosticLabel(ctx, diagnostics.warning, 12, 96, 32);
+    labelY += scale.fontSmall + scale.lineGap + scale.padding;
+    drawDiagnosticLabel(ctx, 'Warning', labelX, labelY, scale.fontSmall);
   }
 }
 
@@ -1682,11 +1789,13 @@ function buildBackgroundMaskDiagnosticCanvas(
   wells: WellCenter[],
   diagnostics: BackgroundVisualDiagnostics,
   geometry: PlateGeometry | null,
+  region: PlateRegionDefinition,
 ): HTMLCanvasElement {
   const { canvas, ctx } = createDiagnosticCanvas(imageData);
+  const scale = getDiagnosticDrawingScale(ctx);
 
-  drawBackgroundDiagnostics(ctx, wells, diagnostics);
-  drawGeometryCornerDiagnosticMarkers(ctx, geometry, wells);
+  drawBackgroundDiagnostics(ctx, wells, diagnostics, region);
+  drawGeometryCornerDiagnosticMarkers(ctx, geometry, wells, region, scale);
 
   return canvas;
 }
@@ -1902,7 +2011,7 @@ Quality control
 Image, plate, geometry and floor-QC messages are alerts on data quality. No automatic image correction is applied. Current-image empty-well QC: ${emptyWellQc.status}; n=${emptyWellQc.nEmptyWells}; coverage=${emptyWellQc.distinctRows} row(s) x ${emptyWellQc.distinctColumns} column(s); ${emptyWellQc.spatialAssessment}${emptyWellQc.dominantChannel ? ` ${emptyWellQc.status === 'available_insufficient' ? 'Largest observed trend channel' : 'Dominant channel'}=${emptyWellQc.dominantChannel}.` : ''} ${emptyWellQc.dominantIssue} Channel-level pass values are local screening results and do not imply an overall plate pass when spatial coverage is insufficient. This is a screening assessment of background/illumination uniformity and does not by itself invalidate concentration results.
 
 Geometry and epsilon/path-length quantification
-When epsilon-based unknown quantification is configured, optical path length is estimated from configured liquid volume and nominal flat-bottom well area. This path assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation. This section is informational unless epsilon/path-length mode is configured.
+Epsilon/path-length quantification is not currently implemented in the webapp. The equations and geometry fields shown here are informational placeholders for a future validated implementation.
 `;
 }
 function createPythonRawDataDetailsCaptionText(
@@ -4533,7 +4642,7 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "FitType", Meaning: "Type of fit or concentration-estimation row", Formula: "Calibration, StdAdd, UnknownFromCal, UnknownFromEpsilon, UnknownOnly", Unit: "text", "Where used": "FITTING", "Shown when": "always", Notes: "" },
     { Term: "flatfield_span", Meaning: "Image-level slow-field nonuniformity", Formula: "(P95 − P5) / median of the slow grayscale field", Unit: "dimensionless", "Where used": "METADATA", "Shown when": "always", Notes: "Part of rule-based image QC; larger values indicate stronger illumination/background gradient." },
     { Term: "FracWellWarnings/FracWellCritical", Meaning: "Fractions of replicate wells with warning or critical optical QC", Formula: "count / NReplicates", Unit: "dimensionless", "Where used": "diagnostic QC summaries", "Shown when": "diagnostics present", Notes: "Not exported in the main 05_REPLICATES_MEAN sheet." },
-    { Term: "Geometry and epsilon/path-length quantification", Meaning: "Assumption used when epsilon-based unknown quantification is enabled", Formula: "l_cm = (volume_uL / well_bottom_area_mm2) / 10; C_M = PAbs / (epsilon x l_cm)", Unit: "cm and M", "Where used": "RESULTS_CAPTION.txt, RAW_DATA_DETAILS_CAPTION.txt, REPORT", "Shown when": "epsilon/path-length mode configured", Notes: "Assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation." },
+    { Term: "Geometry and epsilon/path-length quantification", Meaning: "Informational placeholder for a future validated epsilon/path-length implementation", Formula: "l_cm = (volume_uL / well_bottom_area_mm2) / 10; C_M = PAbs / (epsilon x l_cm)", Unit: "cm and M", "Where used": "RESULTS_CAPTION.txt, RAW_DATA_DETAILS_CAPTION.txt, REPORT", "Shown when": "informational only; implementation not currently available", Notes: "Epsilon/path-length quantification is not currently implemented; equations and geometry fields are informational placeholders only." },
     { Term: "ID", Meaning: "Sample or reference identifier assigned in the plate map", Formula: "user/configurator input", Unit: "text", "Where used": "RAW, REPLICATES_MEAN, FITTING, METHOD_COMPARISON", "Shown when": "always", Notes: "" },
     { Term: "ImageWarning", Meaning: "Well-level optical QC warning flag", Formula: "1 if optical QC rules flag the well, else 0", Unit: "0/1", "Where used": "04_RAW", "Shown when": "always", Notes: "" },
     { Term: "ImageWarning_any", Meaning: "Group-level indicator that at least one replicate had an image warning", Formula: "1 if any replicate ImageWarning = 1", Unit: "0/1", "Where used": "diagnostic QC summaries", "Shown when": "diagnostics present", Notes: "Not exported in the main 05_REPLICATES_MEAN sheet." },
@@ -5788,7 +5897,7 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "FitType", Meaning: "Type of fit row", Formula: "Calibration, StdAdd, UnknownFromCal, UnknownOnly", Unit: "text", 'Where used': "11_CIELAB_FITTING", Notes: "Same convention as main fitting output." },
     { Term: "floor_source/local_pitch_px/px_per_mm/cyl_r_bg", Meaning: "Geometry-source and local scale descriptors", Formula: "reported source, local pitch, pixel/mm scale and well-exclusion/background radius approximation", Unit: "mixed", 'Where used': "05_GEOMETRY_QC, 06_WELL_BOTTOM", Notes: "In mouth-floor-intersection ROI, local_pitch_px is also used to derive the nominal quantitative mouth radius from the selected vendor-specific plate preset." },
     { Term: "floor_to_mouth_r_ratio", Meaning: "Relative floor radius", Formula: "floor_r / mouth_r", Unit: "dimensionless", 'Where used': "05_GEOMETRY_QC", Notes: "For mouth-floor-intersection ROI, mouth_r is the nominal quantitative mouth radius derived from local pitch and the selected vendor-specific plate preset." },
-    { Term: "Geometry and epsilon/path-length quantification", Meaning: "Assumption used when epsilon-based unknown quantification is enabled", Formula: "l_cm = (volume_uL / well_bottom_area_mm2) / 10; C_M = PAbs / (epsilon x l_cm)", Unit: "cm and M", 'Where used': "RESULTS_CAPTION.txt, RAW_DATA_DETAILS_CAPTION.txt, REPORT", Notes: "Assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation." },
+    { Term: "Geometry and epsilon/path-length quantification", Meaning: "Informational placeholder for a future validated epsilon/path-length implementation", Formula: "l_cm = (volume_uL / well_bottom_area_mm2) / 10; C_M = PAbs / (epsilon x l_cm)", Unit: "cm and M", 'Where used': "RESULTS_CAPTION.txt, RAW_DATA_DETAILS_CAPTION.txt, REPORT", Notes: "Epsilon/path-length quantification is not currently implemented; equations and geometry fields are informational placeholders only." },
     { Term: "Gray_*", Meaning: "Robust statistics of grayscale intensity", Formula: "computed over retained ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Diagnostic descriptor used for optical QC." },
     { Term: "highlight_fraction_roi/highlight_fraction_core", Meaning: "Fraction of very bright pixels in ROI/core", Formula: "fraction of pixels with grayscale above the highlight threshold", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Optical QC descriptor for highlights/specular artifacts." },
     { Term: "HighlightIndex", Meaning: "Combined highlight severity index", Formula: "BrightExcludedFraction x BrightExcessMeanGray", Unit: "gray-level weighted fraction", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Higher values indicate more severe bright artifacts." },
@@ -10138,7 +10247,15 @@ interface BackgroundModelDebugSummary {
   maskAlgorithm?: string;
 }
 
-function HelpAboutDialog({ onClose }: { onClose: () => void }) {
+function HelpAboutDialog({
+  onClose,
+  plateAnalysisSupportLevel,
+  plateAnalysisSupportNote,
+}: {
+  onClose: () => void;
+  plateAnalysisSupportLevel: string;
+  plateAnalysisSupportNote: string;
+}) {
   return (
     <div className="modal-backdrop" role="presentation" onClick={(event) => {
       if (event.target === event.currentTarget) {
@@ -10190,6 +10307,10 @@ function HelpAboutDialog({ onClose }: { onClose: () => void }) {
             <li>Plate format selects the nominal flat-bottom plate geometry; Visible rows and Visible columns define only the local image region to analyze.</li>
             <li>Nominal physical presets use Watson reference dimensions for 6-, 12-, 24- and 48-well plates, and Corning standard flat-bottom reference dimensions for 96-, 384- and 1536-well plates.</li>
             <li>These presets are vendor-specific reference geometries, not universal ANSI/SLAS mouth, floor or depth dimensions; verify the actual plate model for quantitative path-length work.</li>
+            <li>The complete workflow is experimentally validated for 96-well plates.</li>
+            <li>Internal technical workflow testing has been completed for 6-, 12-, 24- and 48-well plates using real near-frontal images; this does not constitute experimental validation of those formats.</li>
+            <li>The 384- and 1536-well formats are geometrically configurable and supported in principle, but complete analysis remains disabled until internal image-workflow testing is completed.</li>
+            <li>Current format status: {plateAnalysisSupportLevel}. {plateAnalysisSupportNote}</li>
             <li>Unit and x 10^ define the displayed concentration unit.</li>
             <li>Extended view shows the full editable plate-map table.</li>
             <li>ID/DF priority chooses whether row defaults or column defaults are applied first.</li>
@@ -10633,12 +10754,17 @@ function App() {
     () => getFlatBottomPlateGeometry(activePlateRegion.plateRows, activePlateRegion.plateColumns),
     [activePlateRegion.plateColumns, activePlateRegion.plateRows],
   );
+  const plateAnalysisSupportLevel = getPlateAnalysisSupportLevel(
+    activePlateRegion.plateRows,
+    activePlateRegion.plateColumns,
+  );
+  const plateAnalysisSupportNote = getPlateAnalysisSupportNote(plateAnalysisSupportLevel);
   const wells = useMemo(
     () => (geometry ? generatePlateGrid(geometry, activePlateRegion) : []),
     [activePlateRegion, geometry],
   );
   const geometryReady = Boolean(geometry && wells.length === expectedVisibleWellCount);
-  const validatedAnalysisGeometryReady = geometryReady && isValidated96WellVisibleRegion({
+  const analysisExecutionGeometryReady = geometryReady && isAnalysisExecutionAllowed({
     plateRows: activePlateRegion.plateRows,
     plateColumns: activePlateRegion.plateColumns,
     visibleRows: activePlateRegion.visibleRows,
@@ -10667,10 +10793,22 @@ function App() {
     () => Boolean(geometry && hasFloorGeometry(geometry)),
     [geometry],
   );
-  const floorCircles = useMemo(
-    () => (geometry ? generatePlateFloorCircles(geometry, activePlateRegion, wells, nominalPlatePreset, radiusFactor) : null),
-    [activePlateRegion, geometry, nominalPlatePreset, radiusFactor, wells],
-  );
+  const floorCircles = useMemo(() => {
+    if (!geometry) return null;
+    const generated = generatePlateFloorCircles(geometry, activePlateRegion, wells, nominalPlatePreset, radiusFactor);
+    if (!generated || !nominalPlatePreset) return generated;
+
+    return generated.map((circle, index) => {
+      const well = wells[index];
+      const mouthRadius = estimateNominalMouthRadius(
+        wells,
+        well.row,
+        well.col,
+        nominalPlatePreset,
+      );
+      return { ...circle, r: clampFloorRadiusToMouth(circle.r, mouthRadius) };
+    });
+  }, [activePlateRegion, geometry, nominalPlatePreset, radiusFactor, wells]);
   const effectiveWells = useMemo(() => {
     if (!sharedGeometryOverride) {
       return wells;
@@ -10693,9 +10831,14 @@ function App() {
       return {
         x: overrideRecord?.floorCx ?? well.x,
         y: overrideRecord?.floorCy ?? well.y,
-        r: overrideRecord?.floorRadius ?? (nominalPlatePreset
-          ? estimateNominalFloorRadius(wells, well.row, well.col, nominalPlatePreset)
-          : Math.max(1, estimateRoiRadius(wells, well.row, well.col, radiusFactor))),
+        r: clampFloorRadiusToMouth(
+          overrideRecord?.floorRadius ?? (nominalPlatePreset
+            ? estimateNominalFloorRadius(wells, well.row, well.col, nominalPlatePreset)
+            : Math.max(1, estimateRoiRadius(wells, well.row, well.col, radiusFactor))),
+          overrideRecord?.mouthRadius ?? (nominalPlatePreset
+            ? estimateNominalMouthRadius(wells, well.row, well.col, nominalPlatePreset)
+            : Math.max(1, estimateRoiRadius(wells, well.row, well.col, radiusFactor))),
+        ),
       };
     });
   }, [floorCircles, nominalPlatePreset, radiusFactor, sharedGeometryOverride, wells]);
@@ -11690,8 +11833,13 @@ function App() {
       return false;
     }
 
-    if (!image || !validatedAnalysisGeometryReady) {
-      setError('Load an image and a valid visible region from a nominal 96-well plate before extraction.');
+    if (plateAnalysisSupportLevel === 'configurable-only') {
+      setError('Complete analysis is not yet enabled for 384- and 1536-well plates because those formats have not yet undergone internal image-workflow testing.');
+      return false;
+    }
+
+    if (!image || !analysisExecutionGeometryReady) {
+      setError('Load an image and define a valid visible region for an analysis-enabled plate format before extraction.');
       return false;
     }
 
@@ -12029,6 +12177,8 @@ function App() {
     sharedGeometryExclusionRadiiByWell,
     sharedGeometryOverride,
     wells,
+    analysisExecutionGeometryReady,
+    plateAnalysisSupportLevel,
   ]);
 
   const runFittingRoutine = useCallback(async (options?: { useLowSignalCorrection?: boolean }): Promise<boolean> => {
@@ -12345,7 +12495,7 @@ function App() {
 
       let floorDQualitySummary: string | undefined;
 
-      if (image && measurements.length > 0 && validatedAnalysisGeometryReady) {
+      if (image && measurements.length > 0 && analysisExecutionGeometryReady) {
         const exportWells = sharedGeometryOverride ? effectiveWells : wells;
         const exportFloorCircles = sharedGeometryOverride ? effectiveFloorCircles : floorCircles;
         const exportFloorGeometryAvailable = sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable;
@@ -12437,7 +12587,7 @@ function App() {
             sharedGeometryExclusionRadiiByWell,
           );
           backgroundVisualDiagnostics = diagnostics;
-          const backgroundMaskCanvas = buildBackgroundMaskDiagnosticCanvas(imageData, exportWells, diagnostics, geometry);
+          const backgroundMaskCanvas = buildBackgroundMaskDiagnosticCanvas(imageData, exportWells, diagnostics, geometry, activePlateRegion);
 
           addZipBlob(
             files,
@@ -12606,6 +12756,29 @@ function App() {
         'text/plain;charset=utf-8',
       );
 
+      const analysisConfigWells = sharedGeometryOverride ? effectiveWells : wells;
+      const analysisConfigFloorCircles = (sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable)
+        ? sharedGeometryOverride ? effectiveFloorCircles : floorCircles
+        : null;
+      const analysisConfigMouthRadii = analysisConfigWells.map((well) => {
+        const overrideRecord = sharedGeometryOverride?.recordsByWell.get(well.wellId);
+        if (overrideRecord && Number.isFinite(overrideRecord.mouthRadius) && overrideRecord.mouthRadius > 0) {
+          return overrideRecord.mouthRadius;
+        }
+        if (nominalPlatePreset) {
+          return estimateNominalMouthRadius(
+            analysisConfigWells,
+            well.row,
+            well.col,
+            nominalPlatePreset,
+          );
+        }
+        if (geometry?.mouth_radius_px && Number.isFinite(geometry.mouth_radius_px) && geometry.mouth_radius_px > 0) {
+          return geometry.mouth_radius_px;
+        }
+        return Math.max(1, estimateRoiRadius(analysisConfigWells, well.row, well.col, radiusFactor));
+      });
+
       const analysisRunConfigMetadata = createAnalysisRunConfigMetadata({
         imageName,
         geometryName,
@@ -12616,11 +12789,10 @@ function App() {
         radiusFactor,
         floorRoiRadiusFactor,
         floorGeometryAvailable: sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable,
-        floorCircles: (sharedGeometryOverride ? effectiveFloorGeometryAvailable : floorGeometryAvailable)
-          ? sharedGeometryOverride ? effectiveFloorCircles : floorCircles
-          : null,
+        floorCircles: analysisConfigFloorCircles,
+        mouthRadii: analysisConfigMouthRadii,
         geometry,
-        wells: sharedGeometryOverride ? effectiveWells : wells,
+        wells: analysisConfigWells,
         plateMap,
         plateMapUnit,
         expectedRefs,
@@ -12705,8 +12877,13 @@ function App() {
       return;
     }
 
-    if (!image || !validatedAnalysisGeometryReady) {
-      setError('Load an image and a valid visible region from a nominal 96-well plate before running complete analysis.');
+    if (plateAnalysisSupportLevel === 'configurable-only') {
+      setError('Complete analysis is not yet enabled for 384- and 1536-well plates because those formats have not yet undergone internal image-workflow testing.');
+      return;
+    }
+
+    if (!image || !analysisExecutionGeometryReady) {
+      setError('Load an image and define a valid visible region for an analysis-enabled plate format before running complete analysis.');
       return;
     }
 
@@ -12762,6 +12939,8 @@ function App() {
     projectImageMismatchBlocksExtraction,
     runExtractionRoutine,
     wells.length,
+    analysisExecutionGeometryReady,
+    plateAnalysisSupportLevel,
   ]);
 
   useEffect(() => {
@@ -13634,7 +13813,13 @@ function App() {
         </div>
       ) : null}
 
-      {isHelpAboutOpen ? <HelpAboutDialog onClose={() => setIsHelpAboutOpen(false)} /> : null}
+      {isHelpAboutOpen ? (
+        <HelpAboutDialog
+          onClose={() => setIsHelpAboutOpen(false)}
+          plateAnalysisSupportLevel={plateAnalysisSupportLevel}
+          plateAnalysisSupportNote={plateAnalysisSupportNote}
+        />
+      ) : null}
     </main>
   );
 }

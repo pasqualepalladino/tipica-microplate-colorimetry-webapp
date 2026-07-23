@@ -58,6 +58,16 @@ Primary scientific summaries are group-based:
 
 Empty wells may be used for background and illumination screening, but they are not counted as quantitative unknowns. The QC summary distinguishes unavailable, insufficient-coverage, pass, warning, and fail states and records spatial coverage and channel-specific screening statistics.
 
+## Plate-format analysis status
+
+| Nominal flat-bottom format | Current status | Meaning |
+| --- | --- | --- |
+| 6-, 12-, 24-, 48-well | Internal technical workflow testing completed | Complete analysis has completed internal technical workflow testing with real near-frontal images; this is not experimental validation of those formats. |
+| 96-well | Experimentally validated | Complete image-analysis workflow validated for the current 96-well scope. |
+| 384-, 1536-well | Configurable only | Geometry is configurable and supported in principle, but complete analysis remains disabled pending internal image-workflow testing. |
+
+Epsilon/path-length quantification is not currently implemented in the webapp. Any equations or geometry fields referring to it are informational placeholders for a future validated implementation.
+
 ## Remaining validation boundaries
 
 The following broader claims remain intentionally unmade:

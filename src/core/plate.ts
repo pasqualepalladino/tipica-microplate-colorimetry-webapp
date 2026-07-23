@@ -12,6 +12,25 @@ export interface ImageSize {
   height: number;
 }
 
+export const FLOOR_TO_MOUTH_MAX_RATIO = 0.99;
+
+export function clampFloorRadiusToMouth(
+  floorRadius: number,
+  mouthRadius: number,
+  maxRatio = FLOOR_TO_MOUTH_MAX_RATIO,
+): number {
+  const safeMouthRadius = Number.isFinite(mouthRadius) && mouthRadius > 0 ? mouthRadius : 1;
+  const safeRatio = Number.isFinite(maxRatio) && maxRatio > 0 && maxRatio < 1
+    ? maxRatio
+    : FLOOR_TO_MOUTH_MAX_RATIO;
+  const maximumFloorRadius = safeMouthRadius * safeRatio;
+  const safeFloorRadius = Number.isFinite(floorRadius) && floorRadius > 0
+    ? floorRadius
+    : maximumFloorRadius;
+
+  return Math.min(safeFloorRadius, maximumFloorRadius);
+}
+
 function lerp(a: number, b: number, t: number): number {
   return (1 - t) * a + t * b;
 }

@@ -216,6 +216,9 @@ export function flatBottomPlateGeometryEntries(
     { key: 'source_document', value: preset.sourceDocument },
     { key: 'source_profile', value: preset.sourceProfile },
     { key: 'vendor_specific', value: preset.vendorSpecific ? 'true' : 'false' },
+    { key: 'plate_analysis_support_level', value: getPlateAnalysisSupportLevel(preset.rows, preset.columns) },
+    { key: 'plate_analysis_support_note', value: getPlateAnalysisSupportNote(getPlateAnalysisSupportLevel(preset.rows, preset.columns)) },
+    { key: 'plate_workflow_test_status', value: getPlateAnalysisSupportLevel(preset.rows, preset.columns) === 'validated' ? 'experimentally validated' : getPlateAnalysisSupportLevel(preset.rows, preset.columns) === 'internal-testing' ? 'internal technical workflow testing completed' : 'not yet internally tested' },
     { key: 'well_count', value: preset.wellCount },
     { key: 'plate_rows', value: preset.rows },
     { key: 'plate_columns', value: preset.columns },
@@ -247,7 +250,13 @@ export function countPhysicalInterwellCells(visibleRows: number, visibleColumns:
   const columns = Math.max(0, Math.trunc(visibleColumns));
   return Math.max(0, rows - 1) * Math.max(0, columns - 1);
 }
-export interface Validated96WellVisibleRegionInput {
+export type PlateAnalysisSupportLevel =
+  | 'validated'
+  | 'internal-testing'
+  | 'configurable-only'
+  | 'unsupported';
+
+export interface PlateVisibleRegionInput {
   plateRows: number;
   plateColumns: number;
   visibleRows: number;
@@ -257,9 +266,40 @@ export interface Validated96WellVisibleRegionInput {
   actualWellCount: number;
 }
 
-export function isValidated96WellVisibleRegion(
-  input: Validated96WellVisibleRegionInput,
-): boolean {
+export function getPlateAnalysisSupportLevel(
+  plateRows: number,
+  plateColumns: number,
+): PlateAnalysisSupportLevel {
+  if (plateRows === 8 && plateColumns === 12) return 'validated';
+  if (
+    (plateRows === 2 && plateColumns === 3) ||
+    (plateRows === 3 && plateColumns === 4) ||
+    (plateRows === 4 && plateColumns === 6) ||
+    (plateRows === 6 && plateColumns === 8)
+  ) return 'internal-testing';
+  if (
+    (plateRows === 16 && plateColumns === 24) ||
+    (plateRows === 32 && plateColumns === 48)
+  ) return 'configurable-only';
+  return 'unsupported';
+}
+
+export function getPlateAnalysisSupportNote(
+  level: PlateAnalysisSupportLevel,
+): string {
+  if (level === 'validated') {
+    return 'Complete image-analysis workflow experimentally validated for nominal 96-well plates.';
+  }
+  if (level === 'internal-testing') {
+    return 'Internal technical workflow testing has been completed with real near-frontal images; this does not constitute experimental validation of the nominal format.';
+  }
+  if (level === 'configurable-only') {
+    return 'Geometry is configurable and supported in principle, but complete image-analysis execution remains disabled pending internal image-workflow testing.';
+  }
+  return 'No supported nominal flat-bottom analysis profile is registered for this layout.';
+}
+
+export function isValidVisiblePlateRegion(input: PlateVisibleRegionInput): boolean {
   const values = [
     input.plateRows,
     input.plateColumns,
@@ -270,11 +310,16 @@ export function isValidated96WellVisibleRegion(
     input.actualWellCount,
   ];
   if (!values.every(Number.isInteger)) return false;
-  if (input.plateRows !== 8 || input.plateColumns !== 12) return false;
+  if (input.plateRows < 1 || input.plateColumns < 1) return false;
   if (input.visibleRows < 1 || input.visibleRows > input.plateRows) return false;
   if (input.visibleColumns < 1 || input.visibleColumns > input.plateColumns) return false;
   if (input.rowOffset < 0 || input.columnOffset < 0) return false;
   if (input.rowOffset + input.visibleRows > input.plateRows) return false;
   if (input.columnOffset + input.visibleColumns > input.plateColumns) return false;
   return input.actualWellCount === input.visibleRows * input.visibleColumns;
+}
+
+export function isAnalysisExecutionAllowed(input: PlateVisibleRegionInput): boolean {
+  const level = getPlateAnalysisSupportLevel(input.plateRows, input.plateColumns);
+  return (level === 'validated' || level === 'internal-testing') && isValidVisiblePlateRegion(input);
 }
