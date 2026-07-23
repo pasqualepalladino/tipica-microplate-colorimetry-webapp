@@ -1,9 +1,9 @@
 import type { FloorCircle, PlateGeometry, Point } from '../types/geometry';
-import type { WellCenter } from '../types/plate';
+import type { PlateRegionDefinition, WellCenter } from '../types/plate';
+import { normalizePlateRegion, rowLabelFromIndex } from './plateConfigurator.js';
 
 const ROW_COUNT = 8;
 const COL_COUNT = 12;
-const ROW_LABELS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 const REFERENCE_ANALYSIS_MAX_SIDE = 2000;
 
 export interface ImageSize {
@@ -218,22 +218,38 @@ export function getCanvasCoordinateSize(image: HTMLImageElement, wells: WellCent
   return naturalSize;
 }
 
-export function generate96WellGrid(geometry: PlateGeometry): WellCenter[] {
+/**
+ * Generate the well centers for the rectangular plate region visible in an
+ * image. Row and column indices remain local to the visible region, while
+ * wellId preserves the complete nominal plate coordinates through the region
+ * offsets. The four legacy corner fields represent the visible region corners.
+ */
+export function generatePlateGrid(
+  geometry: PlateGeometry,
+  regionInput: PlateRegionDefinition,
+): WellCenter[] {
+  const region = normalizePlateRegion(regionInput);
   const wells: WellCenter[] = [];
 
-  for (let row = 0; row < ROW_COUNT; row += 1) {
-    const rowT = row / (ROW_COUNT - 1);
+  for (let visibleRow = 0; visibleRow < region.visibleRows; visibleRow += 1) {
+    const rowT = region.visibleRows === 1
+      ? 0
+      : visibleRow / (region.visibleRows - 1);
     const leftEdge = lerpPoint(geometry.corner_a1, geometry.corner_h1, rowT);
     const rightEdge = lerpPoint(geometry.corner_a12, geometry.corner_h12, rowT);
 
-    for (let col = 0; col < COL_COUNT; col += 1) {
-      const colT = col / (COL_COUNT - 1);
-      const center = lerpPoint(leftEdge, rightEdge, colT);
+    for (let visibleColumn = 0; visibleColumn < region.visibleColumns; visibleColumn += 1) {
+      const columnT = region.visibleColumns === 1
+        ? 0
+        : visibleColumn / (region.visibleColumns - 1);
+      const center = lerpPoint(leftEdge, rightEdge, columnT);
+      const nominalRow = region.rowOffset + visibleRow;
+      const nominalColumn = region.columnOffset + visibleColumn;
 
       wells.push({
-        wellId: `${ROW_LABELS[row]}${col + 1}`,
-        row,
-        col,
+        wellId: `${rowLabelFromIndex(nominalRow)}${nominalColumn + 1}`,
+        row: visibleRow,
+        col: visibleColumn,
         x: center.x,
         y: center.y,
       });
@@ -241,6 +257,18 @@ export function generate96WellGrid(geometry: PlateGeometry): WellCenter[] {
   }
 
   return wells;
+}
+
+/** Legacy-compatible full 96-well wrapper. */
+export function generate96WellGrid(geometry: PlateGeometry): WellCenter[] {
+  return generatePlateGrid(geometry, {
+    plateRows: ROW_COUNT,
+    plateColumns: COL_COUNT,
+    visibleRows: ROW_COUNT,
+    visibleColumns: COL_COUNT,
+    rowOffset: 0,
+    columnOffset: 0,
+  });
 }
 
 export interface GeometryAlignmentDiagnostics {

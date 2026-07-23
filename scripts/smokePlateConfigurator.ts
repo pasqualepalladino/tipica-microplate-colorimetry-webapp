@@ -14,7 +14,7 @@ import {
   wellConfigsToPlateEditorState,
 } from '../src/core/plateConfigurator.js';
 import { reconcileLoadedGeometryFloor } from '../src/core/geometryReconciliation.js';
-import { hasFloorGeometry } from '../src/core/plate.js';
+import { generate96WellGrid, generatePlateGrid, hasFloorGeometry } from '../src/core/plate.js';
 import type { PlateGeometry } from '../src/types/geometry.js';
 import type { WellConfig } from '../src/types/plateMap.js';
 
@@ -128,6 +128,91 @@ function testPlateRegionDefinition(): void {
   );
 }
 
+function testGeneratePlateGrid(): void {
+  const geometry: PlateGeometry = {
+    corner_a1: { x: 10, y: 20 },
+    corner_a12: { x: 110, y: 30 },
+    corner_h12: { x: 120, y: 90 },
+    corner_h1: { x: 20, y: 80 },
+  };
+
+  const legacyRegion = createFullPlateRegion(8, 12);
+  const genericLegacy = generatePlateGrid(geometry, legacyRegion);
+  const wrappedLegacy = generate96WellGrid(geometry);
+  assertEqual(genericLegacy.length, 96, 'generic legacy grid well count');
+  assertEqual(wrappedLegacy.length, genericLegacy.length, 'legacy wrapper well count');
+
+  for (let index = 0; index < genericLegacy.length; index += 1) {
+    const genericWell = genericLegacy[index];
+    const wrappedWell = wrappedLegacy[index];
+    assertEqual(wrappedWell.wellId, genericWell.wellId, `legacy wrapper wellId ${index}`);
+    assertEqual(wrappedWell.row, genericWell.row, `legacy wrapper row ${index}`);
+    assertEqual(wrappedWell.col, genericWell.col, `legacy wrapper col ${index}`);
+    assertEqual(wrappedWell.x, genericWell.x, `legacy wrapper x ${index}`);
+    assertEqual(wrappedWell.y, genericWell.y, `legacy wrapper y ${index}`);
+  }
+
+  assertEqual(genericLegacy[0].wellId, 'A1', 'legacy first nominal well');
+  assertEqual(genericLegacy[95].wellId, 'H12', 'legacy last nominal well');
+  assertEqual(genericLegacy[0].x, geometry.corner_a1.x, 'legacy A1 x');
+  assertEqual(genericLegacy[0].y, geometry.corner_a1.y, 'legacy A1 y');
+  assertEqual(genericLegacy[11].x, geometry.corner_a12.x, 'legacy A12 x');
+  assertEqual(genericLegacy[11].y, geometry.corner_a12.y, 'legacy A12 y');
+  assertEqual(genericLegacy[95].x, geometry.corner_h12.x, 'legacy H12 x');
+  assertEqual(genericLegacy[95].y, geometry.corner_h12.y, 'legacy H12 y');
+  assertEqual(genericLegacy[84].x, geometry.corner_h1.x, 'legacy H1 x');
+  assertEqual(genericLegacy[84].y, geometry.corner_h1.y, 'legacy H1 y');
+
+  const croppedRegion = normalizePlateRegion({
+    plateRows: 16,
+    plateColumns: 24,
+    visibleRows: 6,
+    visibleColumns: 8,
+    rowOffset: 2,
+    columnOffset: 3,
+  });
+  const cropped = generatePlateGrid(geometry, croppedRegion);
+  assertEqual(cropped.length, 48, 'cropped grid well count');
+  assertEqual(cropped[0].wellId, 'C4', 'cropped first nominal well');
+  assertEqual(cropped[0].row, 0, 'cropped first local row');
+  assertEqual(cropped[0].col, 0, 'cropped first local column');
+  assertEqual(cropped[7].wellId, 'C11', 'cropped first-row last nominal well');
+  assertEqual(cropped[8].wellId, 'D4', 'cropped row-major order');
+  assertEqual(cropped[47].wellId, 'H11', 'cropped last nominal well');
+  assertEqual(cropped[47].row, 5, 'cropped last local row');
+  assertEqual(cropped[47].col, 7, 'cropped last local column');
+  assertEqual(cropped[0].x, geometry.corner_a1.x, 'cropped upper-left x');
+  assertEqual(cropped[7].x, geometry.corner_a12.x, 'cropped upper-right x');
+  assertEqual(cropped[47].x, geometry.corner_h12.x, 'cropped lower-right x');
+  assertEqual(cropped[40].x, geometry.corner_h1.x, 'cropped lower-left x');
+
+  const beyondZ = generatePlateGrid(geometry, normalizePlateRegion({
+    plateRows: 32,
+    plateColumns: 48,
+    visibleRows: 2,
+    visibleColumns: 2,
+    rowOffset: 26,
+    columnOffset: 0,
+  }));
+  assertEqual(beyondZ[0].wellId, 'AA1', 'row labels beyond Z');
+  assertEqual(beyondZ[3].wellId, 'AB2', 'row labels beyond Z lower-right');
+
+  const full384 = generatePlateGrid(geometry, createFullPlateRegion(16, 24));
+  assertEqual(full384.length, 384, 'full 384-well grid count');
+  assertEqual(full384[383].wellId, 'P24', 'full 384-well last ID');
+
+  assertThrows(
+    () => generatePlateGrid(geometry, {
+      plateRows: 8,
+      plateColumns: 12,
+      visibleRows: 7,
+      visibleColumns: 12,
+      rowOffset: 2,
+      columnOffset: 0,
+    }),
+    'generatePlateGrid should reject a region outside nominal rows',
+  );
+}
 function testParseCellEntry(): void {
   const rowIdDefault = 'A';
 
@@ -368,6 +453,7 @@ function run(): void {
   testRowIndexFromLabel();
   testWellId();
   testPlateRegionDefinition();
+  testGeneratePlateGrid();
   testParseCellEntry();
   testCollectPlateStateFallbacks();
   testBuildPlateMapTemplateCsv();
