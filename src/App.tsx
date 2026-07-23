@@ -26,13 +26,16 @@ import { computePAbs, linearizeRgb } from './core/pabs';
 import {
   flatBottomPlateGeometryEntries,
   getFlatBottomPlateGeometry,
+  getPixelsPerMm,
+  type FlatBottomPlateGeometryPreset,
 } from './core/physicalPlateGeometry';
 import {
   buildVisiblePlateCornerReferences,
   computeGeometryAlignmentDiagnostics,
   estimateLocalPitch,
+  estimateNominalFloorRadius,
+  estimateNominalMouthRadius,
   estimateRoiRadius,
-  estimateStandardMouthRadius,
   generatePlateGrid,
   getCanvasCoordinateSize,
   getImageAnalysisSize,
@@ -425,20 +428,98 @@ function manualMouthRadiusToRadiusFactor(
   return Math.max(0.05, Math.min(0.75, radiusPx / pitch));
 }
 
-function estimateInitialManualMouthRadius(wells: WellCenter[], radiusFactor: number): number {
+function estimateFootprintInitialMouthRadius(
+  coordinateSize: { width: number; height: number },
+  preset: FlatBottomPlateGeometryPreset,
+): number {
+  const imageWidthPx = coordinateSize.width;
+  const imageHeightPx = coordinateSize.height;
+
+  if (imageWidthPx <= 0 || imageHeightPx <= 0) {
+    return DEFAULT_MANUAL_MOUTH_RADIUS_PX;
+  }
+
+  // The picking overlay uses the analysis bitmap coordinate system, whose
+  // longest side is capped at 2000 px but remains smaller for smaller source
+  // images. Assume initially that the complete nominal plate footprint fills
+  // that bitmap. Evaluate both landscape and portrait orientation and retain
+  // the best fit that does not exceed either image dimension.
+  const landscapePxPerMm = Math.min(
+    imageWidthPx / preset.footprintLengthMm,
+    imageHeightPx / preset.footprintWidthMm,
+  );
+  const portraitPxPerMm = Math.min(
+    imageWidthPx / preset.footprintWidthMm,
+    imageHeightPx / preset.footprintLengthMm,
+  );
+  const pixelsPerMm = Math.max(landscapePxPerMm, portraitPxPerMm);
+
+  if (!Number.isFinite(pixelsPerMm) || pixelsPerMm <= 0) {
+    return DEFAULT_MANUAL_MOUTH_RADIUS_PX;
+  }
+
+  return clampManualMouthRadiusPx(
+    0.5 * preset.mouthDiameterMm * pixelsPerMm,
+  );
+}
+
+function estimateMouthRadiusFromFirstReferencePair(
+  points: Point[],
+  references: ReadonlyArray<{ row: number; col: number }>,
+  preset: FlatBottomPlateGeometryPreset,
+): number | null {
+  if (points.length < 2 || references.length < 2) {
+    return null;
+  }
+
+  const rowSteps = references[1].row - references[0].row;
+  const columnSteps = references[1].col - references[0].col;
+  const gridSteps = Math.hypot(rowSteps, columnSteps);
+
+  if (gridSteps <= 0) {
+    return null;
+  }
+
+  const pointDistancePx = Math.hypot(
+    points[1].x - points[0].x,
+    points[1].y - points[0].y,
+  );
+  const localPitchPx = pointDistancePx / gridSteps;
+  const meanPitchMm = 0.5 * (preset.pitchXmm + preset.pitchYmm);
+
+  if (!Number.isFinite(localPitchPx) || localPitchPx <= 0 || meanPitchMm <= 0) {
+    return null;
+  }
+
+  return clampManualMouthRadiusPx(
+    localPitchPx * preset.mouthDiameterMm / (2 * meanPitchMm),
+  );
+}
+
+function estimateInitialManualMouthRadius(
+  wells: WellCenter[],
+  radiusFactor: number,
+  preset: FlatBottomPlateGeometryPreset | null,
+): number {
   const a1 = wells.find((well) => well.row === 0 && well.col === 0);
 
   if (!a1) {
     return DEFAULT_MANUAL_MOUTH_RADIUS_PX;
   }
 
-  return clampManualMouthRadiusPx(estimateRoiRadius(wells, a1.row, a1.col, radiusFactor));
+  return clampManualMouthRadiusPx(
+    preset
+      ? estimateNominalMouthRadius(wells, a1.row, a1.col, preset)
+      : estimateRoiRadius(wells, a1.row, a1.col, radiusFactor),
+  );
 }
 
-function getReferenceMouthCircle(
+function getReferenceNominalCircle(
   wells: WellCenter[],
   references: ReadonlyArray<{ row: number; col: number }>,
   referenceIndex: number,
+  preset: FlatBottomPlateGeometryPreset | null,
+  dimension: 'mouth' | 'floor',
 ): FloorCircle | null {
   const reference = references[referenceIndex];
 
@@ -452,11 +533,14 @@ function getReferenceMouthCircle(
     return null;
   }
 
-  return {
-    x: well.x,
-    y: well.y,
-    r: estimateStandardMouthRadius(wells, well.row, well.col),
-  };
+  const fallbackRadius = estimateRoiRadius(wells, well.row, well.col, DEFAULT_RADIUS_FACTOR);
+  const radius = preset
+    ? (dimension === 'floor'
+      ? estimateNominalFloorRadius(wells, well.row, well.col, preset)
+      : estimateNominalMouthRadius(wells, well.row, well.col, preset))
+    : fallbackRadius;
+
+  return { x: well.x, y: well.y, r: radius };
 }
 
 function geometryJsonPayload(geometry: PlateGeometry) {
@@ -5072,6 +5156,7 @@ function buildDiagnosticsGeometryQcRows(options: PythonDiagnosticsWorkbookOption
 function buildDiagnosticsWellBottomRows(options: PythonDiagnosticsWorkbookOptions): XlsxRow[] {
   const wellsById = new Map(options.wells.map((well) => [well.wellId, well]));
   const override = options.sharedGeometryOverride;
+  const nominalPreset = getFlatBottomPlateGeometry(options.nominalPlateRows, options.nominalPlateColumns);
 
   return options.measurements.map((measurement) => {
     const context = diagnosticWellContext(measurement.wellId, wellsById);
@@ -5079,11 +5164,11 @@ function buildDiagnosticsWellBottomRows(options: PythonDiagnosticsWorkbookOption
     const floor = Number.isFinite(context.row) && Number.isFinite(context.col) && options.floorCircles?.length === options.wells.length
       ? options.floorCircles[context.row * 12 + context.col]
       : null;
-    const localPitch = Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
+    const localPitch = Number.isFinite(context.row) && Number.isFinite(context.col)
       ? overrideRecord?.localPitchPx ?? estimateLocalPitch(options.wells, context.row, context.col)
       : Number.NaN;
-    const fallbackMouthRadius = Number.isFinite(context.row) && Number.isFinite(context.col) && options.wells.length === 96
-      ? estimateRoiRadius(options.wells, context.row, context.col, options.radiusFactor)
+    const fallbackMouthRadius = nominalPreset && Number.isFinite(context.row) && Number.isFinite(context.col)
+      ? estimateNominalMouthRadius(options.wells, context.row, context.col, nominalPreset)
       : measurement.mouthRadiusUsed;
     const fallbackFloorRadius = floor && Number.isFinite(floor.r) ? floor.r : measurement.floorRadiusUsed;
     const mouthRadius = measurement.mouthRadiusUsed ?? overrideRecord?.mouthRadius ?? fallbackMouthRadius;
@@ -5097,7 +5182,7 @@ function buildDiagnosticsWellBottomRows(options: PythonDiagnosticsWorkbookOption
       cx: finiteOrBlank(context.center?.x),
       cy: finiteOrBlank(context.center?.y),
       local_pitch_px: finiteOrBlank(localPitch),
-      px_per_mm: Number.isFinite(localPitch) ? localPitch / 9 : '',
+      px_per_mm: nominalPreset && Number.isFinite(localPitch) ? getPixelsPerMm(localPitch, nominalPreset) : '',
       cyl_r_bg: measurement.wellExclusionRadiusApprox ?? '',
       mouth_r_geom: finiteOrBlank(overrideRecord?.mouthRadiusGeom ?? mouthRadius),
       floor_r_geom: finiteOrBlank(overrideRecord?.floorRadiusGeom ?? floorRadius),
@@ -5694,8 +5779,8 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "expected_label_*/expected_id_*/expected_value_*/expected_sd_*", Meaning: "External reference metadata", Formula: "user/configurator input", Unit: `text or ${unitLabel}`, 'Where used': "METHOD_COMPARISON PNG file(s), 10_METHOD_COMPARISON", Notes: "External reference values are checks only and are not part of Score." },
     { Term: "Family", Meaning: "Method family", Formula: "RGB, CIELAB, DeltaCIELAB or other", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "Used to separate method families." },
     { Term: "FitType", Meaning: "Type of fit row", Formula: "Calibration, StdAdd, UnknownFromCal, UnknownOnly", Unit: "text", 'Where used': "11_CIELAB_FITTING", Notes: "Same convention as main fitting output." },
-    { Term: "floor_source/local_pitch_px/px_per_mm/cyl_r_bg", Meaning: "Geometry-source and local scale descriptors", Formula: "reported source, local pitch, pixel/mm scale and well-exclusion/background radius approximation", Unit: "mixed", 'Where used': "05_GEOMETRY_QC, 06_WELL_BOTTOM", Notes: "In mouth-floor-intersection ROI, local_pitch_px is also used to derive the standardized quantitative mouth radius from 96-well physical geometry." },
-    { Term: "floor_to_mouth_r_ratio", Meaning: "Relative floor radius", Formula: "floor_r / mouth_r", Unit: "dimensionless", 'Where used': "05_GEOMETRY_QC", Notes: "For mouth-floor-intersection ROI, mouth_r is the standardized quantitative mouth radius derived from local pitch and 96-well physical geometry." },
+    { Term: "floor_source/local_pitch_px/px_per_mm/cyl_r_bg", Meaning: "Geometry-source and local scale descriptors", Formula: "reported source, local pitch, pixel/mm scale and well-exclusion/background radius approximation", Unit: "mixed", 'Where used': "05_GEOMETRY_QC, 06_WELL_BOTTOM", Notes: "In mouth-floor-intersection ROI, local_pitch_px is also used to derive the nominal quantitative mouth radius from the selected vendor-specific plate preset." },
+    { Term: "floor_to_mouth_r_ratio", Meaning: "Relative floor radius", Formula: "floor_r / mouth_r", Unit: "dimensionless", 'Where used': "05_GEOMETRY_QC", Notes: "For mouth-floor-intersection ROI, mouth_r is the nominal quantitative mouth radius derived from local pitch and the selected vendor-specific plate preset." },
     { Term: "Geometry and epsilon/path-length quantification", Meaning: "Assumption used when epsilon-based unknown quantification is enabled", Formula: "l_cm = (volume_uL / well_bottom_area_mm2) / 10; C_M = PAbs / (epsilon x l_cm)", Unit: "cm and M", 'Where used': "RESULTS_CAPTION.txt, RAW_DATA_DETAILS_CAPTION.txt, REPORT", Notes: "Assumes ANSI/SLAS-compatible flat-bottom microplate geometry; non-flat or non-certified geometries require separate validation." },
     { Term: "Gray_*", Meaning: "Robust statistics of grayscale intensity", Formula: "computed over retained ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Diagnostic descriptor used for optical QC." },
     { Term: "highlight_fraction_roi/highlight_fraction_core", Meaning: "Fraction of very bright pixels in ROI/core", Formula: "fraction of pixels with grayscale above the highlight threshold", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Optical QC descriptor for highlights/specular artifacts." },
@@ -5704,7 +5789,7 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "IRLS", Meaning: "Iteratively reweighted least-squares robust linear regression with residual-based weights", Formula: "minimize sum_i w_i (y_i - (m x_i + q))^2; w_i is updated iteratively from residual magnitude", Unit: "dimensionless", 'Where used': "METHOD_COMPARISON PNG file(s), FIGURE_CIELAB_DELTAE.png, 10_METHOD_COMPARISON, 11_CIELAB_FITTING", Notes: "Reference: Huber, P. J. (1964), Robust Estimation of a Location Parameter. Implementation: custom TypeScript IRLS using repeated weighted least-squares solves, median-centered residual weights and covariance propagation." },
     { Term: "key/value", Meaning: "Plate-geometry metadata key and value", Formula: "embedded plate-geometry database entry", Unit: "mixed", 'Where used': "07_PLATE_GEOMETRY", Notes: "Geometry is assumed to be ANSI/SLAS-compatible flat-bottom geometry unless stated otherwise." },
     { Term: "L_*/a_*/b_*", Meaning: "Robust statistics of CIELAB coordinates", Formula: "computed from the TypeScript sRGB/D65 CIELAB conversion over retained ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS", Notes: "CIELAB values are diagnostic descriptors derived from RGB image data." },
-    { Term: "local_pitch_px / px_per_mm / cyl_r_bg", Meaning: "Local geometry scale descriptors", Formula: "local plate pitch, pixel-to-mm conversion and well-exclusion/background radius approximation", Unit: "pixels or pixels/mm", 'Where used': "06_WELL_BOTTOM", Notes: "In mouth-floor-intersection ROI, local_pitch_px is also used to derive the standardized quantitative mouth radius from 96-well physical geometry." },
+    { Term: "local_pitch_px / px_per_mm / cyl_r_bg", Meaning: "Local geometry scale descriptors", Formula: "local plate pitch, pixel-to-mm conversion and well-exclusion/background radius approximation", Unit: "pixels or pixels/mm", 'Where used': "06_WELL_BOTTOM", Notes: "In mouth-floor-intersection ROI, local_pitch_px is also used to derive the nominal quantitative mouth radius from the selected vendor-specific plate preset." },
     { Term: "LOD/LOQ", Meaning: "Detection and quantification limits", Formula: "LOD = 3 sigma_cal / |m|; LOQ = 10 sigma_cal / |m|", Unit: unitLabel, 'Where used': "11_CIELAB_FITTING, 10_METHOD_COMPARISON", Notes: "Diagnostic for CIELAB/DeltaE fits." },
     { Term: "m/q/R2/RMSE", Meaning: "Linear-fit parameters and fit quality", Formula: "y = m x + q; R2 coefficient of determination; RMSE root-mean-square error", Unit: "descriptor units", 'Where used': "11_CIELAB_FITTING", Notes: "Diagnostic CIELAB/DeltaE fitting only." },
     { Term: "m_cal/m_std_mean", Meaning: "Calibration slope and mean standard-addition slope", Formula: "slope from linear fit y = m x + q", Unit: `signal/${unitLabel}`, 'Where used': "10_METHOD_COMPARISON, 11_CIELAB_FITTING", Notes: "Used to compute slope agreement." },
@@ -5714,7 +5799,7 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "MeanW_Red/MeanW_Green/MeanW_Blue", Meaning: "Linearized median well intensity for each RGB channel", Formula: "median ROI channel intensity after gamma linearization", Unit: "dimensionless", 'Where used': "08_EMPTY_WELLS", Notes: "" },
     { Term: "Method", Meaning: "Compared analytical descriptor", Formula: "PAbs_*, L/a/b, Delta* or DeltaE*", Unit: "text", 'Where used': "10_METHOD_COMPARISON", Notes: "PAbs_* are RGB; CIELAB and DeltaCIELAB are derived diagnostics." },
     { Term: "Method/Family/ComparableGroup/CommonFactorsN/RankMode", Meaning: "Method-comparison identifiers and comparable-score grouping", Formula: "text labels and number of factors defining score comparability", Unit: "mixed", 'Where used': "10_METHOD_COMPARISON, METHOD_COMPARISON PNG file(s)", Notes: "Scores are directly comparable only within the same ComparableGroup." },
-    { Term: "mouth_* / floor_*", Meaning: "Mouth/floor circle center, radius and image-gradient score descriptors", Formula: "mouth-floor-intersection ROI uses the mouth center with a standardized quantitative mouth radius derived from local pitch and 96-well physical geometry; projected floor radii are clipped against that standardized mouth radius. mouth_score is a browser-side locally refined mean ring-gradient score on a blurred Purple image without moving the exported ROI geometry; floor_score is reserved for future browser-side auto-refined floor scoring and remains blank for projected/manual floor geometry", Unit: "pixels or score", 'Where used': "06_WELL_BOTTOM", Notes: "Used for ROI and geometry QC. The free manual mouth radius supports picking/overlay/projection, while the quantitative intersection ROI is standardized to reduce run-to-run sensitivity. Blank floor_score cells indicate that no TypeScript auto-refined floor ring-score was computed." },
+    { Term: "mouth_* / floor_*", Meaning: "Mouth/floor circle center, radius and image-gradient score descriptors", Formula: "mouth-floor-intersection ROI uses the mouth center with a nominal quantitative mouth radius derived from local pitch and the selected vendor-specific plate preset; projected floor radii are clipped against that standardized mouth radius. mouth_score is a browser-side locally refined mean ring-gradient score on a blurred Purple image without moving the exported ROI geometry; floor_score is reserved for future browser-side auto-refined floor scoring and remains blank for projected/manual floor geometry", Unit: "pixels or score", 'Where used': "06_WELL_BOTTOM", Notes: "Used for ROI and geometry QC. The free manual mouth radius supports picking/overlay/projection, while the quantitative intersection ROI is standardized to reduce run-to-run sensitivity. Blank floor_score cells indicate that no TypeScript auto-refined floor ring-score was computed." },
     { Term: "n/intercept/slope_col/slope_row/R2/corr_col/corr_row", Meaning: "Spatial-trend fit descriptors", Formula: "linear trend of the diagnostic signal versus row/column position", Unit: "mixed", 'Where used': "09_SPATIAL_DIAGNOSTICS", Notes: "Diagnostic only; does not alter quantitative results." },
     { Term: "n_roi/n_core/n_used", Meaning: "Pixel counts used during well ROI filtering", Formula: "ROI pixels, core pixels and retained pixels", Unit: "pixels", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Used to audit well-level pixel filtering." },
     { Term: "PAbs_*", Meaning: "RGB pseudo-absorbance", Formula: "log10(MeanBG_*/MeanW_*)", Unit: "dimensionless", 'Where used': "REPORT, 10_METHOD_COMPARISON", Notes: "Primary RGB analytical descriptor." },
@@ -10485,6 +10570,7 @@ function App() {
   const [manualPickingActive, setManualPickingActive] = useState(false);
   const [manualPoints, setManualPoints] = useState<Point[]>([]);
   const [manualMouthRadiusPx, setManualMouthRadiusPx] = useState(DEFAULT_MANUAL_MOUTH_RADIUS_PX);
+  const [manualMouthRadiusAdjusted, setManualMouthRadiusAdjusted] = useState(false);
   const [manualMouthPreviewPoint, setManualMouthPreviewPoint] = useState<Point | null>(null);
   const [compactTouchConfirmEnabled, setCompactTouchConfirmEnabled] = useState(false);
   const [floorCirclePickingActive, setFloorCirclePickingActive] = useState(false);
@@ -10542,6 +10628,10 @@ function App() {
     && activePlateRegion.visibleColumns === 12
     && activePlateRegion.rowOffset === 0
     && activePlateRegion.columnOffset === 0;
+  const nominalPlatePreset = useMemo(
+    () => getFlatBottomPlateGeometry(activePlateRegion.plateRows, activePlateRegion.plateColumns),
+    [activePlateRegion.plateColumns, activePlateRegion.plateRows],
+  );
   const wells = useMemo(
     () => (geometry ? generatePlateGrid(geometry, activePlateRegion) : []),
     [activePlateRegion, geometry],
@@ -10569,8 +10659,8 @@ function App() {
     [geometry],
   );
   const floorCircles = useMemo(
-    () => (geometry ? generatePlateFloorCircles(geometry, activePlateRegion, wells, radiusFactor) : null),
-    [activePlateRegion, geometry, radiusFactor, wells],
+    () => (geometry ? generatePlateFloorCircles(geometry, activePlateRegion, wells, nominalPlatePreset, radiusFactor) : null),
+    [activePlateRegion, geometry, nominalPlatePreset, radiusFactor, wells],
   );
   const effectiveWells = useMemo(() => {
     if (!sharedGeometryOverride) {
@@ -10594,10 +10684,12 @@ function App() {
       return {
         x: overrideRecord?.floorCx ?? well.x,
         y: overrideRecord?.floorCy ?? well.y,
-        r: overrideRecord?.floorRadius ?? Math.max(1, estimateRoiRadius(wells, well.row, well.col, radiusFactor)),
+        r: overrideRecord?.floorRadius ?? (nominalPlatePreset
+          ? estimateNominalFloorRadius(wells, well.row, well.col, nominalPlatePreset)
+          : Math.max(1, estimateRoiRadius(wells, well.row, well.col, radiusFactor))),
       };
     });
-  }, [floorCircles, radiusFactor, sharedGeometryOverride, wells]);
+  }, [floorCircles, nominalPlatePreset, radiusFactor, sharedGeometryOverride, wells]);
   const effectiveFloorGeometryAvailable = Boolean(
     sharedGeometryOverride
       ? effectiveFloorCircles && effectiveFloorCircles.length === wells.length && geometryReady
@@ -10622,8 +10714,12 @@ function App() {
     [geometry],
   );
   const currentReferenceMouthCircle = useMemo(
-    () => getReferenceMouthCircle(wells, visibleCornerReferences, manualFloorCircles.length),
-    [manualFloorCircles.length, visibleCornerReferences, wells],
+    () => getReferenceNominalCircle(wells, visibleCornerReferences, manualFloorCircles.length, nominalPlatePreset, 'mouth'),
+    [manualFloorCircles.length, nominalPlatePreset, visibleCornerReferences, wells],
+  );
+  const currentReferenceFloorCircle = useMemo(
+    () => getReferenceNominalCircle(wells, visibleCornerReferences, manualFloorCircles.length, nominalPlatePreset, 'floor'),
+    [manualFloorCircles.length, nominalPlatePreset, visibleCornerReferences, wells],
   );
   const manualFloorCirclePreview = useMemo<FloorCircle | null>(() => {
     if (!floorCirclePickingActive || !currentReferenceMouthCircle) {
@@ -10631,13 +10727,16 @@ function App() {
     }
 
     const center = manualFloorCirclePreviewCenter ?? currentReferenceMouthCircle;
+    const nominalFloorRadius = currentReferenceFloorCircle?.r ?? Math.max(2, currentReferenceMouthCircle.r * 0.85);
+    const maximumFloorRadius = Math.max(2, currentReferenceMouthCircle.r * 0.99);
 
     return {
       x: center.x,
       y: center.y,
-      r: Math.max(2, currentReferenceMouthCircle.r + manualFloorCircleRadiusDelta),
+      r: Math.min(maximumFloorRadius, Math.max(2, nominalFloorRadius + manualFloorCircleRadiusDelta)),
     };
   }, [
+    currentReferenceFloorCircle,
     currentReferenceMouthCircle,
     floorCirclePickingActive,
     manualFloorCirclePreviewCenter,
@@ -11054,6 +11153,44 @@ function App() {
     clearFits();
   }, [clearFits]);
 
+  const handlePlateEditorSnapshotChange = useCallback((nextSnapshot: PlateEditorSnapshot) => {
+    const previousRegion = normalizeSnapshotPlateRegion(
+      plateEditorSnapshot?.nrow ?? 8,
+      plateEditorSnapshot?.ncol ?? 12,
+      plateEditorSnapshot?.plateRegion,
+    );
+    const nextRegion = normalizeSnapshotPlateRegion(
+      nextSnapshot.nrow,
+      nextSnapshot.ncol,
+      nextSnapshot.plateRegion,
+    );
+    const nominalFormatChanged = previousRegion.plateRows !== nextRegion.plateRows
+      || previousRegion.plateColumns !== nextRegion.plateColumns;
+
+    setPlateEditorSnapshot(nextSnapshot);
+
+    if (!nominalFormatChanged) {
+      return;
+    }
+
+    setManualPickingActive(false);
+    setManualPoints([]);
+    setManualMouthPreviewPoint(null);
+    setFloorCirclePickingActive(false);
+    setManualFloorCircles([]);
+    setManualFloorCirclePreviewCenter(null);
+    setManualFloorCircleRadiusDelta(0);
+    setGeometry(null);
+    setGeometryName(null);
+    setGeometrySource('none');
+    setFloorGeometrySource('none');
+    setFloorGeometryNotice('Plate format changed; mouth and floor geometry were cleared. Pick geometry again using the selected nominal preset.');
+    clearSharedGeometryOverrideState('Shared geometry override cleared because the nominal plate format changed.');
+    clearMeasurementsAndFits();
+    setStatusMessage('Plate format changed; mouth and floor geometry were cleared.');
+    setError(null);
+  }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, plateEditorSnapshot]);
+
   const handleClearPlateMap = useCallback(() => {
     setPlateMap(createEmptyPlateMap());
     setPlateMapUnit('mM');
@@ -11073,7 +11210,12 @@ function App() {
       setFloorGeometryNotice(null);
     }
 
-    setManualMouthRadiusPx(estimateInitialManualMouthRadius(wells, radiusFactor));
+    setManualMouthRadiusPx(
+      nominalPlatePreset
+        ? estimateFootprintInitialMouthRadius(getImageAnalysisSize(image), nominalPlatePreset)
+        : estimateInitialManualMouthRadius(wells, radiusFactor, nominalPlatePreset),
+    );
+    setManualMouthRadiusAdjusted(false);
     setManualPickingActive(true);
     setManualPoints([]);
     setFloorCirclePickingActive(false);
@@ -11087,7 +11229,7 @@ function App() {
     clearSharedGeometryOverrideState('Shared geometry override cleared because mouth/corner geometry changed.');
     clearMeasurementsAndFits();
     setError(null);
-  }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, floorGeometryAvailable, image, radiusFactor, wells]);
+  }, [clearMeasurementsAndFits, clearSharedGeometryOverrideState, floorGeometryAvailable, image, nominalPlatePreset, radiusFactor, wells]);
 
   const handleManualPointPick = useCallback((point: Point) => {
     if (!manualPickingActive || manualPoints.length >= requiredReferenceCount) {
@@ -11095,6 +11237,29 @@ function App() {
     }
 
     const nextPoints = [...manualPoints, point];
+    let resolvedMouthRadiusForThisPick = manualMouthRadiusPx;
+
+    if (nextPoints.length === 2 && nominalPlatePreset) {
+      const pitchBasedRadius = estimateMouthRadiusFromFirstReferencePair(
+        nextPoints,
+        visibleCornerReferences,
+        nominalPlatePreset,
+      );
+
+      if (pitchBasedRadius) {
+        const footprintRadius = image
+          ? estimateFootprintInitialMouthRadius(getImageAnalysisSize(image), nominalPlatePreset)
+          : manualMouthRadiusPx;
+        const manualScale = manualMouthRadiusAdjusted && footprintRadius > 0
+          ? manualMouthRadiusPx / footprintRadius
+          : 1;
+        resolvedMouthRadiusForThisPick = clampManualMouthRadiusPx(
+          pitchBasedRadius * manualScale,
+        );
+        setManualMouthRadiusPx(resolvedMouthRadiusForThisPick);
+      }
+    }
+
     setManualPoints(nextPoints);
     clearMeasurementsAndFits();
 
@@ -11106,15 +11271,16 @@ function App() {
       );
 
       if (nextGeometry) {
+        const resolvedMouthRadius = resolvedMouthRadiusForThisPick;
         const nextRadiusFactor = manualMouthRadiusToRadiusFactor(
           nextPoints,
-          manualMouthRadiusPx,
+          resolvedMouthRadius,
           activePlateRegion.visibleRows,
           activePlateRegion.visibleColumns,
         );
         const geometryWithManualMouthRadius: PlateGeometry = {
           ...nextGeometry,
-          mouth_radius_px: manualMouthRadiusPx,
+          mouth_radius_px: resolvedMouthRadius,
           ...(nextRadiusFactor ? { roi_radius_factor: nextRadiusFactor } : {}),
         };
 
@@ -11122,22 +11288,24 @@ function App() {
           setRadiusFactor(nextRadiusFactor);
         }
 
+        setManualMouthRadiusPx(resolvedMouthRadius);
         setGeometry(geometryWithManualMouthRadius);
         setGeometryName(`Manual ${requiredReferenceCount}-reference geometry`);
         setGeometrySource('manual');
         setManualPickingActive(false);
-        setStatusMessage(`Manual geometry complete; mouth radius ${manualMouthRadiusPx.toFixed(1)} px`);
+        setStatusMessage(`Manual geometry complete; mouth radius ${resolvedMouthRadius.toFixed(1)} px`);
       }
     }
 
     setError(null);
-  }, [activePlateRegion.visibleColumns, activePlateRegion.visibleRows, clearMeasurementsAndFits, manualMouthRadiusPx, manualPickingActive, manualPoints, requiredReferenceCount]);
+  }, [activePlateRegion, clearMeasurementsAndFits, image, manualMouthRadiusAdjusted, manualMouthRadiusPx, manualPickingActive, manualPoints, nominalPlatePreset, requiredReferenceCount, visibleCornerReferences]);
 
   const handleManualMouthRadiusAdjust = useCallback((delta: number) => {
     if (!manualPickingActive) {
       return;
     }
 
+    setManualMouthRadiusAdjusted(true);
     setManualMouthRadiusPx((currentRadius) => clampManualMouthRadiusPx(currentRadius + delta));
   }, [manualPickingActive]);
 
@@ -11238,21 +11406,23 @@ function App() {
       return;
     }
 
-    const baseRadius = currentReferenceMouthCircle?.r ?? 8;
+    const baseRadius = currentReferenceFloorCircle?.r ?? Math.max(2, (currentReferenceMouthCircle?.r ?? 8) * 0.85);
+    const maximumRadius = Math.max(2, (currentReferenceMouthCircle?.r ?? baseRadius / 0.85) * 0.99);
 
     setManualFloorCircleRadiusDelta((currentDelta) => {
-      const nextDelta = Math.max(-200, Math.min(200, currentDelta + delta));
-      return Math.max(2 - baseRadius, nextDelta);
+      const requestedRadius = Math.max(2, Math.min(maximumRadius, baseRadius + currentDelta + delta));
+      return requestedRadius - baseRadius;
     });
-  }, [currentReferenceMouthCircle, floorCirclePickingActive]);
+  }, [currentReferenceFloorCircle, currentReferenceMouthCircle, floorCirclePickingActive]);
 
   const handleFloorCirclePointPick = useCallback((point: Point) => {
     if (!floorCirclePickingActive || !geometry) {
       return;
     }
 
-    const baseRadius = currentReferenceMouthCircle?.r ?? 8;
-    const radius = Math.max(2, baseRadius + manualFloorCircleRadiusDelta);
+    const mouthRadius = currentReferenceMouthCircle?.r ?? 8;
+    const baseRadius = currentReferenceFloorCircle?.r ?? Math.max(2, mouthRadius * 0.85);
+    const radius = Math.min(Math.max(2, mouthRadius * 0.99), Math.max(2, baseRadius + manualFloorCircleRadiusDelta));
     const nextCircles = [
       ...manualFloorCircles,
       {
@@ -11294,6 +11464,7 @@ function App() {
   }, [
     clearMeasurementsAndFits,
     clearSharedGeometryOverrideState,
+    currentReferenceFloorCircle,
     currentReferenceMouthCircle,
     floorCirclePickingActive,
     geometry,
@@ -11558,10 +11729,13 @@ function App() {
 
           if (selectedRoiMode === 'mouth-floor-intersection' && extractionFloorGeometryAvailable && extractionFloorCircles && extractionFloorCircles.length === extractionWells.length) {
             const projectedFloorCircle = extractionFloorCircles[well.row * 12 + well.col];
-            const standardMouthRadius = estimateStandardMouthRadius(extractionWells, well.row, well.col);
+            if (!nominalPlatePreset) {
+              throw new Error('No nominal flat-bottom physical preset is registered for the selected plate format.');
+            }
+            const nominalMouthRadius = estimateNominalMouthRadius(extractionWells, well.row, well.col, nominalPlatePreset);
             const floorRadiusRaw = overrideRecord ? Math.max(1, overrideRecord.floorRadius) : Math.max(1, projectedFloorCircle.r);
-            const floorRadius = Math.min(Math.max(floorRadiusRaw, 0.50 * standardMouthRadius), 1.05 * standardMouthRadius);
-            const mouthRadius = standardMouthRadius;
+            const floorRadius = Math.min(Math.max(floorRadiusRaw, 0.50 * nominalMouthRadius), 0.99 * nominalMouthRadius);
+            const mouthRadius = nominalMouthRadius;
             floorRadiusUsed = floorRadius;
             mouthRadiusUsed = mouthRadius;
             roiModeUsed = 'mouth-floor-intersection';
@@ -12651,7 +12825,7 @@ function App() {
               onClear={handleClearPlateMap}
               onExpectedRefsChange={setExpectedRefs}
               onUnitLabelChange={setPlateMapUnit}
-              onEditorSnapshotChange={setPlateEditorSnapshot}
+              onEditorSnapshotChange={handlePlateEditorSnapshotChange}
               onHelpRequest={() => setIsHelpAboutOpen(true)}
               onStartNewAnalysis={() => window.location.reload()}
               configuratorMediaActive={configuratorMediaActive}
@@ -13373,7 +13547,7 @@ function App() {
             onClear={handleClearPlateMap}
             onExpectedRefsChange={setExpectedRefs}
             onUnitLabelChange={setPlateMapUnit}
-            onEditorSnapshotChange={setPlateEditorSnapshot}
+            onEditorSnapshotChange={handlePlateEditorSnapshotChange}
             onHelpRequest={() => setIsHelpAboutOpen(true)}
           />
 

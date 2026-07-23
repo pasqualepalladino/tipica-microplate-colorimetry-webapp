@@ -19,9 +19,13 @@ import {
   getFlatBottomPlateGeometry,
   getFlatBottomPlateGeometryByWellCount,
   getFloorDimensionToPitchRatio,
+  getFloorRadiusPx,
+  getMeanPitchMm,
   getMouthDiameterToPitchRatio,
+  getMouthRadiusPx,
+  getPixelsPerMm,
 } from '../src/core/physicalPlateGeometry.js';
-import { buildVisiblePlateCornerReferences, computeGeometryAlignmentDiagnostics, generate96WellFloorCircles, generate96WellGrid, generatePlateFloorCircles, generatePlateGrid, hasFloorGeometry } from '../src/core/plate.js';
+import { buildVisiblePlateCornerReferences, computeGeometryAlignmentDiagnostics, estimateNominalFloorRadius, estimateNominalMouthRadius, generate96WellFloorCircles, generate96WellGrid, generatePlateFloorCircles, generatePlateGrid, hasFloorGeometry } from '../src/core/plate.js';
 import type { PlateGeometry } from '../src/types/geometry.js';
 import type { WellConfig } from '../src/types/plateMap.js';
 
@@ -324,6 +328,28 @@ function testDynamicGeometryHelpers(): void {
     assertEqual(wrappedLegacyFloor[index].y, genericLegacyFloor[index].y, `legacy floor wrapper y ${index}`);
     assertEqual(wrappedLegacyFloor[index].r, genericLegacyFloor[index].r, `legacy floor wrapper r ${index}`);
   }
+
+  const preset96 = getFlatBottomPlateGeometry(8, 12);
+  assert(preset96 !== null, '96-well preset should exist for floor clamp smoke coverage');
+  const oversizedFloorGeometry: PlateGeometry = {
+    ...geometry,
+    floor_a1_circle_img: { ...geometry.floor_a1_circle_img!, r: 100 },
+    floor_a12_circle_img: { ...geometry.floor_a12_circle_img!, r: 100 },
+    floor_h12_circle_img: { ...geometry.floor_h12_circle_img!, r: 100 },
+    floor_h1_circle_img: { ...geometry.floor_h1_circle_img!, r: 100 },
+  };
+  const nominalFloorCircles = generatePlateFloorCircles(
+    oversizedFloorGeometry,
+    createFullPlateRegion(8, 12),
+    legacyWells,
+    preset96,
+  );
+  assert(nominalFloorCircles !== null, 'nominal floor circles should be generated');
+  for (let index = 0; index < nominalFloorCircles.length; index += 1) {
+    const well = legacyWells[index];
+    const mouthRadius = estimateNominalMouthRadius(legacyWells, well.row, well.col, preset96);
+    assert(nominalFloorCircles[index].r < mouthRadius, `nominal floor radius must remain below mouth radius ${index}`);
+  }
 }
 
 function testParseCellEntry(): void {
@@ -594,6 +620,30 @@ function testFlatBottomPlateGeometryPresets(): void {
   assertEqual(getFlatBottomPlateGeometry(5, 5), null, 'unsupported layout should not invent a preset');
 }
 
+function testNominalPhysicalRuntimeScaling(): void {
+  const formats = [[2, 3], [4, 6], [8, 12], [16, 24], [32, 48]] as const;
+
+  for (const [rows, columns] of formats) {
+    const preset = getFlatBottomPlateGeometry(rows, columns);
+    assert(preset !== null, `${rows}x${columns} runtime preset should exist`);
+    const localPitchPx = 180;
+    assertEqual(getMeanPitchMm(preset), (preset.pitchXmm + preset.pitchYmm) / 2, `${preset.wellCount}-well mean pitch`);
+    assertEqual(getPixelsPerMm(localPitchPx, preset), localPitchPx / getMeanPitchMm(preset), `${preset.wellCount}-well px/mm`);
+    assert(getMouthRadiusPx(localPitchPx, preset) > getFloorRadiusPx(localPitchPx, preset), `${preset.wellCount}-well mouth radius should exceed floor radius`);
+  }
+
+  const preset96 = getFlatBottomPlateGeometry(8, 12);
+  assert(preset96 !== null, '96-well runtime preset should exist');
+  const reducedVisibleWells = [
+    { wellId: 'A1', row: 0, col: 0, x: 0, y: 0 },
+    { wellId: 'A2', row: 0, col: 1, x: 90, y: 0 },
+    { wellId: 'B1', row: 1, col: 0, x: 0, y: 90 },
+    { wellId: 'B2', row: 1, col: 1, x: 90, y: 90 },
+  ];
+  assertEqual(estimateNominalMouthRadius(reducedVisibleWells, 0, 0, preset96), getMouthRadiusPx(90, preset96), 'reduced 96-well region mouth radius');
+  assertEqual(estimateNominalFloorRadius(reducedVisibleWells, 0, 0, preset96), getFloorRadiusPx(90, preset96), 'reduced 96-well region floor radius');
+}
+
 function run(): void {
   testRowLabelFromIndex();
   testRowIndexFromLabel();
@@ -609,6 +659,7 @@ function run(): void {
   testWellConfigsToPlateEditorState();
   testProjectAfterGeometryPreservesFloorPath();
   testFlatBottomPlateGeometryPresets();
+  testNominalPhysicalRuntimeScaling();
 
   console.log('smoke:plate-configurator passed');
 }

@@ -179,6 +179,33 @@ export function getFloorDimensionToPitchRatio(
   return preset.floorDiameterOrWidthMm / ((preset.pitchXmm + preset.pitchYmm) / 2);
 }
 
+export function getMeanPitchMm(
+  preset: FlatBottomPlateGeometryPreset,
+): number {
+  return (preset.pitchXmm + preset.pitchYmm) / 2;
+}
+
+export function getPixelsPerMm(
+  localPitchPx: number,
+  preset: FlatBottomPlateGeometryPreset,
+): number {
+  return localPitchPx / getMeanPitchMm(preset);
+}
+
+export function getMouthRadiusPx(
+  localPitchPx: number,
+  preset: FlatBottomPlateGeometryPreset,
+): number {
+  return localPitchPx * preset.mouthDiameterMm / (2 * getMeanPitchMm(preset));
+}
+
+export function getFloorRadiusPx(
+  localPitchPx: number,
+  preset: FlatBottomPlateGeometryPreset,
+): number {
+  return localPitchPx * preset.floorDiameterOrWidthMm / (2 * getMeanPitchMm(preset));
+}
+
 export function flatBottomPlateGeometryEntries(
   preset: FlatBottomPlateGeometryPreset,
 ): Array<{ key: string; value: string | number }> {

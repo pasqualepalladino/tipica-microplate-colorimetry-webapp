@@ -1,5 +1,6 @@
 import type { FloorCircle, PlateGeometry, Point } from '../types/geometry';
 import type { PlateRegionDefinition, WellCenter } from '../types/plate';
+import { getFlatBottomPlateGeometry, getFloorRadiusPx, getMouthRadiusPx, type FlatBottomPlateGeometryPreset } from './physicalPlateGeometry.js';
 import { normalizePlateRegion, rowLabelFromIndex } from './plateConfigurator.js';
 
 const ROW_COUNT = 8;
@@ -374,6 +375,7 @@ export function generatePlateFloorCircles(
   geometry: PlateGeometry,
   regionInput: PlateRegionDefinition,
   wells: WellCenter[] | null = null,
+  preset: FlatBottomPlateGeometryPreset | null = null,
   _radiusFactor: number | null = null,
 ): FloorCircle[] | null {
   if (!hasFloorGeometry(geometry)) {
@@ -386,12 +388,7 @@ export function generatePlateFloorCircles(
   const floorH12 = geometry.floor_h12_circle_img as FloorCircle;
   const floorH1 = geometry.floor_h1_circle_img as FloorCircle;
   const floorCircles: FloorCircle[] = [];
-  const useLegacy96MouthClamp = region.plateRows === ROW_COUNT
-    && region.plateColumns === COL_COUNT
-    && region.visibleRows === ROW_COUNT
-    && region.visibleColumns === COL_COUNT
-    && region.rowOffset === 0
-    && region.columnOffset === 0;
+  const useNominalMouthClamp = Boolean(wells && preset);
   const lastRow = region.visibleRows - 1;
   const lastColumn = region.visibleColumns - 1;
   const sourceCorners: Point[] = [
@@ -419,11 +416,11 @@ export function generatePlateFloorCircles(
         : null;
       const center = projectedCenter ?? lerpPoint(leftEdge, rightEdge, colT);
       const interpolatedRadius = Math.max(1, lerp(leftRadius, rightRadius, colT));
-      const mouthRadius = wells && useLegacy96MouthClamp
-        ? estimateStandardMouthRadius(wells, row, col)
+      const mouthRadius = wells && preset && useNominalMouthClamp
+        ? estimateNominalMouthRadius(wells, row, col, preset)
         : Number.NaN;
       const radius = Number.isFinite(mouthRadius)
-        ? Math.min(Math.max(interpolatedRadius, 0.50 * mouthRadius), 1.05 * mouthRadius)
+        ? Math.min(Math.max(interpolatedRadius, 0.50 * mouthRadius), 0.99 * mouthRadius)
         : interpolatedRadius;
 
       floorCircles.push({
@@ -450,7 +447,7 @@ export function generate96WellFloorCircles(
     visibleColumns: COL_COUNT,
     rowOffset: 0,
     columnOffset: 0,
-  }, wells, radiusFactor);
+  }, wells, null, radiusFactor);
 }
 
 export function estimateLocalPitch(wells: WellCenter[], row: number, col: number): number {
@@ -489,16 +486,22 @@ export function estimateRoiRadius(
   return Math.max(1, estimateLocalPitch(wells, row, col) * safeRadiusFactor);
 }
 
-const STANDARD_96_WELL_PITCH_MM = 9.0;
-const STANDARD_96_WELL_MOUTH_DIAMETER_MM = 6.90;
-const STANDARD_96_WELL_MOUTH_RADIUS_FACTOR = 0.5 * STANDARD_96_WELL_MOUTH_DIAMETER_MM / STANDARD_96_WELL_PITCH_MM;
-
-export function estimateStandardMouthRadius(
+export function estimateNominalMouthRadius(
   wells: WellCenter[],
   row: number,
   col: number,
+  preset: FlatBottomPlateGeometryPreset,
 ): number {
-  return Math.max(1, estimateLocalPitch(wells, row, col) * STANDARD_96_WELL_MOUTH_RADIUS_FACTOR);
+  return Math.max(1, getMouthRadiusPx(estimateLocalPitch(wells, row, col), preset));
+}
+
+export function estimateNominalFloorRadius(
+  wells: WellCenter[],
+  row: number,
+  col: number,
+  preset: FlatBottomPlateGeometryPreset,
+): number {
+  return Math.max(1, getFloorRadiusPx(estimateLocalPitch(wells, row, col), preset));
 }
 
 export function drawOverlay(
