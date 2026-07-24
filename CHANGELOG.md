@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.57-beta - 2026-07-24
+
+- Enabled full internal technical workflow testing for 384-well and 1536-well plates, including dynamic row labels, mouth/floor geometry, physical inter-well background, analysis and exports.
+- Added dynamic nominal manual-corner metadata for all configured plate formats and offset subregions while preserving legacy geometry keys for backward compatibility.
+- Expanded plate-configurator smoke coverage for 6, 12, 24, 48, 96, 384 and 1536 wells.
 ## 0.1.56-beta - 2026-07-23
 
 ### Plate-format workflows

@@ -58,6 +58,7 @@ import {
 } from './core/plateMap';
 import {
   normalizeSnapshotPlateRegion,
+  rowLabelFromIndex,
   type ExpectedRef,
   type PlateEditorSnapshot,
 } from './core/plateConfigurator';
@@ -547,12 +548,88 @@ function getReferenceNominalCircle(
   return { x: well.x, y: well.y, r: radius };
 }
 
-function geometryJsonPayload(geometry: PlateGeometry) {
+function buildNominalCornerLabelsFromRegion(
+  region: PlateRegionDefinition,
+): [string, string, string, string] {
+  const firstRow = region.rowOffset;
+  const lastRow = region.rowOffset + region.visibleRows - 1;
+  const firstColumn = region.columnOffset + 1;
+  const lastColumn = region.columnOffset + region.visibleColumns;
+
+  return [
+    `${rowLabelFromIndex(firstRow)}${firstColumn}`,
+    `${rowLabelFromIndex(firstRow)}${lastColumn}`,
+    `${rowLabelFromIndex(lastRow)}${lastColumn}`,
+    `${rowLabelFromIndex(lastRow)}${firstColumn}`,
+  ];
+}
+
+function buildDynamicManualCornerMetadata<T>(
+  plateMap: WellConfig[],
+  values: [T, T, T, T],
+): {
+  corner_labels: {
+    top_left: string;
+    top_right: string;
+    bottom_right: string;
+    bottom_left: string;
+  };
+  corners_by_well_id: Record<string, T>;
+} | null {
+  if (plateMap.length === 0) {
+    return null;
+  }
+
+  const minRow = Math.min(...plateMap.map((well) => well.row));
+  const maxRow = Math.max(...plateMap.map((well) => well.row));
+  const minColumn = Math.min(...plateMap.map((well) => well.col));
+  const maxColumn = Math.max(...plateMap.map((well) => well.col));
+  const labels = [
+    `${rowLabelFromIndex(minRow - 1)}${minColumn}`,
+    `${rowLabelFromIndex(minRow - 1)}${maxColumn}`,
+    `${rowLabelFromIndex(maxRow - 1)}${maxColumn}`,
+    `${rowLabelFromIndex(maxRow - 1)}${minColumn}`,
+  ] as const;
+
   return {
-    corner_a1: [geometry.corner_a1.x, geometry.corner_a1.y],
-    corner_a12: [geometry.corner_a12.x, geometry.corner_a12.y],
-    corner_h12: [geometry.corner_h12.x, geometry.corner_h12.y],
-    corner_h1: [geometry.corner_h1.x, geometry.corner_h1.y],
+    corner_labels: {
+      top_left: labels[0],
+      top_right: labels[1],
+      bottom_right: labels[2],
+      bottom_left: labels[3],
+    },
+    corners_by_well_id: Object.fromEntries(
+      labels.map((label, index) => [label, values[index]]),
+    ),
+  };
+}
+
+function geometryJsonPayload(
+  geometry: PlateGeometry,
+  region: PlateRegionDefinition,
+) {
+  const labels = buildNominalCornerLabelsFromRegion(region);
+  const points = [
+    [geometry.corner_a1.x, geometry.corner_a1.y],
+    [geometry.corner_a12.x, geometry.corner_a12.y],
+    [geometry.corner_h12.x, geometry.corner_h12.y],
+    [geometry.corner_h1.x, geometry.corner_h1.y],
+  ] as const;
+
+  return {
+    corner_a1: points[0],
+    corner_a12: points[1],
+    corner_h12: points[2],
+    corner_h1: points[3],
+    corner_labels: {
+      top_left: labels[0],
+      top_right: labels[1],
+      bottom_right: labels[2],
+      bottom_left: labels[3],
+    },
+    corners_by_well_id: Object.fromEntries(
+      labels.map((label, index) => [label, points[index]]),
+    ),
     ...(geometry.mouth_radius_px ? { mouth_radius_px: geometry.mouth_radius_px } : {}),
     ...(geometry.roi_radius_factor ? { roi_radius_factor: geometry.roi_radius_factor } : {}),
     ...(geometry.floor_a1_circle_img ? { floor_a1_circle_img: [geometry.floor_a1_circle_img.x, geometry.floor_a1_circle_img.y, geometry.floor_a1_circle_img.r] } : {}),
@@ -654,8 +731,8 @@ function geometryExportFileName(imageName: string | null): string {
   return `${imageName.replace(/\.[^.]+$/, '')}_4corner_wells.json`;
 }
 
-function downloadGeometryJson(geometry: PlateGeometry, imageName: string | null): void {
-  const payload = geometryJsonPayload(geometry);
+function downloadGeometryJson(geometry: PlateGeometry, imageName: string | null, region: PlateRegionDefinition): void {
+  const payload = geometryJsonPayload(geometry, region);
   const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: 'application/json;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -1318,13 +1395,19 @@ function createProjectPayload(
   extractionSummary: string,
   fittingSummary: string,
 ) {
+  const projectPlateRegion = normalizeSnapshotPlateRegion(
+    plateEditorSnapshot?.nrow ?? 8,
+    plateEditorSnapshot?.ncol ?? 12,
+    plateEditorSnapshot?.plateRegion,
+  );
+
   return {
     version: 1,
     createdAt: new Date().toISOString(),
     appVersion: packageJson.version,
     imageName,
     imageAnalysisSize: image ? getImageAnalysisSize(image) : null,
-    geometry: geometryJsonPayload(geometry),
+    geometry: geometryJsonPayload(geometry, projectPlateRegion),
     floorGeometrySource,
     roiRadiusFactor: radiusFactor,
     floorRoiRadiusFactor,
@@ -1383,7 +1466,9 @@ function summarizePlateMapForMetadata(plateMap: WellConfig[]): { wellCount: numb
   return {
     wellCount: plateMap.length,
     roles,
-    rowLabels: Array.from(new Set(plateMap.map((well) => String(well.row)))).sort(),
+    rowLabels: Array.from(new Set(plateMap.map((well) => well.row)))
+      .sort((a, b) => a - b)
+      .map((row) => rowLabelFromIndex(row - 1)),
     colLabels: Array.from(new Set(plateMap.map((well) => well.col))).sort((a, b) => a - b),
   };
 }
@@ -1448,6 +1533,12 @@ function createAnalysisRunConfigMetadata(options: {
         corner_a12: options.geometry.corner_a12,
         corner_h12: options.geometry.corner_h12,
         corner_h1: options.geometry.corner_h1,
+        ...buildDynamicManualCornerMetadata(options.plateMap, [
+          options.geometry.corner_a1,
+          options.geometry.corner_a12,
+          options.geometry.corner_h12,
+          options.geometry.corner_h1,
+        ]),
         mouth_radius_px: options.geometry.mouth_radius_px ?? null,
       }
       : null,
@@ -1461,11 +1552,22 @@ function createAnalysisRunConfigMetadata(options: {
           const index = options.wells.findIndex((well) => well.row === row && well.col === col);
           return index >= 0 ? normalizedFloorCircles[index] ?? null : null;
         };
+        const topLeft = circleAt(0, 0);
+        const topRight = circleAt(0, maxColumn);
+        const bottomRight = circleAt(maxRow, maxColumn);
+        const bottomLeft = circleAt(maxRow, 0);
+
         return {
-          floor_a1_circle_img: circleAt(0, 0),
-          floor_a12_circle_img: circleAt(0, maxColumn),
-          floor_h12_circle_img: circleAt(maxRow, maxColumn),
-          floor_h1_circle_img: circleAt(maxRow, 0),
+          floor_a1_circle_img: topLeft,
+          floor_a12_circle_img: topRight,
+          floor_h12_circle_img: bottomRight,
+          floor_h1_circle_img: bottomLeft,
+          ...buildDynamicManualCornerMetadata(options.plateMap, [
+            topLeft,
+            topRight,
+            bottomRight,
+            bottomLeft,
+          ]),
         };
       })()
       : null,
@@ -10309,7 +10411,7 @@ function HelpAboutDialog({
             <li>These presets are vendor-specific reference geometries, not universal ANSI/SLAS mouth, floor or depth dimensions; verify the actual plate model for quantitative path-length work.</li>
             <li>The complete workflow is experimentally validated for 96-well plates.</li>
             <li>Internal technical workflow testing has been completed for 6-, 12-, 24- and 48-well plates using real near-frontal images; this does not constitute experimental validation of those formats.</li>
-            <li>The 384- and 1536-well formats are geometrically configurable and supported in principle, but complete analysis remains disabled until internal image-workflow testing is completed.</li>
+            <li>The 384- and 1536-well formats are enabled exclusively for internal technical image-workflow testing; testing is still in progress and neither format is experimentally validated.</li>
             <li>Current format status: {plateAnalysisSupportLevel}. {plateAnalysisSupportNote}</li>
             <li>Unit and x 10^ define the displayed concentration unit.</li>
             <li>Extended view shows the full editable plate-map table.</li>
@@ -11507,7 +11609,7 @@ function App() {
       return;
     }
 
-    downloadGeometryJson(geometry, imageName);
+    downloadGeometryJson(geometry, imageName, activePlateRegion);
 
     if (!floorGeometryAvailable) {
       setFloorGeometryNotice('Exported geometry without floor circles.');
@@ -11518,7 +11620,7 @@ function App() {
     }
 
     setError(null);
-  }, [floorGeometryAvailable, geometry, imageName]);
+  }, [activePlateRegion, floorGeometryAvailable, geometry, imageName]);
 
   const handleStartFloorCirclePicking = useCallback(() => {
     if (!image) {
@@ -11830,11 +11932,6 @@ function App() {
 
     if (projectImageMismatchBlocksExtraction) {
       setError('Load the matching project image before extraction.');
-      return false;
-    }
-
-    if (plateAnalysisSupportLevel === 'configurable-only') {
-      setError('Complete analysis is not yet enabled for 384- and 1536-well plates because those formats have not yet undergone internal image-workflow testing.');
       return false;
     }
 
@@ -12874,11 +12971,6 @@ function App() {
 
     if (projectImageMismatchBlocksExtraction) {
       setError('Load the matching project image before running complete analysis.');
-      return;
-    }
-
-    if (plateAnalysisSupportLevel === 'configurable-only') {
-      setError('Complete analysis is not yet enabled for 384- and 1536-well plates because those formats have not yet undergone internal image-workflow testing.');
       return;
     }
 

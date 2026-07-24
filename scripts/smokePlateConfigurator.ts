@@ -27,6 +27,7 @@ import {
   getPixelsPerMm,
   getPlateAnalysisSupportLevel,
   getPlateAnalysisSupportNote,
+  getPlateWorkflowTestStatus,
   isAnalysisExecutionAllowed,
   isValidVisiblePlateRegion,
 } from '../src/core/physicalPlateGeometry.js';
@@ -119,6 +120,51 @@ function testVisiblePlateCornerReferences(): void {
     columnOffset: 3,
   });
   assertEqual(cropped384.map((reference) => reference.label).join(','), 'A1,A8,F8,F1', '384 cropped visible corner labels');
+
+  const dynamicCornerCases = [
+    { rows: 2, columns: 3, expected: 'A1,A3,B3,B1', label: '6-well' },
+    { rows: 3, columns: 4, expected: 'A1,A4,C4,C1', label: '12-well' },
+    { rows: 4, columns: 6, expected: 'A1,A6,D6,D1', label: '24-well' },
+    { rows: 6, columns: 8, expected: 'A1,A8,F8,F1', label: '48-well' },
+    { rows: 8, columns: 12, expected: 'A1,A12,H12,H1', label: '96-well' },
+    { rows: 16, columns: 24, expected: 'A1,A24,P24,P1', label: '384-well' },
+    { rows: 32, columns: 48, expected: 'A1,A48,AF48,AF1', label: '1536-well' },
+  ];
+
+  for (const cornerCase of dynamicCornerCases) {
+    const references = buildVisiblePlateCornerReferences({
+      plateRows: cornerCase.rows,
+      plateColumns: cornerCase.columns,
+      visibleRows: cornerCase.rows,
+      visibleColumns: cornerCase.columns,
+      rowOffset: 0,
+      columnOffset: 0,
+    });
+    assertEqual(
+      references.map((reference) => reference.label).join(','),
+      cornerCase.expected,
+      `${cornerCase.label} dynamic corner labels`,
+    );
+  }
+
+  const offsetRegion = normalizePlateRegion({
+    plateRows: 16,
+    plateColumns: 24,
+    visibleRows: 6,
+    visibleColumns: 8,
+    rowOffset: 2,
+    columnOffset: 4,
+  });
+  assertEqual(
+    [
+      nominalWellId(offsetRegion, 0, 0),
+      nominalWellId(offsetRegion, 0, offsetRegion.visibleColumns - 1),
+      nominalWellId(offsetRegion, offsetRegion.visibleRows - 1, offsetRegion.visibleColumns - 1),
+      nominalWellId(offsetRegion, offsetRegion.visibleRows - 1, 0),
+    ].join(','),
+    'C5,C12,H12,H5',
+    'offset nominal corner labels for exported metadata',
+  );
 
   const oneByOne = buildVisiblePlateCornerReferences({
     plateRows: 8,
@@ -278,6 +324,10 @@ function testGeneratePlateGrid(): void {
   const full384 = generatePlateGrid(geometry, createFullPlateRegion(16, 24));
   assertEqual(full384.length, 384, 'full 384-well grid count');
   assertEqual(full384[383].wellId, 'P24', 'full 384-well last ID');
+
+  const full1536 = generatePlateGrid(geometry, createFullPlateRegion(32, 48));
+  assertEqual(full1536.length, 1536, 'full 1536-well grid count');
+  assertEqual(full1536[1535].wellId, 'AF48', 'full 1536-well last ID');
 
   assertThrows(
     () => generatePlateGrid(geometry, {
@@ -688,10 +738,34 @@ function testDynamicCornerReferencesAndFloorClamp(): void {
   assert(clampFloorRadiusToMouth(20, mouthRadius) === 20, 'valid floor radius remains unchanged');
 }
 
+function testHighDensityMetadataRowLabels(): void {
+  const summarizeOneBasedRows = (rows: number[]): string[] =>
+    Array.from(new Set(rows))
+      .sort((a, b) => a - b)
+      .map((row) => rowLabelFromIndex(row - 1));
+
+  const rows384 = summarizeOneBasedRows(Array.from({ length: 16 }, (_, index) => index + 1));
+  assertEqual(rows384.length, 16, '384-well metadata row-label count');
+  assertEqual(rows384[0], 'A', '384-well first metadata row label');
+  assertEqual(rows384[15], 'P', '384-well last metadata row label');
+  assertEqual(rows384.join(','), 'A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P', '384-well complete metadata row-label sequence');
+  assertEqual(new Set(rows384).size, rows384.length, '384-well metadata row labels are unique');
+
+  const rows1536 = summarizeOneBasedRows(Array.from({ length: 32 }, (_, index) => index + 1));
+  assertEqual(rows1536.length, 32, '1536-well metadata row-label count');
+  assertEqual(rows1536[0], 'A', '1536-well first metadata row label');
+  assertEqual(rows1536[25], 'Z', '1536-well last single-letter metadata row label');
+  assertEqual(rows1536[26], 'AA', '1536-well first double-letter metadata row label');
+  assertEqual(rows1536[31], 'AF', '1536-well last metadata row label');
+  assertEqual(new Set(rows1536).size, rows1536.length, '1536-well metadata row labels are unique');
+}
+
 function testDynamicPhysicalInterwellCellCounts(): void {
   assertEqual(countPhysicalInterwellCells(8, 12), 77, '96-well full inter-well cell count');
   assertEqual(countPhysicalInterwellCells(2, 4), 3, '96-well reduced visible inter-well cell count');
   assertEqual(countPhysicalInterwellCells(4, 6), 15, '24-well full inter-well cell count');
+  assertEqual(countPhysicalInterwellCells(16, 24), 345, '384-well full inter-well cell count');
+  assertEqual(countPhysicalInterwellCells(32, 48), 1457, '1536-well full inter-well cell count');
   assertEqual(countPhysicalInterwellCells(2, 3), 2, '6-well full inter-well cell count');
   assertEqual(countPhysicalInterwellCells(1, 12), 0, 'single-row inter-well cell count');
   assertEqual(countPhysicalInterwellCells(12, 1), 0, 'single-column inter-well cell count');
@@ -705,11 +779,19 @@ function testPlateAnalysisSupportAndExecutionGate(): void {
     { rows: 4, columns: 6, level: 'internal-testing' },
     { rows: 6, columns: 8, level: 'internal-testing' },
     { rows: 8, columns: 12, level: 'validated' },
+    { rows: 16, columns: 24, level: 'internal-testing' },
+    { rows: 32, columns: 48, level: 'internal-testing' },
   ] as const;
 
   for (const format of executionEnabledFormats) {
     assertEqual(getPlateAnalysisSupportLevel(format.rows, format.columns), format.level, `${format.rows}x${format.columns} support level`);
-    assert(getPlateAnalysisSupportNote(format.level).length > 0, `${format.level} support note should be present`);
+    const supportNote = getPlateAnalysisSupportNote(format.level, format.rows, format.columns);
+    assert(supportNote.length > 0, `${format.level} support note should be present`);
+    if (format.rows >= 16) {
+      assertEqual(getPlateWorkflowTestStatus(format.rows, format.columns), 'internal technical workflow testing in progress', `${format.rows}x${format.columns} workflow status`);
+      assert(supportNote.includes('testing in progress'), `${format.rows}x${format.columns} support note should remain in progress`);
+      assert(!supportNote.includes('has been completed'), `${format.rows}x${format.columns} support note must not claim completed testing`);
+    }
     for (let visibleRows = 1; visibleRows <= format.rows; visibleRows += 1) {
       for (let visibleColumns = 1; visibleColumns <= format.columns; visibleColumns += 1) {
         const input = {
@@ -728,18 +810,17 @@ function testPlateAnalysisSupportAndExecutionGate(): void {
   }
 
   for (const format of [{ rows: 16, columns: 24 }, { rows: 32, columns: 48 }]) {
-    assertEqual(getPlateAnalysisSupportLevel(format.rows, format.columns), 'configurable-only', `${format.rows}x${format.columns} support level`);
     const input = {
       plateRows: format.rows,
       plateColumns: format.columns,
       visibleRows: 2,
       visibleColumns: 2,
-      rowOffset: 0,
-      columnOffset: 0,
+      rowOffset: format.rows - 2,
+      columnOffset: format.columns - 2,
       actualWellCount: 4,
     };
-    assert(isValidVisiblePlateRegion(input), `${format.rows}x${format.columns} region should remain geometrically configurable`);
-    assert(!isAnalysisExecutionAllowed(input), `${format.rows}x${format.columns} analysis should remain disabled`);
+    assert(isValidVisiblePlateRegion(input), `${format.rows}x${format.columns} offset region should be geometrically valid`);
+    assert(isAnalysisExecutionAllowed(input), `${format.rows}x${format.columns} offset region should be analysis-enabled for internal testing`);
   }
 
   assertEqual(getPlateAnalysisSupportLevel(5, 5), 'unsupported', 'unknown layout support level');
@@ -771,6 +852,7 @@ function run(): void {
   testFlatBottomPlateGeometryPresets();
   testNominalPhysicalRuntimeScaling();
   testDynamicCornerReferencesAndFloorClamp();
+  testHighDensityMetadataRowLabels();
   testDynamicPhysicalInterwellCellCounts();
   testPlateAnalysisSupportAndExecutionGate();
 

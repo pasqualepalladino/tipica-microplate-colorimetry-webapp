@@ -217,8 +217,8 @@ export function flatBottomPlateGeometryEntries(
     { key: 'source_profile', value: preset.sourceProfile },
     { key: 'vendor_specific', value: preset.vendorSpecific ? 'true' : 'false' },
     { key: 'plate_analysis_support_level', value: getPlateAnalysisSupportLevel(preset.rows, preset.columns) },
-    { key: 'plate_analysis_support_note', value: getPlateAnalysisSupportNote(getPlateAnalysisSupportLevel(preset.rows, preset.columns)) },
-    { key: 'plate_workflow_test_status', value: getPlateAnalysisSupportLevel(preset.rows, preset.columns) === 'validated' ? 'experimentally validated' : getPlateAnalysisSupportLevel(preset.rows, preset.columns) === 'internal-testing' ? 'internal technical workflow testing completed' : 'not yet internally tested' },
+    { key: 'plate_analysis_support_note', value: getPlateAnalysisSupportNote(getPlateAnalysisSupportLevel(preset.rows, preset.columns), preset.rows, preset.columns) },
+    { key: 'plate_workflow_test_status', value: getPlateWorkflowTestStatus(preset.rows, preset.columns) },
     { key: 'well_count', value: preset.wellCount },
     { key: 'plate_rows', value: preset.rows },
     { key: 'plate_columns', value: preset.columns },
@@ -275,22 +275,50 @@ export function getPlateAnalysisSupportLevel(
     (plateRows === 2 && plateColumns === 3) ||
     (plateRows === 3 && plateColumns === 4) ||
     (plateRows === 4 && plateColumns === 6) ||
-    (plateRows === 6 && plateColumns === 8)
-  ) return 'internal-testing';
-  if (
+    (plateRows === 6 && plateColumns === 8) ||
     (plateRows === 16 && plateColumns === 24) ||
     (plateRows === 32 && plateColumns === 48)
-  ) return 'configurable-only';
+  ) return 'internal-testing';
   return 'unsupported';
+}
+
+function isHighDensityWorkflowTestingInProgress(
+  plateRows: number | undefined,
+  plateColumns: number | undefined,
+): boolean {
+  return (
+    (plateRows === 16 && plateColumns === 24) ||
+    (plateRows === 32 && plateColumns === 48)
+  );
+}
+
+export function getPlateWorkflowTestStatus(
+  plateRows: number,
+  plateColumns: number,
+): string {
+  const level = getPlateAnalysisSupportLevel(plateRows, plateColumns);
+  if (level === 'validated') return 'experimentally validated';
+  if (isHighDensityWorkflowTestingInProgress(plateRows, plateColumns)) {
+    return 'internal technical workflow testing in progress';
+  }
+  if (level === 'internal-testing') {
+    return 'internal technical workflow testing completed';
+  }
+  return 'not yet internally tested';
 }
 
 export function getPlateAnalysisSupportNote(
   level: PlateAnalysisSupportLevel,
+  plateRows?: number,
+  plateColumns?: number,
 ): string {
   if (level === 'validated') {
     return 'Complete image-analysis workflow experimentally validated for nominal 96-well plates.';
   }
   if (level === 'internal-testing') {
+    if (isHighDensityWorkflowTestingInProgress(plateRows, plateColumns)) {
+      return 'Complete image-analysis execution is enabled exclusively for internal technical workflow testing in progress; this does not constitute experimental validation of the nominal format.';
+    }
     return 'Internal technical workflow testing has been completed with real near-frontal images; this does not constitute experimental validation of the nominal format.';
   }
   if (level === 'configurable-only') {
