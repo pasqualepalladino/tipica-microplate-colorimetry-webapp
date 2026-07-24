@@ -13669,6 +13669,7 @@ function App() {
                 showMouthGrid={showMouthGrid}
                 showFloorCircles={showFloorCircles}
                 floorCircles={floorCircles}
+                enableCornerMagnifier={true}
               />,
               configuratorMediaStageTarget,
             ) : null}
@@ -14143,6 +14144,7 @@ function App() {
           showMouthGrid={showMouthGrid}
           showFloorCircles={showFloorCircles}
           floorCircles={floorCircles}
+          enableCornerMagnifier={true}
         />
         {plateConfiguratorDialogOpen ? null : (
           <PlateMapEditor

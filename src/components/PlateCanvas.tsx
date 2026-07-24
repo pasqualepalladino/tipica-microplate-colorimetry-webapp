@@ -30,6 +30,7 @@ interface PlateCanvasProps {
   showMouthGrid: boolean;
   showFloorCircles: boolean;
   floorCircles: FloorCircle[] | null;
+  enableCornerMagnifier: boolean;
 }
 
 const MANUAL_MOUTH_REFERENCES = [
@@ -328,19 +329,24 @@ export function PlateCanvas({
   showMouthGrid,
   showFloorCircles,
   floorCircles,
+  enableCornerMagnifier,
 }: PlateCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const magnifierCanvasRef = useRef<HTMLCanvasElement>(null);
   const activePointersRef = useRef<Map<number, Point>>(new Map());
   const lastPinchDistanceRef = useRef<number | null>(null);
   const suppressNextTouchClickRef = useRef(false);
   const [manualPreviewPoint, setManualPreviewPoint] = useState<Point | null>(null);
+  const [magnifierPoint, setMagnifierPoint] = useState<Point | null>(null);
+  const [magnifierSide, setMagnifierSide] = useState<'left' | 'right'>('right');
 
   useEffect(() => {
     if (!manualPickingActive) {
       setManualPreviewPoint(null);
       onManualMouthPreviewMove?.(null);
     }
-  }, [manualPickingActive, onManualMouthPreviewMove]);
+
+  }, [floorCirclePickingActive, manualPickingActive, onManualMouthPreviewMove]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -563,6 +569,67 @@ export function PlateCanvas({
     cornerLabels,
   ]);
 
+  useEffect(() => {
+    const sourceCanvas = canvasRef.current;
+    const magnifierCanvas = magnifierCanvasRef.current;
+
+    if (!sourceCanvas || !magnifierCanvas || !magnifierPoint || !enableCornerMagnifier) {
+      return;
+    }
+
+    const ctx = magnifierCanvas.getContext('2d');
+    if (!ctx) {
+      return;
+    }
+
+    const outputSize = 220;
+    const sourceSize = Math.max(72, Math.min(132, Math.min(sourceCanvas.width, sourceCanvas.height) * 0.09));
+    const halfSource = sourceSize / 2;
+    const sourceX = Math.max(0, Math.min(sourceCanvas.width - sourceSize, magnifierPoint.x - halfSource));
+    const sourceY = Math.max(0, Math.min(sourceCanvas.height - sourceSize, magnifierPoint.y - halfSource));
+
+    if (magnifierCanvas.width !== outputSize || magnifierCanvas.height !== outputSize) {
+      magnifierCanvas.width = outputSize;
+      magnifierCanvas.height = outputSize;
+    }
+
+    ctx.clearRect(0, 0, outputSize, outputSize);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(
+      sourceCanvas,
+      sourceX,
+      sourceY,
+      sourceSize,
+      sourceSize,
+      0,
+      0,
+      outputSize,
+      outputSize,
+    );
+
+    const center = outputSize / 2;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.98)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(center - 28, center);
+    ctx.lineTo(center + 28, center);
+    ctx.moveTo(center, center - 28);
+    ctx.lineTo(center, center + 28);
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.92)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(center - 28, center);
+    ctx.lineTo(center + 28, center);
+    ctx.moveTo(center, center - 28);
+    ctx.lineTo(center, center + 28);
+    ctx.stroke();
+    ctx.restore();
+  }, [enableCornerMagnifier, magnifierPoint, manualPreviewPoint, manualFloorCirclePreview]);
+
   const getCanvasPoint = (event: MouseEvent<HTMLCanvasElement> | ReactPointerEvent<HTMLCanvasElement>): Point | null => {
     const canvas = canvasRef.current;
 
@@ -578,6 +645,39 @@ export function PlateCanvas({
       x: (event.clientX - rect.left) * scaleX,
       y: (event.clientY - rect.top) * scaleY,
     };
+  };
+
+  const isNearAnyCorner = (point: Point): boolean => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return false;
+    }
+
+    const horizontalLimit = canvas.width * 0.45;
+    const verticalLimit = canvas.height * 0.45;
+    const nearLeft = point.x <= horizontalLimit;
+    const nearRight = point.x >= canvas.width - horizontalLimit;
+    const nearTop = point.y <= verticalLimit;
+    const nearBottom = point.y >= canvas.height - verticalLimit;
+
+    return (nearLeft || nearRight) && (nearTop || nearBottom);
+  };
+
+  const updateMagnifier = (point: Point, forceForTouch = false) => {
+    if (!enableCornerMagnifier) {
+      setMagnifierPoint(null);
+      return;
+    }
+
+    // Diagnostic V9 behavior:
+    // for enabled plate formats, keep the magnifier active anywhere on the canvas.
+    void forceForTouch;
+
+    const canvas = canvasRef.current;
+    if (canvas) {
+      setMagnifierSide(point.x < canvas.width / 2 ? 'right' : 'left');
+    }
+    setMagnifierPoint(point);
   };
 
   const updatePickingPreview = (point: Point) => {
@@ -597,38 +697,38 @@ export function PlateCanvas({
     onManualMouthPreviewMove?.(null);
   };
 
-  const handleCanvasMouseMove = (event: MouseEvent<HTMLCanvasElement>) => {
+  const handleCanvasPointerPreview = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const point = getCanvasPoint(event);
 
     if (!point) {
       return;
     }
 
-    updatePickingPreview(point);
-  };
-
-  const handleCanvasPointerPreview = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (event.pointerType === 'mouse') {
+      updatePickingPreview(point);
+      updateMagnifier(point);
       return;
     }
 
     suppressNextTouchClickRef.current = true;
 
-    // Mobile workflow:
-    // - one-finger tap sets/repositions the preview circle;
-    // - two-finger pinch changes radius only;
-    // - touch movement must not drag the preview to the index finger.
-    if (event.type !== 'pointerdown' || !event.isPrimary) {
+    // Touch/pen workflow:
+    // - one-finger press/drag moves the preview point and drives the side magnifier;
+    // - two-finger pinch changes radius only.
+    if (!event.isPrimary || activePointersRef.current.size >= 2) {
       return;
     }
 
-    const point = getCanvasPoint(event);
-
-    if (!point) {
+    if (event.type === 'pointermove' && event.pressure <= 0) {
       return;
     }
 
     updatePickingPreview(point);
+    updateMagnifier(point, true);
+  };
+
+  const clearMagnifier = () => {
+    setMagnifierPoint(null);
   };
 
   const handleCanvasClick = (event: MouseEvent<HTMLCanvasElement>) => {
@@ -686,12 +786,25 @@ export function PlateCanvas({
         ref={canvasRef}
         className={`plate-canvas${manualPickingActive || floorCirclePickingActive ? ' is-picking' : ''}`}
         aria-label="96-well plate ROI overlay"
-        onMouseMove={handleCanvasMouseMove}
         onPointerDown={handleCanvasPointerPreview}
         onPointerMove={handleCanvasPointerPreview}
-        onMouseLeave={clearManualMouthPreview}
+        onPointerUp={clearMagnifier}
+        onPointerCancel={clearMagnifier}
+        onMouseLeave={() => {
+          clearManualMouthPreview();
+          clearMagnifier();
+        }}
         onClick={handleCanvasClick}
       />
+      {enableCornerMagnifier && magnifierPoint ? (
+        <aside
+          className={`canvas-corner-magnifier is-${magnifierSide}`}
+          aria-label="Magnified corner detail"
+        >
+          <canvas ref={magnifierCanvasRef} aria-hidden="true" />
+          <span>Corner detail</span>
+        </aside>
+      ) : null}
       {floatingConfirmLabel ? (
         <button
           type="button"

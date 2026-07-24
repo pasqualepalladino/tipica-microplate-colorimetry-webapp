@@ -1,6 +1,23 @@
 # Changelog
 
 
+## [0.1.60-beta] - 2026-07-24
+
+### Added
+- Added an always-available side magnifier for manual plate geometry workflows.
+- The magnifier follows mouse, touch and pen input while preserving existing radius gestures.
+- The magnified view is positioned on the opposite side of the active point to reduce finger and cursor occlusion.
+
+### Changed
+- Enabled the manual-geometry magnifier for every supported plate format.
+- Unified magnifier interaction handling through pointer events for consistent desktop and mobile behavior.
+- Preserved the existing four-corner mouth and floor geometry workflows, wheel radius control and pinch radius control.
+
+### Validation
+- Confirmed the magnifier during real 96-well geometry selection.
+- Confirmed successful analysis and export after the UI change.
+- Production build and repository consistency checks are required by the release workflow.
+
 ## 0.1.59-beta - 2026-07-24
 
 - Added conditional epsilon estimates for eligible PAbs calibration channels.
