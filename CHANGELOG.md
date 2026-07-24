@@ -1,5 +1,14 @@
 # Changelog
 
+
+## 0.1.59-beta - 2026-07-24
+
+- Added conditional epsilon estimates for eligible PAbs calibration channels.
+- Added nominal path-length estimation from user-entered volume and flat-bottom plate geometry.
+- Added epsilon metadata, fixed numeric formatting, and the conditional EPSILON_ESTIMATES worksheet.
+- Refined fitting exports, reference propagation, configurator layout, stored-calibration controls, and result-table scrolling.
+- Added dedicated epsilon smoke coverage and retained production build validation.
+
 ## 0.1.58-beta - 2026-07-24
 
 - Added percentage concentration units: % m/v, % v/v and % m/m, with the existing freely configurable scale behavior preserved.

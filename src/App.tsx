@@ -23,6 +23,7 @@ import {
 } from './core/lowSignalCorrection';
 import type { WellChannelCorrectionApplication } from './core/lowSignalCorrection';
 import { computePAbs, linearizeRgb } from './core/pabs';
+import { buildEstimatedEpsilonRows } from './core/epsilonEstimation';
 import {
   flatBottomPlateGeometryEntries,
   getFlatBottomPlateGeometry,
@@ -2077,6 +2078,7 @@ function createPythonResultsCaptionText(
   hasStandardAddition: boolean,
   emptyWellQc: EmptyWellPlateQcSummary,
   methodComparisonFileNames: string[],
+  estimatedEpsilonRows: ReturnType<typeof buildEstimatedEpsilonRows>,
 ): string {
   const selectedMethod = unknownRgbMethod(selectedChannel);
   const selectedGroups = unknownMethodGroupResults.filter((group) => group.method === selectedMethod);
@@ -2089,6 +2091,13 @@ function createPythonResultsCaptionText(
   const methodComparisonLines = methodComparisonFileNames.length > 0
     ? methodComparisonFileNames.map((name) => `- ${name}`).join('\n')
     : '- No METHOD_COMPARISON PNG was generated.';
+  const epsilonSection = estimatedEpsilonRows.length > 0
+    ? [
+      'Estimated epsilon/path-length output',
+      'Estimated epsilon values were generated for the eligible image-derived PAbs channels from the calibration slope, user-entered volume and nominal flat-bottom geometry. These are not validated spectrophotometric molar absorptivities. See EPSILON_ESTIMATES.',
+      ...estimatedEpsilonRows.map((row) => `- ${row.Channel}: slope=${row.CalibrationSlope.toFixed(6)} PAbs/${row.ConcentrationUnit}; path length=${row.EstimatedPathLength_cm.toFixed(4)} cm; estimated epsilon=${row.EstimatedEpsilon_M_1_cm_1.toFixed(2)} M^-1 cm^-1.`),
+    ].join('\n')
+    : 'Estimated epsilon/path-length output\nNo epsilon estimate was generated because one or more prerequisites were absent or unsupported.';
   const quantificationSection = selectedGroups.length > 0 && hasStandardAddition
     ? `Mixed sample quantification\nThis run contains both standard-addition and unknown-only groups. Standard-addition C0 is computed as DF x q/m for each ID + DF group; unknown-only responses are projected through the matching calibration fit.\n${unknownLines}`
     : selectedGroups.length > 0
@@ -2126,8 +2135,10 @@ Each ID + DF METHOD_COMPARISON reports Score, Rank and Selected using only the s
 Quality control
 Image, plate, geometry and floor-QC messages are alerts on data quality. No automatic image correction is applied. Current-image empty-well QC: ${emptyWellQc.status}; n=${emptyWellQc.nEmptyWells}; coverage=${emptyWellQc.distinctRows} row(s) x ${emptyWellQc.distinctColumns} column(s); ${emptyWellQc.spatialAssessment}${emptyWellQc.dominantChannel ? ` ${emptyWellQc.status === 'available_insufficient' ? 'Largest observed trend channel' : 'Dominant channel'}=${emptyWellQc.dominantChannel}.` : ''} ${emptyWellQc.dominantIssue} Channel-level pass values are local screening results and do not imply an overall plate pass when spatial coverage is insufficient. This is a screening assessment of background/illumination uniformity and does not by itself invalidate concentration results.
 
-Geometry and epsilon/path-length quantification
-Epsilon/path-length quantification is not currently implemented in the webapp. The equations and geometry fields shown here are informational placeholders for a future validated implementation.
+${epsilonSection}
+
+Declared epsilon input
+A user-entered epsilon value, when present, is stored as optional metadata. Concentration calculation or recalculation from declared epsilon is not implemented in this release.
 `;
 }
 function createPythonRawDataDetailsCaptionText(
@@ -2212,6 +2223,8 @@ interface PythonReportWorkbookOptions {
   correctionApplications: WellChannelCorrectionApplication[];
   sharedGeometryOverride: SharedGeometryOverrideState | null;
   storedCalibration: StoredCalibration | null;
+  liquidVolumeUl?: number | null;
+  nominalPlatePreset?: FlatBottomPlateGeometryPreset | null;
 }
 
 function escapeXml(value: string): string {
@@ -2249,6 +2262,7 @@ const XLSX_NUMERIC_STYLE_BY_FORMAT: Record<string, number> = {
   '0.000': 8,
   '0.####': 9,
   '0.00': 10,
+  '0.000000': 11,
 };
 
 type XlsxSerializableCellValue = string | number | boolean | null;
@@ -2347,6 +2361,12 @@ function xlsxNumberFormatForHeader(header: string): string {
   if (h.includes('recovery')) {
     return '0';
   }
+  if (h === 'calibrationslope') return '0.000000';
+  if (h === 'molarperunit') return '0.000000';
+  if (h === 'volume_ul') return '0.00';
+  if (h === 'wellbottomarea_mm2') return '0.00';
+  if (h === 'estimatedpathlength_cm') return '0.0000';
+  if (h === 'estimatedepsilon_m_1_cm_1') return '0.00';
   if (['m', 'q', 'm_cal', 'm_std_mean', 'slope', 'intercept'].includes(h)) {
     return '0.00000';
   }
@@ -2490,7 +2510,7 @@ function xlsxWorksheetXml(rows: XlsxCellValue[][]): string {
 function xlsxStylesXml(): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <numFmts count="7">
+  <numFmts count="8">
     <numFmt numFmtId="164" formatCode="0"/>
     <numFmt numFmtId="165" formatCode="0.###"/>
     <numFmt numFmtId="166" formatCode="0.0000"/>
@@ -2498,6 +2518,7 @@ function xlsxStylesXml(): string {
     <numFmt numFmtId="168" formatCode="0.000"/>
     <numFmt numFmtId="169" formatCode="0.####"/>
     <numFmt numFmtId="170" formatCode="0.00"/>
+    <numFmt numFmtId="171" formatCode="0.000000"/>
   </numFmts>
   <fonts count="2">
     <font><sz val="11"/><name val="Calibri"/></font>
@@ -2513,7 +2534,7 @@ function xlsxStylesXml(): string {
     <border><left/><right/><top style="thin"><color rgb="FFC8C8C8"/></top><bottom style="thin"><color rgb="FFC8C8C8"/></bottom><diagonal/></border>
   </borders>
   <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="11">
+  <cellXfs count="12">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top"/></xf>
@@ -2525,6 +2546,7 @@ function xlsxStylesXml(): string {
     <xf numFmtId="168" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf>
     <xf numFmtId="169" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf>
     <xf numFmtId="170" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf>
+    <xf numFmtId="171" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf>
   </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
   <dxfs count="0"/>
@@ -4876,7 +4898,7 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "FitType", Meaning: "Type of fit or concentration-estimation row", Formula: "Calibration, StdAdd, UnknownFromCal, UnknownFromEpsilon, UnknownOnly", Unit: "text", "Where used": "FITTING", "Shown when": "always", Notes: "" },
     { Term: "flatfield_span", Meaning: "Image-level slow-field nonuniformity", Formula: "(P95 − P5) / median of the slow grayscale field", Unit: "dimensionless", "Where used": "METADATA", "Shown when": "always", Notes: "Part of rule-based image QC; larger values indicate stronger illumination/background gradient." },
     { Term: "FracWellWarnings/FracWellCritical", Meaning: "Fractions of replicate wells with warning or critical optical QC", Formula: "count / NReplicates", Unit: "dimensionless", "Where used": "diagnostic QC summaries", "Shown when": "diagnostics present", Notes: "Not exported in the main 05_REPLICATES_MEAN sheet." },
-    { Term: "Geometry and epsilon/path-length quantification", Meaning: "Informational placeholder for a future validated epsilon/path-length implementation", Formula: "l_cm = (volume_uL / well_bottom_area_mm2) / 10; C_M = PAbs / (epsilon x l_cm)", Unit: "cm and M", "Where used": "RESULTS_CAPTION.txt, RAW_DATA_DETAILS_CAPTION.txt, REPORT", "Shown when": "informational only; implementation not currently available", Notes: "Epsilon/path-length quantification is not currently implemented; equations and geometry fields are informational placeholders only." },
+    { Term: "Estimated epsilon/path-length output", Meaning: "Conditional estimate of path length and epsilon for PAbs_Red, PAbs_Green and PAbs_Blue.", Formula: "l_cm = volume_uL / well_bottom_area_mm2 / 10; epsilon = (calibration_slope / molar_per_unit) / l_cm", Unit: "cm and M^-1 cm^-1", "Where used": "RESULTS_CAPTION.txt, REPORT/EPSILON_ESTIMATES", "Shown when": "positive volume, supported nominal flat-bottom geometry, positive PAbs calibration slope and molar concentration unit are available", Notes: "Estimated from image-derived pseudo-absorbance and nominal geometry; not validated spectrophotometric molar absorptivity. Declared epsilon is not yet used to calculate concentrations." },
     { Term: "ID", Meaning: "Sample or reference identifier assigned in the plate map", Formula: "user/configurator input", Unit: "text", "Where used": "RAW, REPLICATES_MEAN, FITTING, METHOD_COMPARISON", "Shown when": "always", Notes: "" },
     { Term: "ImageWarning", Meaning: "Well-level optical QC warning flag", Formula: "1 if optical QC rules flag the well, else 0", Unit: "0/1", "Where used": "04_RAW", "Shown when": "always", Notes: "" },
     { Term: "ImageWarning_any", Meaning: "Group-level indicator that at least one replicate had an image warning", Formula: "1 if any replicate ImageWarning = 1", Unit: "0/1", "Where used": "diagnostic QC summaries", "Shown when": "diagnostics present", Notes: "Not exported in the main 05_REPLICATES_MEAN sheet." },
@@ -4942,6 +4964,17 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "Value", Meaning: "Value associated with a metadata or overview item", Formula: "reported value for the corresponding Field", Unit: "mixed", "Where used": "02_METADATA, 03_OVERVIEW", "Shown when": "always", Notes: "" },
     { Term: "Well", Meaning: "Human-readable well identifier", Formula: "Well = Row + Col", Unit: "well label", "Where used": "RAW, REPLICATES_MEAN", "Shown when": "always", Notes: "" },
     { Term: "well_bottom_area_mm2", Meaning: "Nominal flat-bottom well area used for path-length calculation", Formula: "pi × (d_bottom/2)^2", Unit: "mm^2", "Where used": "OVERVIEW", "Shown when": "epsilon mode configured", Notes: "Derived from the selected plate geometry." },
+    { Term: "CalibrationSlope", Meaning: "PAbs calibration slope used to estimate epsilon.", Formula: "slope of PAbs versus the configured concentration values", Unit: "PAbs per configured concentration unit", "Where used": "EPSILON_ESTIMATES", "Shown when": "volume, supported molar unit, nominal geometry and positive PAbs calibration slope are available", Notes: "Image-derived PAbs slope; not spectrophotometric absorbance." },
+    { Term: "MolarPerUnit", Meaning: "Molar concentration represented by one displayed concentration unit.", Formula: "base molar factor multiplied by 10^configured exponent", Unit: "M per displayed unit", "Where used": "EPSILON_ESTIMATES", "Shown when": "supported molar unit is configured", Notes: "Supported bases: M, mM, uM and nM." },
+    { Term: "Volume_uL", Meaning: "User-entered uniform liquid volume per well.", Formula: "configurator input", Unit: "uL", "Where used": "EPSILON_ESTIMATES", "Shown when": "positive volume is entered", Notes: "Declared by the user." },
+    { Term: "WellBottomArea_mm2", Meaning: "Nominal flat-bottom area used for path-length estimation.", Formula: "registered nominal plate geometry", Unit: "mm^2", "Where used": "EPSILON_ESTIMATES", "Shown when": "a supported nominal flat-bottom preset exists", Notes: "Vendor/profile-specific nominal value; verify the actual plate model." },
+    { Term: "EstimatedPathLength_cm", Meaning: "Nominal liquid-height estimate used as path length.", Formula: "Volume_uL / WellBottomArea_mm2 / 10", Unit: "cm", "Where used": "EPSILON_ESTIMATES", "Shown when": "volume and nominal bottom area are valid", Notes: "Assumes 1 uL = 1 mm^3, a flat bottom and uniform liquid height; meniscus and optical effects are not modelled." },
+    { Term: "EstimatedEpsilon_M_1_cm_1", Meaning: "Estimated Beer-Lambert-like coefficient derived from image PAbs calibration.", Formula: "(CalibrationSlope / MolarPerUnit) / EstimatedPathLength_cm", Unit: "M^-1 cm^-1", "Where used": "EPSILON_ESTIMATES", "Shown when": "all prerequisites are valid", Notes: "Estimated from image-derived PAbs and nominal geometry; not validated spectrophotometric molar absorptivity." },
+    { Term: "GeometryName/GeometrySource", Meaning: "Nominal plate-geometry preset and documentary source used for the area.", Formula: "registered preset metadata", Unit: "text", "Where used": "EPSILON_ESTIMATES", "Shown when": "epsilon estimate is generated", Notes: "The actual plate model must be checked by the user." },
+    { Term: "PathLengthSource", Meaning: "Provenance of the estimated path length.", Formula: "user volume plus nominal plate geometry", Unit: "text", "Where used": "EPSILON_ESTIMATES", "Shown when": "epsilon estimate is generated", Notes: "" },
+    { Term: "CalculationStatus", Meaning: "Method used to generate the epsilon estimate.", Formula: "estimated_from_pabs_calibration_slope", Unit: "text", "Where used": "EPSILON_ESTIMATES", "Shown when": "epsilon estimate is generated", Notes: "" },
+    { Term: "ValidationStatus", Meaning: "Scientific validation state of the epsilon estimate.", Formula: "estimated_not_validated", Unit: "text", "Where used": "EPSILON_ESTIMATES", "Shown when": "epsilon estimate is generated", Notes: "Must not be interpreted as validated spectrophotometric epsilon." },
+    { Term: "Assumption", Meaning: "Physical assumptions used by the path-length estimate.", Formula: "nominal_flat_bottom_area_and_uniform_liquid_height", Unit: "text", "Where used": "EPSILON_ESTIMATES", "Shown when": "epsilon estimate is generated", Notes: "Round-bottom, V-bottom, meniscus, refraction and image optical-path effects are not represented." },
   ];
 
   const explicitFittingTerms = new Set(fittingColumnRows.map((row) => String(row.Term)));
@@ -5102,6 +5135,12 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     ...buildCielabFittingRows(cielabPoints, undefined, options.storedCalibration, pythonReportCielabChannelLabel),
     ...buildUnknownGroupFittingRows(options.unknownMethodGroupResults, options.calibrationFits, options.storedCalibration),
   ]), options.expectedRefs);
+  const estimatedEpsilonRows = buildEstimatedEpsilonRows({
+    unitLabel: options.unitLabel,
+    liquidVolumeUl: options.liquidVolumeUl ?? null,
+    nominalPlatePreset: options.nominalPlatePreset ?? null,
+    calibrationFits: options.calibrationFits,
+  });
   const hasStandardAddition = options.standardAdditionFits.length > 0;
   const methodComparisonRows = options.methodComparisonRows;
   const methodComparisonGroups = options.methodComparisonGroups;
@@ -5210,6 +5249,27 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
         purpose: 'Dynamic grouped sections for calibration, standard-addition and unknown/CRM fit results.',
         rows: fittingSectionRows(fitRows),
         include: fitRows.length > 0,
+      },
+      {
+        title: 'EPSILON_ESTIMATES',
+        purpose: 'Estimated epsilon values derived from PAbs calibration slopes, user-entered volume and nominal flat-bottom geometry.',
+        rows: tableRows([
+          'Channel',
+          'CalibrationSlope',
+          'ConcentrationUnit',
+          'MolarPerUnit',
+          'Volume_uL',
+          'WellBottomArea_mm2',
+          'EstimatedPathLength_cm',
+          'EstimatedEpsilon_M_1_cm_1',
+          'GeometryName',
+          'GeometrySource',
+          'PathLengthSource',
+          'CalculationStatus',
+          'ValidationStatus',
+          'Assumption',
+        ], estimatedEpsilonRows),
+        include: estimatedEpsilonRows.length > 0,
       },
       ...methodComparisonSheetSpecs,
       {
@@ -6212,7 +6272,7 @@ function buildDiagnosticsLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "FitType", Meaning: "Type of fit row", Formula: "Calibration, StdAdd, UnknownFromCal, UnknownOnly", Unit: "text", 'Where used': "11_CIELAB_FITTING", Notes: "Same convention as main fitting output." },
     { Term: "floor_source/local_pitch_px/px_per_mm/cyl_r_bg", Meaning: "Geometry-source and local scale descriptors", Formula: "reported source, local pitch, pixel/mm scale and well-exclusion/background radius approximation", Unit: "mixed", 'Where used': "05_GEOMETRY_QC, 06_WELL_BOTTOM", Notes: "In mouth-floor-intersection ROI, local_pitch_px is also used to derive the nominal quantitative mouth radius from the selected vendor-specific plate preset." },
     { Term: "floor_to_mouth_r_ratio", Meaning: "Relative floor radius", Formula: "floor_r / mouth_r", Unit: "dimensionless", 'Where used': "05_GEOMETRY_QC", Notes: "For mouth-floor-intersection ROI, mouth_r is the nominal quantitative mouth radius derived from local pitch and the selected vendor-specific plate preset." },
-    { Term: "Geometry and epsilon/path-length quantification", Meaning: "Informational placeholder for a future validated epsilon/path-length implementation", Formula: "l_cm = (volume_uL / well_bottom_area_mm2) / 10; C_M = PAbs / (epsilon x l_cm)", Unit: "cm and M", 'Where used': "RESULTS_CAPTION.txt, RAW_DATA_DETAILS_CAPTION.txt, REPORT", Notes: "Epsilon/path-length quantification is not currently implemented; equations and geometry fields are informational placeholders only." },
+    { Term: "Estimated epsilon/path-length output", Meaning: "Conditional estimate of path length and epsilon for PAbs_Red, PAbs_Green and PAbs_Blue.", Formula: "l_cm = volume_uL / well_bottom_area_mm2 / 10; epsilon = (calibration_slope / molar_per_unit) / l_cm", Unit: "cm and M^-1 cm^-1", 'Where used': "RESULTS_CAPTION.txt, REPORT/EPSILON_ESTIMATES", Notes: "Estimated from image-derived pseudo-absorbance and nominal geometry; not validated spectrophotometric molar absorptivity. Declared epsilon is not yet used to calculate concentrations." },
     { Term: "Gray_*", Meaning: "Robust statistics of grayscale intensity", Formula: "computed over retained ROI pixels; suffix = mean, median, sd, p10, p25, p50, p75, p90 or iqr", Unit: "raw image intensity", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Diagnostic descriptor used for optical QC." },
     { Term: "highlight_fraction_roi/highlight_fraction_core", Meaning: "Fraction of very bright pixels in ROI/core", Formula: "fraction of pixels with grayscale above the highlight threshold", Unit: "dimensionless", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Optical QC descriptor for highlights/specular artifacts." },
     { Term: "HighlightIndex", Meaning: "Combined highlight severity index", Formula: "BrightExcludedFraction x BrightExcessMeanGray", Unit: "gray-level weighted fraction", 'Where used': "04_WELL_ROBUST_STATS", Notes: "Higher values indicate more severe bright artifacts." },
@@ -10762,8 +10822,14 @@ function ResultsTable({
 
 function CalibrationFitTable({ fits }: { fits: CalibrationFit[] }) {
   return (
-    <div className="results-table-wrap compact-table-wrap">
-      <table className="results-table fit-table">
+    <div
+      className="results-table-wrap compact-table-wrap"
+      style={{ overflowX: 'auto', overflowY: 'auto', maxWidth: '100%' }}
+    >
+      <table
+        className="results-table fit-table"
+        style={{ display: 'table', overflow: 'visible', width: 'max-content', minWidth: '100%' }}
+      >
         <thead>
           <tr>
             <th>Channel</th>
@@ -10830,8 +10896,14 @@ function StoredCalibrationTable({ calibration }: { calibration: StoredCalibratio
 
 function StandardAdditionFitTable({ fits }: { fits: StandardAdditionFit[] }) {
   return (
-    <div className="results-table-wrap compact-table-wrap">
-      <table className="results-table standard-table">
+    <div
+      className="results-table-wrap compact-table-wrap"
+      style={{ overflowX: 'auto', overflowY: 'auto', maxWidth: '100%' }}
+    >
+      <table
+        className="results-table standard-table"
+        style={{ display: 'table', overflow: 'visible', width: 'max-content', minWidth: '100%' }}
+      >
         <thead>
           <tr>
             <th>Sample ID</th>
@@ -12950,6 +13022,10 @@ function App() {
           correctionApplications: correctedMeasurementSet.applications,
           sharedGeometryOverride,
           storedCalibration: calibrationForExport,
+          liquidVolumeUl: Number.isFinite(Number(volumePerWellInput)) && Number(volumePerWellInput) > 0
+            ? Number(volumePerWellInput)
+            : null,
+          nominalPlatePreset,
         }),
       );
       addZipBlob(
@@ -13056,10 +13132,13 @@ function App() {
       }
 
       const currentEmptyWellQc = buildEmptyWellPlateQcSummary(measurements, displayMeasurements, plateMap);
+      const packageLiquidVolumeUl = Number.isFinite(Number(volumePerWellInput)) && Number(volumePerWellInput) > 0 ? Number(volumePerWellInput) : null;
+      const packageDeclaredEpsilon = Number.isFinite(Number(epsilonInput)) && Number(epsilonInput) > 0 ? Number(epsilonInput) : null;
+      const packageEstimatedEpsilonRows = buildEstimatedEpsilonRows({ unitLabel: plateMapUnit, liquidVolumeUl: packageLiquidVolumeUl, nominalPlatePreset, calibrationFits });
 
       addTextFile(
         `${pythonResultsPrefix}_RESULTS_CAPTION.txt`,
-        createPythonResultsCaptionText(pythonResultsBase, plateMapUnit, expectedRefs, unknownMethodGroupResults, bestChannel, hasStandardAdditionForExport, currentEmptyWellQc, methodComparisonFileNames),
+        createPythonResultsCaptionText(pythonResultsBase, plateMapUnit, expectedRefs, unknownMethodGroupResults, bestChannel, hasStandardAdditionForExport, currentEmptyWellQc, methodComparisonFileNames, packageEstimatedEpsilonRows),
         'text/plain;charset=utf-8',
       );
       addTextFile(
@@ -13122,6 +13201,8 @@ function App() {
       });
       const analysisRunConfigWithUnknowns = {
         ...analysisRunConfigMetadata,
+        ...((packageLiquidVolumeUl !== null || packageDeclaredEpsilon !== null) ? { optionalOpticsInputs: { ...(packageDeclaredEpsilon !== null ? { declaredEpsilon_M_1_cm_1: packageDeclaredEpsilon, declaredEpsilonStatus: 'stored_not_used_for_concentration_calculation' } : {}), ...(packageLiquidVolumeUl !== null ? { liquidVolumeUl: packageLiquidVolumeUl, volumeSource: 'user_entered_uniform_volume_per_well' } : {}) } } : {}),
+        ...(packageEstimatedEpsilonRows.length > 0 ? { epsilonPathLengthEstimation: { rows: packageEstimatedEpsilonRows, calculationStatus: 'estimated_from_pabs_calibration_slope', validationStatus: 'estimated_not_validated' } } : {}),
         selectedQuantitativeChannel: bestChannel,
         unknownResults: unknownResultsWithReference,
         unknownGroupSummaries,
@@ -13321,6 +13402,15 @@ function App() {
 
   const plateConfiguratorDialogOpen = configuratorWorkflowOpen;
 
+  useEffect(() => {
+    if (!plateConfiguratorDialogOpen) return;
+    const previousDocumentOverflow = document.documentElement.style.overflow;
+    const previousBodyOverflow = document.body.style.overflow;
+    document.documentElement.style.overflow = 'hidden';
+    document.body.style.overflow = 'hidden';
+    return () => { document.documentElement.style.overflow = previousDocumentOverflow; document.body.style.overflow = previousBodyOverflow; };
+  }, [plateConfiguratorDialogOpen]);
+
   // Resolve configurator media stage target after the configurator renders it.
   useEffect(() => {
     if (!configuratorMediaActive || !image) {
@@ -13338,8 +13428,8 @@ function App() {
   return (
     <main className={`app-shell ${configuratorOnly ? 'app-shell-configurator-only' : ''}`}>
       {plateConfiguratorDialogOpen ? (
-        <section className="plate-config-dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="plate-map-heading">
-          <div className="plate-config-dialog">
+        <section className="plate-config-dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="plate-map-heading" style={{ overflow: 'hidden', overscrollBehavior: 'none' }}>
+          <div className="plate-config-dialog" style={{ maxWidth: 'calc(100vw - 2rem)', maxHeight: 'calc(100dvh - 2rem)', overflow: 'auto', overscrollBehavior: 'contain', boxSizing: 'border-box' }}>
             <PlateMapEditor
               plateMap={plateMap}
               unitLabel={plateMapUnit}
@@ -13461,13 +13551,10 @@ function App() {
               ) : null}
               {!image ? (
                 <>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={handleLoadStoredCalibrationClick}
-                  >
-                    Load stored calibration JSON
-                  </button>
+                  <div className="button-row left-aligned-button-row" style={{ flexWrap: 'nowrap' }}>
+                    <button type="button" className="secondary-button" onClick={handleLoadStoredCalibrationClick}>Load stored calibration JSON</button>
+                    <button type="button" className="secondary-button" disabled={!storedCalibration} onClick={handleClearStoredCalibration}>Clear stored calibration</button>
+                  </div>
                   <input
                     ref={storedCalibrationFileInputRef}
                     className="visually-hidden"
@@ -13475,14 +13562,6 @@ function App() {
                     accept="application/json,.json"
                     onChange={handleStoredCalibrationFileChange}
                   />
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={!storedCalibration}
-                    onClick={handleClearStoredCalibration}
-                  >
-                    Clear stored calibration
-                  </button>
                   {storedCalibration ? (
                     <details className="configurator-result-details">
                       <summary>Loaded calibration details</summary>

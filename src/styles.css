@@ -1758,7 +1758,7 @@ h2 {
 }
 
 .configurator-review-stage .configurator-result-details[open] {
-  overflow: auto;
+  overflow: hidden;
 }
 
 .configurator-review-stage .results-table-wrap {
@@ -3643,7 +3643,7 @@ h2 {
 }
 
 .configurator-review-stage .configurator-result-details[open] {
-  overflow: auto;
+  overflow: hidden;
 }
 
 .configurator-review-stage .results-table-wrap {
