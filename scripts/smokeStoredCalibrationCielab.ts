@@ -1,5 +1,5 @@
 import { buildCielabDiagnosticPoints, computeCielabStdAddBetaBias, resolveStoredCalibrationSlopeForCielabDescriptor } from '../src/core/cielab.js';
-import { buildReliabilityPayload, computeEmptyWellQcStatus, parseStoredCalibrationJson } from '../src/core/storedCalibration.js';
+import { buildReliabilityPayload, computeEmptyWellQcStatus, createStoredCalibrationFromFits, parseStoredCalibrationJson, storedCalibrationToJson } from '../src/core/storedCalibration.js';
 
 const calibration = parseStoredCalibrationJson({
   channels: {
@@ -51,6 +51,57 @@ const calibration = parseStoredCalibrationJson({
   ],
 
 });
+
+
+if (calibration.unit !== 'mM') {
+  throw new Error(`Expected Python stored calibration unit mM, got ${calibration.unit}`);
+}
+
+const universalUnits = ['% m/v', '% v/v', '% m/m', 'uM 10^-3'];
+const baseFits = calibration.fits;
+
+for (const unit of universalUnits) {
+  const created = createStoredCalibrationFromFits(
+    baseFits,
+    'unit provenance smoke',
+    [],
+    '2026-07-24T00:00:00.000Z',
+    undefined,
+    {},
+    unit,
+  );
+  if (created.unit !== unit) {
+    throw new Error(`Expected created stored calibration unit ${unit}, got ${created.unit}`);
+  }
+
+  const reparsed = parseStoredCalibrationJson(JSON.parse(storedCalibrationToJson(created)));
+  if (reparsed.unit !== unit) {
+    throw new Error(`Expected stored calibration round-trip unit ${unit}, got ${reparsed.unit}`);
+  }
+}
+
+const legacyWithoutUnit = parseStoredCalibrationJson({
+  version: 2,
+  sourceName: 'legacy calibration',
+  createdAt: '2026-07-24T00:00:00.000Z',
+  fits: baseFits,
+});
+if (legacyWithoutUnit.unit !== 'mM') {
+  throw new Error(`Expected missing legacy unit to fall back to mM, got ${legacyWithoutUnit.unit}`);
+}
+
+const pythonPercentCalibration = parseStoredCalibrationJson({
+  channels: {
+    Signal_Red: { m: 1, q: 0, R2: 1, n_points: 2 },
+    Signal_Green: { m: 1, q: 0, R2: 1, n_points: 2 },
+    Signal_Blue: { m: 1, q: 0, R2: 1, n_points: 2 },
+  },
+  unit_label: '% v/v',
+  image_basename: 'python-percent',
+});
+if (pythonPercentCalibration.unit !== '% v/v') {
+  throw new Error(`Expected Python unit_label to be preserved, got ${pythonPercentCalibration.unit}`);
+}
 
 if (!calibration.cielabReference) {
   throw new Error('Expected parsed stored calibration to include cielabReference');

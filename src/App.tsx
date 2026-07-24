@@ -12418,6 +12418,7 @@ function App() {
           new Date().toISOString(),
           currentMethodMetadata,
           calibrationPointsByChannel,
+          plateMapUnit,
         ),
         calibrationMeasurements,
         plateMap,
@@ -12444,6 +12445,7 @@ function App() {
     lowSignalCorrectionEffective,
     measurements,
     plateMap,
+    plateMapUnit,
     standardAdditionFitsWithSlopeContext,
   ]);
 
@@ -12519,6 +12521,7 @@ function App() {
                 x: point.x, y: point.y, yerr: point.yerr ?? 0, n: point.n ?? 1, excluded: false,
               })),
             },
+            plateMapUnit,
           )
         : null;
       const completeGeneratedStoredCalibration = generatedStoredCalibration

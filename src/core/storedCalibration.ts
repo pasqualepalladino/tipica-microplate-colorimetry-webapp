@@ -715,7 +715,9 @@ function parsePythonStoredCalibrationBundle(raw: Record<string, unknown>): Store
       ? raw.image_basename.trim()
       : 'Python stored calibration',
     createdAt: new Date().toISOString(),
-    unit: raw.unit_label === 'mM' || raw.unit_label === undefined ? 'mM' : 'mM',
+    unit: typeof raw.unit_label === 'string' && raw.unit_label.trim()
+      ? raw.unit_label.trim()
+      : 'mM',
     fits,
     ...(selectedChannel ? { selectedChannel } : {}),
     ...(corrections.length ? { corrections } : {}),
@@ -874,14 +876,20 @@ export function createStoredCalibrationFromFits(
   createdAt = new Date().toISOString(),
   methodMetadata?: MethodMetadata,
   calibrationPointsByChannel: Partial<Record<FitChannel, StoredCalibrationPoint[]>> = {},
+  unitLabel = 'mM',
 ): StoredCalibration {
   const normalizedSourceName = sourceName.trim() || 'current image';
+  const normalizedUnit = unitLabel.trim();
+
+  if (!normalizedUnit) {
+    throw new Error('Stored calibration unit must be a non-empty string.');
+  }
 
   return {
     version: 2,
     sourceName: normalizedSourceName,
     createdAt,
-    unit: 'mM',
+    unit: normalizedUnit,
     fits: normalizeCalibrationFits(
       fits,
       calibrationPointsByChannel,
@@ -909,8 +917,14 @@ export function parseStoredCalibrationJson(raw: unknown): StoredCalibration {
     throw new Error('Stored calibration version must be 1 or 2.');
   }
 
-  if (raw.unit !== 'mM') {
-    throw new Error('Stored calibration unit must be mM.');
+  const unit = raw.unit === undefined
+    ? 'mM'
+    : typeof raw.unit === 'string' && raw.unit.trim()
+      ? raw.unit.trim()
+      : null;
+
+  if (unit === null) {
+    throw new Error('Stored calibration unit must be a non-empty string.');
   }
 
   if (typeof raw.sourceName !== 'string' || raw.sourceName.trim() === '') {
@@ -1005,7 +1019,7 @@ export function parseStoredCalibrationJson(raw: unknown): StoredCalibration {
     version,
     sourceName: raw.sourceName.trim(),
     createdAt: raw.createdAt,
-    unit: 'mM',
+    unit,
     fits,
     corrections,
     ...(selectedChannel ? { selectedChannel } : {}),

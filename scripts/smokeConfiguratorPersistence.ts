@@ -4,6 +4,7 @@ import {
   collectExpectedRefs,
   collectPlateState,
   normalizeSnapshotPlateRegion,
+  parseUnitLabel,
   plateDataToWellConfigs,
   type CellGrid,
   type PlateEditorSnapshot,
@@ -133,6 +134,29 @@ function testQuantificationFieldsSurviveProjectRoundTrip(): void {
   assertEqual(unk.dilutionFactor, 17, 'B3 unknown DF override');
 }
 
+
+function testPercentageUnitsRemainFreeAndRoundTrip(): void {
+  const percentageUnits = ['% m/v', '% v/v', '% m/m'];
+
+  for (const unit of percentageUnits) {
+    assertEqual(buildUnitLabel(unit, '0'), unit, `${unit} at 10^0 should display without a suffix`);
+    assertEqual(
+      buildUnitLabel(unit, '-3'),
+      `${unit} 10^-3`,
+      `${unit} should retain a freely selected non-zero scale`,
+    );
+    assertDeepEqual(
+      parseUnitLabel(`${unit} 10^-3`),
+      { base: unit, exp: '-3' },
+      `${unit} scaled label should parse back exactly`,
+    );
+
+    const projectJson = JSON.stringify({ plateMapUnit: unit });
+    const restored = JSON.parse(projectJson) as { plateMapUnit: string };
+    assertEqual(restored.plateMapUnit, unit, `${unit} should survive project JSON round-trip`);
+  }
+}
+
 function testLegacyPlateRegionFallback(): void {
   const legacySnapshot: PlateEditorSnapshot = {
     grid: {},
@@ -195,6 +219,7 @@ function testOverridePreservationPolicyModel(): void {
 }
 
 testQuantificationFieldsSurviveProjectRoundTrip();
+testPercentageUnitsRemainFreeAndRoundTrip();
 testLegacyPlateRegionFallback();
 testOverridePreservationPolicyModel();
 

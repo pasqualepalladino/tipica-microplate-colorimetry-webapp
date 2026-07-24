@@ -131,7 +131,7 @@ export interface StoredCalibration {
   version: 1 | 2;
   sourceName: string;
   createdAt: string;
-  unit: 'mM';
+  unit: string;
   fits: StoredCalibrationFit[];
   selectedChannel?: FitChannel;
   pythonChannels?: PythonStoredCalibrationChannel[];

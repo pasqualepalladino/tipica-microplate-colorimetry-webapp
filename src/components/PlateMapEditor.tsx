@@ -564,6 +564,9 @@ export function PlateMapEditor({
               <option value="mM">mM</option>
               <option value="uM">uM</option>
               <option value="nM">nM</option>
+              <option value="% m/v">% m/v</option>
+              <option value="% v/v">% v/v</option>
+              <option value="% m/m">% m/m</option>
             </select>
           </label>
 

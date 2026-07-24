@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.58-beta - 2026-07-24
+
+- Added percentage concentration units: % m/v, % v/v and % m/m, with the existing freely configurable scale behavior preserved.
+- Made stored-calibration units universal and derived from the configurator instead of being fixed to mM.
+- Preserved legacy mM fallback for older calibration files and retained imported Python unit labels.
 ## 0.1.57-beta - 2026-07-24
 
 - Enabled full internal technical workflow testing for 384-well and 1536-well plates, including dynamic row labels, mouth/floor geometry, physical inter-well background, analysis and exports.
