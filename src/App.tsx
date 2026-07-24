@@ -1302,6 +1302,12 @@ function parseProjectJson(raw: unknown) {
   const plateMapUnit = typeof project.plateMapUnit === 'string' && project.plateMapUnit.trim() !== ''
     ? project.plateMapUnit
     : 'mM';
+  const epsilonValue = typeof project.epsilon === 'number' && Number.isFinite(project.epsilon) && project.epsilon > 0
+    ? project.epsilon
+    : null;
+  const liquidVolumeUl = typeof project.liquidVolumeUl === 'number' && Number.isFinite(project.liquidVolumeUl) && project.liquidVolumeUl > 0
+    ? project.liquidVolumeUl
+    : null;
   const plateEditorSnapshot = parseProjectPlateEditorSnapshot(project.plateConfigurator);
   const storedCalibrationRaw = project.storedCalibration;
   const storedCalibration = storedCalibrationRaw == null
@@ -1354,6 +1360,8 @@ function parseProjectJson(raw: unknown) {
     roiRadiusFactor,
     plateMap: projectPlateMap,
     plateMapUnit,
+    epsilonValue,
+    liquidVolumeUl,
     plateEditorSnapshot,
     expectedRefs,
     storedCalibration,
@@ -1383,6 +1391,8 @@ function createProjectPayload(
   radiusFactor: number,
   plateMap: WellConfig[],
   plateMapUnit: string,
+  epsilonValue: number | null,
+  liquidVolumeUl: number | null,
   plateEditorSnapshot: PlateEditorSnapshot | null,
   expectedRefs: ExpectedRef[],
   storedCalibration: StoredCalibration | null,
@@ -1415,6 +1425,10 @@ function createProjectPayload(
     roiPixelStatisticsMode,
     plateMap,
     plateMapUnit,
+    epsilon: epsilonValue,
+    epsilonUnit: 'M^-1 cm^-1',
+    liquidVolumeUl,
+    volumeUnit: 'uL',
     plateConfigurator: plateEditorSnapshot,
     expectedRefs,
     storedCalibration: storedCalibration ?? null,
@@ -2358,8 +2372,8 @@ function xlsxNumberFormatForHeader(header: string): string {
   return '0.####';
 }
 
-function xlsxStyleIdForCell(value: XlsxSerializableCellValue, header: string, rowIndex: number): number {
-  if (rowIndex === 0) {
+function xlsxStyleIdForCell(value: XlsxSerializableCellValue, header: string, isHeaderRow: boolean): number {
+  if (isHeaderRow) {
     return XLSX_STYLE_HEADER;
   }
 
@@ -2374,10 +2388,10 @@ function xlsxStyleIdForCell(value: XlsxSerializableCellValue, header: string, ro
   return XLSX_STYLE_TEXT_TOP;
 }
 
-function xlsxCellXml(value: XlsxCellValue, rowIndex: number, columnIndex: number, header: string): string {
+function xlsxCellXml(value: XlsxCellValue, rowIndex: number, columnIndex: number, header: string, isHeaderRow: boolean): string {
   const ref = `${excelColumnName(columnIndex)}${rowIndex + 1}`;
-  const serializedValue = rowIndex === 0 ? String(value ?? '') : xlsxPythonCellValue(value, header);
-  const styleId = xlsxStyleIdForCell(serializedValue, header, rowIndex);
+  const serializedValue = isHeaderRow ? String(value ?? '') : xlsxPythonCellValue(value, header);
+  const styleId = xlsxStyleIdForCell(serializedValue, header, isHeaderRow);
   const styleAttr = styleId === XLSX_STYLE_DEFAULT ? '' : ` s="${styleId}"`;
 
   if (serializedValue === null || serializedValue === '') {
@@ -2397,8 +2411,8 @@ function xlsxCellXml(value: XlsxCellValue, rowIndex: number, columnIndex: number
   return `<c r="${ref}"${styleAttr} t="inlineStr"><is><t>${escapeXml(serializedValue)}</t></is></c>`;
 }
 
-function xlsxCellWidthSample(value: XlsxCellValue, header: string, rowIndex: number): number {
-  const serializedValue = rowIndex === 0 ? String(value ?? '') : xlsxPythonCellValue(value, header);
+function xlsxCellWidthSample(value: XlsxCellValue, header: string, isHeaderRow: boolean): number {
+  const serializedValue = isHeaderRow ? String(value ?? '') : xlsxPythonCellValue(value, header);
 
   if (serializedValue === null) {
     return 0;
@@ -2411,16 +2425,42 @@ function xlsxCellWidthSample(value: XlsxCellValue, header: string, rowIndex: num
   return Math.min(maxLineLength, 48);
 }
 
+interface XlsxRowLayout {
+  headers: XlsxCellValue[];
+  isHeaderRow: boolean;
+}
+
+function xlsxIsSectionTitleRow(row: XlsxCellValue[]): boolean {
+  const populated = row.filter((value) => value !== null && value !== undefined && value !== '');
+  return populated.length === 1 && typeof populated[0] === 'string' && populated[0].endsWith(' FITS');
+}
+
+function xlsxIsFittingHeaderRow(row: XlsxCellValue[]): boolean {
+  const labels = new Set(row.map((value) => String(value ?? '')));
+  return labels.has('Channel') && labels.has('n_points') && labels.has('m') && labels.has('q');
+}
+
+function xlsxRowLayouts(rows: XlsxCellValue[][]): XlsxRowLayout[] {
+  let activeHeaders = rows[0] ?? [];
+  return rows.map((row, rowIndex) => {
+    const isSectionTitle = xlsxIsSectionTitleRow(row);
+    const isSectionHeader = xlsxIsFittingHeaderRow(row);
+    const isHeaderRow = rowIndex === 0 || isSectionTitle || isSectionHeader;
+    if (isSectionHeader || (rowIndex === 0 && !isSectionTitle)) activeHeaders = row;
+    return { headers: activeHeaders, isHeaderRow };
+  });
+}
+
 function xlsxColumnWidths(rows: XlsxCellValue[][]): number[] {
   const maxColumns = Math.max(...rows.map((row) => row.length), 0);
-  const headers = rows[0] ?? [];
+  const layouts = xlsxRowLayouts(rows);
   const widths: number[] = Array.from({ length: maxColumns }, () => 8);
 
   rows.forEach((row, rowIndex) => {
+    const layout = layouts[rowIndex];
     for (let columnIndex = 0; columnIndex < maxColumns; columnIndex += 1) {
-      const header = xlsxHeaderText(headers[columnIndex]);
-      const sample = xlsxCellWidthSample(row[columnIndex], header, rowIndex);
-
+      const header = xlsxHeaderText(layout.headers[columnIndex]);
+      const sample = xlsxCellWidthSample(row[columnIndex], header, layout.isHeaderRow);
       widths[columnIndex] = Math.min(34, Math.max(widths[columnIndex], sample + 2));
     }
   });
@@ -2429,14 +2469,15 @@ function xlsxColumnWidths(rows: XlsxCellValue[][]): number[] {
 }
 
 function xlsxWorksheetXml(rows: XlsxCellValue[][]): string {
-  const headers = rows[0] ?? [];
+  const layouts = xlsxRowLayouts(rows);
   const widths = xlsxColumnWidths(rows);
   const colsXml = widths.length > 0
     ? `<cols>${widths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join('')}</cols>`
     : '';
-  const sheetRows = rows.map((row, rowIndex) => (
-    `<row r="${rowIndex + 1}">${row.map((value, columnIndex) => xlsxCellXml(value, rowIndex, columnIndex, xlsxHeaderText(headers[columnIndex]))).join('')}</row>`
-  )).join('');
+  const sheetRows = rows.map((row, rowIndex) => {
+    const layout = layouts[rowIndex];
+    return `<row r="${rowIndex + 1}">${row.map((value, columnIndex) => xlsxCellXml(value, rowIndex, columnIndex, xlsxHeaderText(layout.headers[columnIndex]), layout.isHeaderRow)).join('')}</row>`;
+  }).join('');
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -2496,6 +2537,47 @@ function tableRows(headers: string[], rows: XlsxRow[]): XlsxCellValue[][] {
     headers,
     ...rows.map((row) => headers.map((header) => row[header] ?? '')),
   ];
+}
+
+function fittingSectionRows(rows: XlsxRow[]): XlsxCellValue[][] {
+  const calibrationRows = rows.filter((row) => stringRowValue(row, 'FitType') === 'Calibration');
+  const standardAdditionRows = rows.filter((row) => stringRowValue(row, 'FitType') === 'StdAdd');
+  const unknownRows = rows.filter((row) => !['Calibration', 'StdAdd'].includes(stringRowValue(row, 'FitType')));
+  const output: XlsxCellValue[][] = [];
+
+  const appendSection = (title: string, headers: string[], sectionRows: XlsxRow[]) => {
+    if (sectionRows.length === 0) return;
+    if (output.length > 0) output.push([]);
+    output.push([title]);
+    output.push(headers);
+    output.push(...sectionRows.map((row) => headers.map((header) => row[header] ?? '')));
+  };
+
+  appendSection('CALIBRATION FITS', [
+    'Channel', 'n_points', 'm', 'q', 'R2', 'RMSE', 'sigma_cal', 'sigma_source', 'SNR', 'LOD', 'LOQ',
+    'S0_calibration', 'S0_applied', 'NClipPoints', 'ClipX',
+  ], calibrationRows);
+
+  appendSection('STANDARD ADDITION FITS', [
+    'Channel', 'n_points', 'm', 'q', 'R2', 'RMSE', 'ID', 'DF', 'C0', 'C0_sd',
+    'ReferenceStatus', 'ReferenceID', 'ReferenceLabel', 'ReferenceValue', 'ReferenceSD',
+    'Delta', 'Delta_sd', 'Recovery_pct', 'Recovery_sd_pct', 'beta_k', 'bias_index_k', 'S0_applied', 'ClipDelta',
+  ], standardAdditionRows);
+
+  if (unknownRows.length > 0) {
+    const preferredUnknownHeaders = [
+      'Channel', 'FitType', 'ID', 'DF', 'C0', 'C0_sd', 'ReferenceStatus', 'ReferenceID', 'ReferenceLabel',
+      'ReferenceValue', 'ReferenceSD', 'Delta', 'Delta_sd', 'Recovery_pct', 'Recovery_sd_pct',
+      'N_wells', 'Wells', 'Display_status', 'Display_reason', 'S0_applied', 'ClipDelta',
+    ];
+    const unknownHeaders = preferredUnknownHeaders.filter((header) => (
+      ['Channel', 'FitType'].includes(header)
+      || unknownRows.some((row) => row[header] !== null && row[header] !== undefined && row[header] !== '')
+    ));
+    appendSection('UNKNOWN FITS', unknownHeaders, unknownRows);
+  }
+
+  return output;
 }
 
 async function createXlsxWorkbookBlob(sheets: XlsxSheet[]): Promise<Blob> {
@@ -2616,6 +2698,10 @@ function storedCalibrationDiagnosticFitRows(calibration: StoredCalibration | nul
     LOQ: fit.loq ?? '',
     C0: '',
     C0_sd: '',
+    ReferenceStatus: 'not_applicable',
+    Wells: 'not_available_in_fitting_record',
+    Display_status: 'displayed',
+    Display_reason: 'fit_available',
     beta_k: '',
     bias_index_k: '',
     S0_calibration: fit.S0 ?? '',
@@ -3778,6 +3864,10 @@ function buildReportFitRows(
       SNR: Number.isFinite(fit.snr ?? Number.NaN) ? fit.snr as number : Number.isFinite(sigmaCal) && sigmaCal > 0 ? Math.abs(fit.slope) / sigmaCal : '',
       LOD: Number.isFinite(lodValue) ? lodValue : '',
       LOQ: Number.isFinite(loqValue) ? loqValue : '',
+      ReferenceStatus: 'not_applicable',
+      Wells: 'not_available_in_fitting_record',
+      Display_status: 'displayed',
+      Display_reason: 'fit_available',
       S0_calibration: fit.S0 ?? '',
       S0_applied: fit.S0 ?? '',
       NClipPoints: correction?.nClipPoints ?? '',
@@ -3821,7 +3911,7 @@ function buildReportFitRows(
       R2: fit.r2,
       RMSE: finiteRmse(points, fit.slope, fit.intercept),
       sigma_cal: '',
-      sigma_source: '',
+      sigma_source: 'not_applicable',
       SNR: '',
       LOD: '',
       LOQ: '',
@@ -3829,6 +3919,10 @@ function buildReportFitRows(
       DF: fit.dilutionFactor,
       C0: fit.concentrationInOriginalSample,
       C0_sd: Number.isFinite(fit.concentrationInOriginalSampleSd ?? Number.NaN) ? fit.concentrationInOriginalSampleSd as number : '',
+      ReferenceStatus: 'not_evaluated_in_fitting_export',
+      Wells: 'not_available_in_fitting_record',
+      Display_status: 'displayed',
+      Display_reason: 'fit_available',
       beta_k: Number.isFinite(beta) ? beta : '',
       bias_index_k: Number.isFinite(beta) ? Math.abs(beta - 1) : '',
       S0_calibration: '',
@@ -4697,7 +4791,45 @@ function buildReportMetadataRows(options: PythonReportWorkbookOptions): XlsxRow[
 }
 
 function buildReportLegendRows(unitLabel: string): XlsxRow[] {
-  return [
+  const fittingColumnRows: XlsxRow[] = [
+    { Term: 'Channel', Meaning: 'Analytical signal or colour descriptor fitted in this row.', Formula: 'reported channel name', Unit: 'text', 'Where used': '06_FITTING', 'Shown when': 'every fitting row', Notes: 'Examples include PAbs_Red, PAbs_Green, PAbs_Blue, L, a, b and DeltaE descriptors.' },
+    { Term: 'FitType', Meaning: 'Calculation path represented by the row.', Formula: 'Calibration, StdAdd or another explicitly named fitting mode', Unit: 'text', 'Where used': '06_FITTING — UNKNOWN FITS', 'Shown when': 'UNKNOWN FITS section is present', Notes: 'Calibration and standard-addition rows are identified by their section titles, so FitType is omitted from those compact tables.' },
+    { Term: 'n_points', Meaning: 'Number of distinct x-y points used by the regression after replicate aggregation.', Formula: 'count of fitted points', Unit: 'count', 'Where used': '06_FITTING', 'Shown when': 'fit available', Notes: 'This is not necessarily the number of source wells.' },
+    { Term: 'm', Meaning: 'Slope of the fitted line.', Formula: 'y = m x + q', Unit: 'response per concentration unit', 'Where used': '06_FITTING', 'Shown when': 'fit available', Notes: '' },
+    { Term: 'q', Meaning: 'Intercept of the fitted line.', Formula: 'y = m x + q', Unit: 'response', 'Where used': '06_FITTING', 'Shown when': 'fit available', Notes: '' },
+    { Term: 'R2', Meaning: 'Coefficient of determination of the fitted line.', Formula: '1 - SSE/SST', Unit: 'dimensionless', 'Where used': '06_FITTING', 'Shown when': 'fit available', Notes: 'Closer to 1 indicates a stronger linear fit.' },
+    { Term: 'RMSE', Meaning: 'Root mean squared residual error of the fitted line.', Formula: 'sqrt(mean(residual^2))', Unit: 'response', 'Where used': '06_FITTING', 'Shown when': 'fit available', Notes: '' },
+    { Term: 'sigma_cal', Meaning: 'Calibration response-noise estimate used for detection-limit calculations.', Formula: 'selected blank/zero-level SD or median calibration-level SD', Unit: 'response', 'Where used': '06_FITTING', 'Shown when': 'Calibration row and an estimate is available', Notes: 'Blank numeric cells mean unavailable or not applicable.' },
+    { Term: 'sigma_source', Meaning: 'Source selected for sigma_cal.', Formula: 'text status', Unit: 'text', 'Where used': '06_FITTING', 'Shown when': 'every row', Notes: 'StdAdd rows report not_applicable.' },
+    { Term: 'SNR', Meaning: 'Slope-to-noise diagnostic ratio.', Formula: '|m| / sigma_cal', Unit: 'dimensionless', 'Where used': '06_FITTING', 'Shown when': 'Calibration row with finite sigma_cal', Notes: 'Not a standard-addition quantity.' },
+    { Term: 'LOD', Meaning: 'Calibration detection limit.', Formula: '3 x sigma_cal / |m|', Unit: unitLabel, 'Where used': '06_FITTING', 'Shown when': 'Calibration row with valid slope and sigma_cal', Notes: 'Blank for StdAdd rows because the value belongs to the corresponding calibration.' },
+    { Term: 'LOQ', Meaning: 'Calibration quantification limit.', Formula: '10 x sigma_cal / |m|', Unit: unitLabel, 'Where used': '06_FITTING', 'Shown when': 'Calibration row with valid slope and sigma_cal', Notes: 'Blank for StdAdd rows because the value belongs to the corresponding calibration.' },
+    { Term: 'ID', Meaning: 'Sample identifier for the fitted standard-addition or unknown group.', Formula: 'configured sample ID', Unit: 'text', 'Where used': '06_FITTING', 'Shown when': 'StdAdd or grouped unknown row', Notes: 'Blank for Calibration rows.' },
+    { Term: 'DF', Meaning: 'Dilution factor associated with the fitted sample group.', Formula: 'configured dilution factor', Unit: 'dimensionless', 'Where used': '06_FITTING', 'Shown when': 'StdAdd or grouped unknown row', Notes: 'Blank for Calibration rows.' },
+    { Term: 'C0', Meaning: 'Estimated concentration in the original sample.', Formula: 'StdAdd: DF x q/m; other modes use their explicitly documented formula', Unit: unitLabel, 'Where used': '06_FITTING', 'Shown when': 'a quantitative sample estimate is available', Notes: 'Blank for Calibration rows.' },
+    { Term: 'C0_sd', Meaning: 'Estimated standard uncertainty of C0.', Formula: 'propagated from the fitted slope/intercept covariance', Unit: unitLabel, 'Where used': '06_FITTING', 'Shown when': 'C0 uncertainty is calculable', Notes: '' },
+    { Term: 'ReferenceStatus', Meaning: 'Status of external-reference applicability or matching for this row.', Formula: 'text status', Unit: 'text', 'Where used': '06_FITTING', 'Shown when': 'every row', Notes: 'Calibration rows report not_applicable. StdAdd rows report matched, single_reference_fallback, ambiguous, or unmatched according to the configured references.' },
+    { Term: 'ReferenceID', Meaning: 'Identifier of the matched external reference.', Formula: 'matched configured reference ID', Unit: 'text', 'Where used': '06_FITTING', 'Shown when': 'reference matching is evaluated and resolved', Notes: 'Blank numeric/text value fields are retained until propagation is implemented.' },
+    { Term: 'ReferenceLabel', Meaning: 'Human-readable label of the matched external reference.', Formula: 'configured reference label', Unit: 'text', 'Where used': '06_FITTING', 'Shown when': 'reference matching is evaluated and resolved', Notes: '' },
+    { Term: 'ReferenceValue', Meaning: 'Central value of the matched external reference.', Formula: 'configured reference value', Unit: unitLabel, 'Where used': '06_FITTING', 'Shown when': 'reference matching is evaluated and resolved', Notes: '' },
+    { Term: 'ReferenceSD', Meaning: 'Standard uncertainty or SD of the matched external reference.', Formula: 'configured reference SD', Unit: unitLabel, 'Where used': '06_FITTING', 'Shown when': 'reference matching is evaluated and resolved', Notes: '' },
+    { Term: 'Delta', Meaning: 'Difference between the sample estimate and the matched reference.', Formula: 'C0 - ReferenceValue', Unit: unitLabel, 'Where used': '06_FITTING', 'Shown when': 'C0 and a matched reference are available', Notes: '' },
+    { Term: 'Delta_sd', Meaning: 'Combined standard uncertainty of Delta.', Formula: 'sqrt(C0_sd^2 + ReferenceSD^2) under independence', Unit: unitLabel, 'Where used': '06_FITTING', 'Shown when': 'both uncertainty terms are available', Notes: '' },
+    { Term: 'Recovery_pct', Meaning: 'Recovery of the sample estimate relative to the matched reference.', Formula: '100 x C0 / ReferenceValue', Unit: '%', 'Where used': '06_FITTING', 'Shown when': 'C0 and non-zero matched reference are available', Notes: '' },
+    { Term: 'Recovery_sd_pct', Meaning: 'Propagated standard uncertainty of Recovery_pct.', Formula: 'first-order independent uncertainty propagation for 100 x C0 / ReferenceValue', Unit: '%', 'Where used': '06_FITTING', 'Shown when': 'required values and uncertainties are available', Notes: '' },
+    { Term: 'N_wells', Meaning: 'Number of source wells contributing to an unknown fitting record.', Formula: 'count of source well IDs', Unit: 'count', 'Where used': '06_FITTING — UNKNOWN FITS', 'Shown when': 'UNKNOWN FITS exists and source-well provenance is retained', Notes: 'Omitted from the Calibration and Standard addition sections.' },
+    { Term: 'Wells', Meaning: 'Comma-separated source well identifiers contributing to an unknown fitting record.', Formula: 'joined source well IDs', Unit: 'text', 'Where used': '06_FITTING — UNKNOWN FITS', 'Shown when': 'UNKNOWN FITS exists and source-well provenance is retained', Notes: 'Omitted from the Calibration and Standard addition sections.' },
+    { Term: 'Display_status', Meaning: 'Explicit export/display state for the fitting result.', Formula: 'text status', Unit: 'text', 'Where used': '06_FITTING', 'Shown when': 'every row', Notes: 'Current valid fit rows report displayed.' },
+    { Term: 'Display_reason', Meaning: 'Reason associated with Display_status.', Formula: 'text status', Unit: 'text', 'Where used': '06_FITTING', 'Shown when': 'every row', Notes: 'Current valid fit rows report fit_available.' },
+    { Term: 'beta_k', Meaning: 'Standard-addition slope divided by the corresponding calibration slope.', Formula: 'm_std / m_cal', Unit: 'dimensionless', 'Where used': '06_FITTING', 'Shown when': 'StdAdd row with a corresponding calibration slope', Notes: 'Blank for Calibration rows.' },
+    { Term: 'bias_index_k', Meaning: 'Absolute departure of beta_k from unity.', Formula: '|beta_k - 1|', Unit: 'dimensionless', 'Where used': '06_FITTING', 'Shown when': 'beta_k is available', Notes: 'Blank for Calibration rows.' },
+    { Term: 'S0_calibration', Meaning: 'Low-signal baseline offset estimated from the calibration.', Formula: 'max(0, -minimum raw calibration response)', Unit: 'PAbs response', 'Where used': '06_FITTING', 'Shown when': 'PAbs_Red, PAbs_Green or PAbs_Blue calibration uses the correction', Notes: 'Not applicable to CIELAB/DeltaE descriptors.' },
+    { Term: 'S0_applied', Meaning: 'Low-signal baseline offset actually applied to this fitted signal.', Formula: 'channel calibration S0 transferred to the applicable fit', Unit: 'PAbs response', 'Where used': '06_FITTING', 'Shown when': 'PAbs_Red, PAbs_Green or PAbs_Blue correction is active', Notes: 'Not applicable to CIELAB/DeltaE descriptors.' },
+    { Term: 'NClipPoints', Meaning: 'Number of calibration points receiving a positive low-signal clipping adjustment.', Formula: 'count(ClipDelta > 0)', Unit: 'count', 'Where used': '06_FITTING', 'Shown when': 'PAbs_Red, PAbs_Green or PAbs_Blue calibration is evaluated', Notes: 'The correction is not applied to CIELAB/DeltaE descriptors.' },
+    { Term: 'ClipX', Meaning: 'Calibration concentration values at which low-signal clipping was evaluated.', Formula: 'comma-separated calibration x values', Unit: unitLabel, 'Where used': '06_FITTING', 'Shown when': 'PAbs_Red, PAbs_Green or PAbs_Blue calibration is evaluated', Notes: 'It may list evaluated x values beyond the subset counted by NClipPoints. CIELAB rows report not_applicable_to_cielab_channel.' },
+    { Term: 'ClipDelta', Meaning: 'Mean or reported positive response adjustment produced by the low-signal correction.', Formula: 'corrected response - baseline-shifted observed response', Unit: 'PAbs response', 'Where used': '06_FITTING', 'Shown when': 'PAbs_Red, PAbs_Green or PAbs_Blue correction data are available', Notes: 'Blank numeric cells mean no exported value or not applicable.' },
+  ];
+  const generalRows: XlsxRow[] = [
     { Term: "a", Meaning: "CIELAB green–red axis", Formula: "median ROI value after RGB → CIELAB conversion", Unit: "dimensionless", "Where used": "RAW, SUMMARY", "Shown when": "CIELAB enabled", Notes: "" },
     { Term: "b", Meaning: "CIELAB blue–yellow axis", Formula: "median ROI value after RGB → CIELAB conversion", Unit: "dimensionless", "Where used": "RAW, SUMMARY", "Shown when": "CIELAB enabled", Notes: "" },
     { Term: "BaseScore/FinalScore", Meaning: "Intermediate/final score fields when present", Formula: "same common score unless an explicit post-score adjustment is applied", Unit: "dimensionless", "Where used": "METHOD_COMPARISON", "Shown when": "method comparison", Notes: "If identical to Score in the exported workbook, Score is the authoritative field." },
@@ -4712,8 +4844,8 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "Channel", Meaning: "Fitted analytical descriptor", Formula: "PAbs_Red, PAbs_Green, PAbs_Blue or diagnostic CIELAB/DeltaE descriptor", Unit: "text", "Where used": "FITTING, METHOD_COMPARISON", "Shown when": "always", Notes: "" },
     { Term: "CIELAB (L*, a*, b*)", Meaning: "CIE 1976 color coordinates derived from the RGB image", Formula: "L* = 116 f(Y/Yn) - 16; a* = 500[f(X/Xn) - f(Y/Yn)]; b* = 200[f(Y/Yn) - f(Z/Zn)]", Unit: "dimensionless", "Where used": "RAW, REPLICATES_MEAN, CIELAB diagnostics", "Shown when": "CIELAB enabled", Notes: "D65 is the reference white used by the TypeScript sRGB-to-XYZ-to-CIELAB conversion. References: CIE 1976 L*a*b* and CIE standard illuminant D65." },
     { Term: "CIELAB_ref_source", Meaning: "Source of the CIELAB reference used to compute Delta variables", Formula: "zero calibration or other reported fallback source", Unit: "text", "Where used": "04_RAW, 05_REPLICATES_MEAN", "Shown when": "CIELAB/DeltaE outputs present", Notes: "Reported only for CIELAB-derived variables because RGB pseudo-absorbance does not use this CIELAB reference." },
-    { Term: "ClipDelta", Meaning: "Positive calibration-derived clipping correction", Formula: "max(0, y_expected − y_shifted) when deficit exceeds SD threshold", Unit: "signal", "Where used": "FITTING", "Shown when": "RGB calibration", Notes: "Computed from calibration after S0 and zero-intercept fit; applied by same channel and same x." },
-    { Term: "ClipX", Meaning: "Calibration x values where clipping correction was evaluated", Formula: "list of calibration concentrations", Unit: unitLabel, "Where used": "FITTING", "Shown when": "RGB calibration", Notes: "Transferred to StdAdd at the same channel and same x values." },
+    { Term: "ClipDelta", Meaning: "Positive calibration-derived clipping correction", Formula: "max(0, y_expected − y_shifted) when deficit exceeds SD threshold", Unit: "signal", "Where used": "FITTING", "Shown when": "PAbs_Red, PAbs_Green or PAbs_Blue correction data are available", Notes: "Computed from calibration after S0 and zero-intercept fit; applied by the same PAbs channel and the same x." },
+    { Term: "ClipX", Meaning: "Calibration x values where clipping correction was evaluated", Formula: "list of calibration concentrations", Unit: unitLabel, "Where used": "FITTING", "Shown when": "PAbs_Red, PAbs_Green or PAbs_Blue calibration is evaluated", Notes: "Transferred to StdAdd for the same PAbs channel and matching x values." },
     { Term: "Code implementation", Meaning: "Main computational libraries and code provenance", Formula: "custom TypeScript/browser implementation using ImageData/Canvas-based image sampling, TypeScript numerical routines, XLSX export and browser-generated PNG outputs", Unit: "software provenance", "Where used": "all generated outputs", "Shown when": "always", Notes: "Sources/libraries: browser ImageData/Canvas for image pixels and masks; custom TypeScript routines for fitting and color conversion; XLSX/PNG export generated in the browser workflow." },
     { Term: "Col", Meaning: "Plate column index", Formula: "1-based column number", Unit: "well-column index", "Where used": "RAW, REPLICATES_MEAN", "Shown when": "always", Notes: "" },
     { Term: "CommonFactorsN", Meaning: "Number of common factors used in the score", Formula: "3 for R2_cal, R2_std_mean and SlopeAgreement; LOQ is included in the score formula but not counted in CommonFactorsN; 1 for calibration-only or stdadd-only fallbacks", Unit: "integer", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "Used to avoid comparing scores obtained from different formulas." },
@@ -4791,7 +4923,7 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "RMSE", Meaning: "Root mean squared error of the fit", Formula: "sqrt(mean(residual^2))", Unit: "response unit", "Where used": "06_FITTING", "Shown when": "fit rows present", Notes: "Interpret in the units of the fitted response." },
     { Term: "Robust SD", Meaning: "Robust dispersion across replicates", Formula: "1.4826 × MAD, where MAD = median(|x − median(x)|)", Unit: "same as variable", "Where used": "REPLICATES_MEAN", "Shown when": "always", Notes: "Computed within each replicate group." },
     { Term: "Row", Meaning: "Plate row label", Formula: "A-based alphabetical row label", Unit: "well-row label", "Where used": "RAW, REPLICATES_MEAN", "Shown when": "always", Notes: "" },
-    { Term: "S0_calibration", Meaning: "Channel-wide low-signal offset estimated from raw calibration", Formula: "max(0, −min(raw calibration response))", Unit: "signal", "Where used": "FITTING", "Shown when": "RGB calibration", Notes: "Estimated before forced-zero calibration and transferred to StdAdd/unknown data." },
+    { Term: "S0_calibration", Meaning: "Channel-wide low-signal offset estimated from raw calibration", Formula: "max(0, −min(raw calibration response))", Unit: "signal", "Where used": "FITTING", "Shown when": "PAbs_Red, PAbs_Green or PAbs_Blue calibration uses the correction", Notes: "Estimated before forced-zero calibration and transferred to StdAdd/unknown data for the same PAbs channel." },
     { Term: "Overall method score", Meaning: "Common cross-method ranking score; one value per method/channel", Formula: "for calibration plus standard addition: SlopeAgreement^2 x sqrt(R2_cal x R2_std_mean) x (1/LOQ)", Unit: `1/${unitLabel}`, "Where used": "FIGURE_RGB.png, METHOD_COMPARISON PNG file(s), METHOD_COMPARISON ID+DF sheet(s)", "Shown when": "method comparison present", Notes: "Expected/reference values, recovery, SNR and clipping are not used in this score." },
     { Term: "OverallScoreFormula", Meaning: "Formula used to compute Overall method score", Formula: "text descriptor", Unit: "text", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "Documents which score formula was applied to the row." },
     { Term: "Selected", Meaning: "Workbook-level selected method flag", Formula: "1 for the highest-ranked row within the most informative ComparableGroup, otherwise 0", Unit: "0/1", "Where used": "METHOD_COMPARISON", "Shown when": "always", Notes: "Selection in the workbook is derived from method-comparison rank and not from expected/recovery." },
@@ -4810,6 +4942,12 @@ function buildReportLegendRows(unitLabel: string): XlsxRow[] {
     { Term: "Value", Meaning: "Value associated with a metadata or overview item", Formula: "reported value for the corresponding Field", Unit: "mixed", "Where used": "02_METADATA, 03_OVERVIEW", "Shown when": "always", Notes: "" },
     { Term: "Well", Meaning: "Human-readable well identifier", Formula: "Well = Row + Col", Unit: "well label", "Where used": "RAW, REPLICATES_MEAN", "Shown when": "always", Notes: "" },
     { Term: "well_bottom_area_mm2", Meaning: "Nominal flat-bottom well area used for path-length calculation", Formula: "pi × (d_bottom/2)^2", Unit: "mm^2", "Where used": "OVERVIEW", "Shown when": "epsilon mode configured", Notes: "Derived from the selected plate geometry." },
+  ];
+
+  const explicitFittingTerms = new Set(fittingColumnRows.map((row) => String(row.Term)));
+  return [
+    ...fittingColumnRows,
+    ...generalRows.filter((row) => !explicitFittingTerms.has(String(row.Term))),
   ];
 }
 
@@ -4854,6 +4992,69 @@ function createSequentialWorkbookSheets(
   ];
 }
 
+function enrichStdAddFittingRowsWithReferences(rows: XlsxRow[], expectedRefs: ExpectedRef[]): XlsxRow[] {
+  return rows.map((row) => {
+    const fitType = stringRowValue(row, 'FitType');
+    if (fitType === 'Calibration') {
+      return { ...row, ReferenceStatus: 'not_applicable' };
+    }
+    if (fitType !== 'StdAdd') {
+      return row;
+    }
+
+    const sampleId = stringRowValue(row, 'ID');
+    const resolution = resolveUnknownReference(sampleId, expectedRefs);
+    if (!resolution.ref) {
+      return {
+        ...row,
+        ReferenceStatus: resolution.status,
+        ReferenceID: '',
+        ReferenceLabel: '',
+        ReferenceValue: '',
+        ReferenceSD: '',
+        Delta: '',
+        Delta_sd: '',
+        Recovery_pct: '',
+        Recovery_sd_pct: '',
+      };
+    }
+
+    const referenceValue = Number.isFinite(resolution.ref.value) ? resolution.ref.value : Number.NaN;
+    const referenceSd = resolution.ref.sd !== null && Number.isFinite(resolution.ref.sd) && resolution.ref.sd >= 0
+      ? resolution.ref.sd
+      : Number.NaN;
+    const c0 = numericRowValue(row, 'C0');
+    const c0Sd = numericRowValue(row, 'C0_sd');
+    const delta = Number.isFinite(c0) && Number.isFinite(referenceValue) ? c0 - referenceValue : Number.NaN;
+    const deltaSd = Number.isFinite(c0Sd) && c0Sd >= 0 && Number.isFinite(referenceSd)
+      ? Math.sqrt(c0Sd * c0Sd + referenceSd * referenceSd)
+      : Number.NaN;
+    const recovery = Number.isFinite(c0) && Number.isFinite(referenceValue) && Math.abs(referenceValue) > 1e-15
+      ? (100 * c0) / referenceValue
+      : Number.NaN;
+    const recoverySd = Number.isFinite(recovery)
+      && Number.isFinite(c0Sd) && c0Sd >= 0
+      && Number.isFinite(referenceSd)
+      && Math.abs(c0) > 1e-15
+      && Math.abs(referenceValue) > 1e-15
+      ? Math.abs(recovery) * Math.sqrt((c0Sd / c0) ** 2 + (referenceSd / referenceValue) ** 2)
+      : Number.NaN;
+
+    return {
+      ...row,
+      ReferenceStatus: resolution.status,
+      ReferenceID: resolution.ref.refId,
+      ReferenceLabel: resolution.ref.label || resolution.ref.refId,
+      ReferenceValue: finiteOrBlank(referenceValue),
+      ReferenceSD: finiteOrBlank(referenceSd),
+      Delta: finiteOrBlank(delta),
+      Delta_sd: finiteOrBlank(deltaSd),
+      Recovery_pct: finiteOrBlank(recovery),
+      Recovery_sd_pct: finiteOrBlank(recoverySd),
+    };
+  });
+}
+
 function deduplicateReportFittingRows(rows: XlsxRow[]): XlsxRow[] {
   const seenCalibrationChannels = new Set<string>();
   return rows.filter((row) => {
@@ -4895,12 +5096,12 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
     options.rankings,
     options.lowSignalCorrections,
   );
-  const fitRows = deduplicateReportFittingRows([
+  const fitRows = enrichStdAddFittingRowsWithReferences(deduplicateReportFittingRows([
     ...rgbFitRows.filter((row) => stringRowValue(row, 'FitType') !== 'UnknownFromCal'),
     ...storedCalibrationDiagnosticFitRows(options.storedCalibration),
     ...buildCielabFittingRows(cielabPoints, undefined, options.storedCalibration, pythonReportCielabChannelLabel),
     ...buildUnknownGroupFittingRows(options.unknownMethodGroupResults, options.calibrationFits, options.storedCalibration),
-  ]);
+  ]), options.expectedRefs);
   const hasStandardAddition = options.standardAdditionFits.length > 0;
   const methodComparisonRows = options.methodComparisonRows;
   const methodComparisonGroups = options.methodComparisonGroups;
@@ -5006,11 +5207,8 @@ async function createPythonReportWorkbookBlob(options: PythonReportWorkbookOptio
       },
       {
         title: 'FITTING',
-        purpose: 'Calibration, standard-addition and unknown/CRM fit results.',
-        rows: tableRows(
-          ['Channel', 'FitType', 'n_points', 'm', 'q', 'R2', 'RMSE', 'sigma_cal', 'sigma_source', 'SNR', 'LOD', 'LOQ', 'ID', 'DF', 'C0', 'C0_sd', 'ReferenceStatus', 'ReferenceID', 'ReferenceLabel', 'ReferenceValue', 'ReferenceSD', 'Delta', 'Delta_sd', 'Recovery_pct', 'Recovery_sd_pct', 'N_wells', 'Wells', 'Display_status', 'Display_reason', 'beta_k', 'bias_index_k', 'S0_calibration', 'S0_applied', 'NClipPoints', 'ClipX', 'ClipDelta'],
-          fitRows,
-        ),
+        purpose: 'Dynamic grouped sections for calibration, standard-addition and unknown/CRM fit results.',
+        rows: fittingSectionRows(fitRows),
         include: fitRows.length > 0,
       },
       ...methodComparisonSheetSpecs,
@@ -5721,6 +5919,11 @@ function buildCielabFittingRows(
         sigma_cal: finiteOrBlank(sigmaCal),
         sigma_source: sigmaSource,
         SNR: Number.isFinite(sigmaCal) && sigmaCal > 0 && Number.isFinite(calFit.slope) ? Math.abs(calFit.slope) / sigmaCal : '',
+        ReferenceStatus: 'not_applicable',
+        Wells: 'not_available_in_fitting_record',
+        Display_status: 'displayed',
+        Display_reason: 'fit_available',
+        ClipX: 'not_applicable_to_cielab_channel',
         beta_k: '',
         bias_index_k: '',
       });
@@ -5744,6 +5947,11 @@ function buildCielabFittingRows(
           sigma_cal: finiteOrBlank(storedChannel.sigmaCal ?? Number.NaN),
           sigma_source: storedChannel.sigmaSource ?? 'stored_calibration',
           SNR: finiteOrBlank(storedChannel.snr ?? Number.NaN),
+          ReferenceStatus: 'not_applicable',
+          Wells: 'not_available_in_fitting_record',
+          Display_status: 'displayed',
+          Display_reason: 'fit_available',
+          ClipX: 'not_applicable_to_cielab_channel',
           beta_k: '',
           bias_index_k: '',
         });
@@ -5780,8 +5988,13 @@ function buildCielabFittingRows(
         C0: finiteOrBlank(c0),
         C0_sd: c0Sd,
         sigma_cal: '',
-        sigma_source: '',
+        sigma_source: 'not_applicable',
         SNR: '',
+        ReferenceStatus: 'not_evaluated_in_fitting_export',
+        Wells: 'not_available_in_fitting_record',
+        Display_status: 'displayed',
+        Display_reason: 'fit_available',
+        ClipX: 'not_applicable_to_cielab_channel',
         beta_k: finiteOrBlank(beta),
         bias_index_k: finiteOrBlank(biasIndex),
       });
@@ -10790,6 +11003,8 @@ function App() {
   const [roiStats, setRoiStats] = useState<{ minPixels: number; maxPixels: number; meanPixels: number } | null>(null);
   const [plateMap, setPlateMap] = useState<WellConfig[]>(createEmptyPlateMap);
   const [plateMapUnit, setPlateMapUnit] = useState('mM');
+  const [epsilonInput, setEpsilonInput] = useState('');
+  const [volumePerWellInput, setVolumePerWellInput] = useState('');
   const [plateEditorSnapshot, setPlateEditorSnapshot] = useState<PlateEditorSnapshot | null>(null);
   const [expectedRefs, setExpectedRefs] = useState<ExpectedRef[]>([]);
   const [calibrationFits, setCalibrationFits] = useState<CalibrationFit[]>([]);
@@ -11758,6 +11973,8 @@ function App() {
         radiusFactor,
         plateMap,
         plateMapUnit,
+        Number(epsilonInput) > 0 ? Number(epsilonInput) : null,
+        Number(volumePerWellInput) > 0 ? Number(volumePerWellInput) : null,
         plateEditorSnapshot,
         expectedRefs,
         storedCalibration,
@@ -11777,7 +11994,7 @@ function App() {
       const detail = saveError instanceof Error ? saveError.message : 'Unknown project save error.';
       setError(detail);
     }
-  }, [backgroundModel, expectedRefs, extractionSummary, fittingSummary, floorGeometrySource, floorRoiRadiusFactor, geometry, image, imageName, plateEditorSnapshot, plateMap, plateMapUnit, radiusFactor, roiMode, roiPixelStatisticsMode, storedCalibration, useLowSignalCorrection]);
+  }, [backgroundModel, epsilonInput, expectedRefs, extractionSummary, fittingSummary, floorGeometrySource, floorRoiRadiusFactor, geometry, image, imageName, plateEditorSnapshot, plateMap, plateMapUnit, radiusFactor, roiMode, roiPixelStatisticsMode, storedCalibration, useLowSignalCorrection, volumePerWellInput]);
 
   const handleLoadProjectClick = useCallback(() => {
     projectFileInputRef.current?.click();
@@ -11830,6 +12047,8 @@ function App() {
       setFloorRoiRadiusFactor(project.floorRoiRadiusFactor ?? floorRoiRadiusFactor);
       setPlateMap(project.plateMap);
       setPlateMapUnit(project.plateMapUnit);
+      setEpsilonInput(project.epsilonValue === null ? '' : String(project.epsilonValue));
+      setVolumePerWellInput(project.liquidVolumeUl === null ? '' : String(project.liquidVolumeUl));
       setPlateEditorSnapshot(project.plateEditorSnapshot);
       setExpectedRefs(project.expectedRefs);
       setStoredCalibration(project.storedCalibration);
@@ -13131,6 +13350,10 @@ function App() {
               onClear={handleClearPlateMap}
               onExpectedRefsChange={setExpectedRefs}
               onUnitLabelChange={setPlateMapUnit}
+              epsilonInput={epsilonInput}
+              volumePerWellInput={volumePerWellInput}
+              onEpsilonInputChange={setEpsilonInput}
+              onVolumePerWellInputChange={setVolumePerWellInput}
               onEditorSnapshotChange={handlePlateEditorSnapshotChange}
               onHelpRequest={() => setIsHelpAboutOpen(true)}
               onStartNewAnalysis={() => window.location.reload()}
@@ -13853,6 +14076,10 @@ function App() {
             onClear={handleClearPlateMap}
             onExpectedRefsChange={setExpectedRefs}
             onUnitLabelChange={setPlateMapUnit}
+            epsilonInput={epsilonInput}
+            volumePerWellInput={volumePerWellInput}
+            onEpsilonInputChange={setEpsilonInput}
+            onVolumePerWellInputChange={setVolumePerWellInput}
             onEditorSnapshotChange={handlePlateEditorSnapshotChange}
             onHelpRequest={() => setIsHelpAboutOpen(true)}
           />

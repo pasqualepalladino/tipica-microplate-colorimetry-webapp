@@ -33,6 +33,10 @@ interface PlateMapEditorProps {
   onClear: () => void;
   onExpectedRefsChange?: (expectedRefs: ExpectedRef[]) => void;
   onUnitLabelChange?: (unitLabel: string) => void;
+  epsilonInput: string;
+  volumePerWellInput: string;
+  onEpsilonInputChange?: (value: string) => void;
+  onVolumePerWellInputChange?: (value: string) => void;
   onEditorSnapshotChange?: (snapshot: PlateEditorSnapshot) => void;
   onHelpRequest?: () => void;
   onStartNewAnalysis?: () => void;
@@ -95,6 +99,10 @@ export function PlateMapEditor({
   onClear,
   onExpectedRefsChange,
   onUnitLabelChange,
+  epsilonInput,
+  volumePerWellInput,
+  onEpsilonInputChange,
+  onVolumePerWellInputChange,
   onEditorSnapshotChange,
   onHelpRequest,
   onStartNewAnalysis,
@@ -516,7 +524,7 @@ export function PlateMapEditor({
 
       <section className="nested-control-section" aria-labelledby="experiment-setup-heading">
         <h3 id="experiment-setup-heading">Experiment setup</h3>
-        <div className="plate-config-setup-row">
+        <div className="plate-config-setup-row" style={{ display: 'flex', flexWrap: 'nowrap', alignItems: 'end', gap: '0.45rem' }}>
           <div className="plate-config-extended-block">
             {onHelpRequest ? (
               <button
@@ -592,8 +600,8 @@ export function PlateMapEditor({
             </select>
           </label>
 
-          <label className="select-control plate-config-visible-control">
-            <span>Visible columns</span>
+          <label className="select-control plate-config-visible-control" style={{ flex: '0 0 auto', minWidth: '5.4rem' }}>
+            <span style={{ whiteSpace: 'nowrap' }}>Visible columns</span>
             <select
               value={plateRegion.visibleColumns}
               onChange={(event) => handleVisibleColumnsChange(Number(event.currentTarget.value))}
@@ -630,69 +638,111 @@ export function PlateMapEditor({
         </div>
       </section>
 {extendedView ? (
-      <section className="nested-control-section" aria-labelledby="reference-values-heading">
-        <h3 id="reference-values-heading">Reference values</h3>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr) max-content',
+          gap: '0.55rem',
+          alignItems: 'stretch',
+        }}
+      >
+        <section className="nested-control-section" aria-labelledby="reference-values-heading">
+          <h3 id="reference-values-heading">Reference values</h3>
+          {expectedRows.map((row, index) => (
+            <div className="plate-config-reference-row" key={`expected-${index}`} style={{ flexWrap: 'nowrap' }}>
+              <input
+                type="text"
+                aria-label={`Reference ${index + 1} ID`}
+                placeholder="Ref ID"
+                value={row.refId}
+                onChange={(event) =>
+                  updateExpectedRow(index, { refId: event.currentTarget.value })
+                }
+              />
+              <input
+                type="text"
+                aria-label={`Reference ${index + 1} label`}
+                placeholder="Label"
+                value={row.label}
+                onChange={(event) =>
+                  updateExpectedRow(index, { label: event.currentTarget.value })
+                }
+              />
+              <input
+                type="text"
+                aria-label={`Reference ${index + 1} value`}
+                placeholder="Value"
+                value={row.value}
+                onChange={(event) =>
+                  updateExpectedRow(index, { value: event.currentTarget.value })
+                }
+              />
+              <input
+                type="text"
+                aria-label={`Reference ${index + 1} SD`}
+                placeholder="SD"
+                value={row.sd}
+                onChange={(event) =>
+                  updateExpectedRow(index, { sd: event.currentTarget.value })
+                }
+              />
+              {index === expectedRows.length - 1 ? (
+                <div className="plate-config-reference-actions">
+                  <button type="button" className="secondary-button plate-config-icon-button" onClick={addExpectedRow}>
+                    +
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button plate-config-icon-button"
+                    onClick={removeExpectedRow}
+                    disabled={expectedRows.length <= 1}
+                  >
+                    -
+                  </button>
+                  <p className="panel-note plate-config-reference-count">Valid ref rows: {collectedExpectedRefs.length}</p>
+                  <button type="button" className="secondary-button" onClick={onStartNewAnalysis}>
+                    RESET
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </section>
 
-        {expectedRows.map((row, index) => (
-          <div className="plate-config-reference-row" key={`expected-${index}`}>
-            <input
-              type="text"
-              aria-label={`Reference ${index + 1} ID`}
-              placeholder="Ref ID"
-              value={row.refId}
-              onChange={(event) =>
-                updateExpectedRow(index, { refId: event.currentTarget.value })
-              }
-            />
-            <input
-              type="text"
-              aria-label={`Reference ${index + 1} label`}
-              placeholder="Label"
-              value={row.label}
-              onChange={(event) =>
-                updateExpectedRow(index, { label: event.currentTarget.value })
-              }
-            />
-            <input
-              type="text"
-              aria-label={`Reference ${index + 1} value`}
-              placeholder="Value"
-              value={row.value}
-              onChange={(event) =>
-                updateExpectedRow(index, { value: event.currentTarget.value })
-              }
-            />
-            <input
-              type="text"
-              aria-label={`Reference ${index + 1} SD`}
-              placeholder="SD"
-              value={row.sd}
-              onChange={(event) =>
-                updateExpectedRow(index, { sd: event.currentTarget.value })
-              }
-            />
-            {index === expectedRows.length - 1 ? (
-              <div className="plate-config-reference-actions">
-                <button type="button" className="secondary-button plate-config-icon-button" onClick={addExpectedRow}>
-                  +
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button plate-config-icon-button"
-                  onClick={removeExpectedRow}
-                  disabled={expectedRows.length <= 1}
-                >
-                  -
-                </button>
-                <p className="panel-note plate-config-reference-count">Valid reference rows: {collectedExpectedRefs.length}</p>
-                <button type="button" className="secondary-button" onClick={onStartNewAnalysis}>
-                  RESET
-                </button>
-              </div>
-            ) : null}
+        <section className="nested-control-section" aria-labelledby="optional-optics-heading">
+          <h3 id="optional-optics-heading">Optional optics</h3>
+          <div style={{ display: 'flex', alignItems: 'end', gap: '0.3rem', whiteSpace: 'nowrap' }}>
+            <label className="select-control" style={{ width: 'auto', flex: '0 0 auto' }}>
+              <span>ε</span>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                inputMode="decimal"
+                aria-label="Molar absorptivity epsilon"
+                placeholder="M⁻¹ cm⁻¹"
+                style={{ width: '5.8rem', minWidth: 0, boxSizing: 'border-box' }}
+                value={epsilonInput}
+                onChange={(event) => onEpsilonInputChange?.(event.currentTarget.value)}
+              />
+            </label>
+            <label className="select-control" style={{ width: 'auto', flex: '0 0 auto' }}>
+              <span>Well</span>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                inputMode="decimal"
+                aria-label="Volume per well in microlitres"
+                placeholder="µL"
+                style={{ width: '3.2rem', minWidth: 0, boxSizing: 'border-box' }}
+                value={volumePerWellInput}
+                onChange={(event) => onVolumePerWellInputChange?.(event.currentTarget.value)}
+              />
+            </label>
           </div>
-        ))}
-      </section>
+        </section>
+      </div>
       ) : null}
 
       <section className={reviewContent ? "nested-control-section configurator-review-section" : workflowContent && configuratorMediaActive ? "nested-control-section configurator-workflow-section" : "nested-control-section"} aria-labelledby={reviewContent ? "configurator-review-heading" : workflowContent && configuratorMediaActive ? "configurator-workflow-heading" : "plate-map-editor-heading"}>
